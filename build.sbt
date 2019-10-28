@@ -18,11 +18,13 @@ name := "delta-core"
 
 organization := "io.delta"
 
-crossScalaVersions := Seq("2.12.8", "2.11.12")
+crossScalaVersions := Seq("2.11.12", "2.12.8")
 
 scalaVersion := crossScalaVersions.value.head
 
-sparkVersion := "2.4.2"
+sparkVersion := "2.3.0"
+
+unmanagedBase := baseDirectory.value / "lib"
 
 libraryDependencies ++= Seq(
   // Adding test classifier seems to break transitive resolution of the core dependencies

@@ -21,8 +21,7 @@ import org.apache.spark.sql.delta.schema.Invariants.{ArbitraryExpression, NotNul
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Expression, NonSQLExpression, UnaryExpression}
-import org.apache.spark.sql.catalyst.expressions.codegen.{Block, CodegenContext, ExprCode, JavaCode, TrueLiteral}
-import org.apache.spark.sql.catalyst.expressions.codegen.Block._
+import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
 import org.apache.spark.sql.types.{DataType, NullType}
 
 /** An expression that validates a specific invariant on a column, before writing into Delta. */
@@ -55,10 +54,10 @@ case class CheckDeltaInvariant(
     null
   }
 
-  private def generateNotNullCode(ctx: CodegenContext): Block = {
+  private def generateNotNullCode(ctx: CodegenContext): String = {
     val childGen = child.genCode(ctx)
     val invariantField = ctx.addReferenceObj("errMsg", invariant)
-    code"""${childGen.code}
+    """${childGen.code}
        |
        |if (${childGen.isNull}) {
        |  throw org.apache.spark.sql.delta.schema.InvariantViolationException.apply(
@@ -67,7 +66,7 @@ case class CheckDeltaInvariant(
      """.stripMargin
   }
 
-  private def generateExpressionValidationCode(expr: Expression, ctx: CodegenContext): Block = {
+  private def generateExpressionValidationCode(expr: Expression, ctx: CodegenContext): String = {
     val resolvedExpr = expr.transform {
       case _: UnresolvedAttribute => child
     }
@@ -75,7 +74,7 @@ case class CheckDeltaInvariant(
     val childGen = resolvedExpr.genCode(ctx)
     val invariantField = ctx.addReferenceObj("errMsg", invariant)
     val eValue = ctx.freshName("elementResult")
-    code"""${elementValue.code}
+    """${elementValue.code}
        |${childGen.code}
        |
        |if (${childGen.isNull} || ${childGen.value} == false) {
@@ -94,6 +93,6 @@ case class CheckDeltaInvariant(
       case NotNull => generateNotNullCode(ctx)
       case ArbitraryExpression(expr) => generateExpressionValidationCode(expr, ctx)
     }
-    ev.copy(code = code, isNull = TrueLiteral, value = JavaCode.literal("null", NullType))
+    ev.copy(code = code, isNull = "true", value = null)
   }
 }
