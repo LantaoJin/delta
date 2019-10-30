@@ -18,16 +18,20 @@ package io.delta.sql.analysis
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedAttribute, UnresolvedRelation}
-import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, UpdateTable}
+import org.apache.spark.sql.catalyst.plans.logical.{Delete, LogicalPlan, UpdateTable}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.execution.datasources.UpdateTableIdentifier
+import org.apache.spark.sql.execution.datasources.{DeleteFromStatement, UpdateTableStatement}
 
 class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
 
   override def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
-    case UpdateTableIdentifier(tableIdentifier, c, values, condition) =>
+    case UpdateTableStatement(tableIdentifier, c, values, condition) =>
       val table = UnresolvedRelation(tableIdentifier)
       val columns = c.map(UnresolvedAttribute(_))
       UpdateTable(table, columns, values, condition)
+
+    case DeleteFromStatement(tableIdentifier, condition) =>
+      val table = UnresolvedRelation(tableIdentifier)
+      Delete(table, condition)
   }
 }

@@ -18,12 +18,15 @@ package io.delta.sql.execution
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.delta.commands.UpdateCommand
+import org.apache.spark.sql.delta.commands.{DeleteCommand, UpdateCommand}
 import org.apache.spark.sql.execution.{SparkPlan, SparkStrategy}
 
 case class DeltaSqlStrategy(spark: SparkSession) extends SparkStrategy {
   def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
     case u @ UpdateCommand(_, _, _, _) =>
+      u.run(spark)
+      Nil
+    case u @ DeleteCommand(_, _, _) =>
       u.run(spark)
       Nil
     case _ => Nil

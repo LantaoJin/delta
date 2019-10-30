@@ -18,13 +18,13 @@ package io.delta.sql.analysis
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.analysis.{EliminateSubqueryAliases, UnresolvedAttribute}
-import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, UpdateTable}
+import org.apache.spark.sql.catalyst.plans.logical.{Delete, LogicalPlan, UpdateTable}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.delta.commands.UpdateCommand
+import org.apache.spark.sql.delta.commands.{DeleteCommand, UpdateCommand}
 import org.apache.spark.sql.delta.{DeltaErrors, DeltaFullTable, UpdateExpressionsSupport}
 import org.apache.spark.sql.internal.SQLConf
 
-class PreprocessTableUpdate(
+class PreprocessTableUpdateDelete(
     spark: SparkSession) extends Rule[LogicalPlan] with UpdateExpressionsSupport {
 
   def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperatorsDown {
@@ -42,6 +42,15 @@ class PreprocessTableUpdate(
       val alignedUpdateExprs = generateUpdateExpressions(
         update.child.output, targetColNameParts, update.updateExpressions, conf.resolver)
       UpdateCommand(index, update.child, alignedUpdateExprs, update.condition)
+
+    case delete: Delete =>
+      val index = EliminateSubqueryAliases(delete.child) match {
+        case DeltaFullTable(tahoeFileIndex) =>
+          tahoeFileIndex
+        case o =>
+          throw DeltaErrors.notADeltaSourceException("DELETE", Some(o))
+      }
+      DeleteCommand(index, delete.child, delete.condition)
   }
 
   override def conf: SQLConf = spark.sessionState.conf

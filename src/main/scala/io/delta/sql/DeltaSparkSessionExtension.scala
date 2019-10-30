@@ -16,7 +16,7 @@
 
 package io.delta.sql
 
-import io.delta.sql.analysis.{DeltaSqlResolution, PreprocessTableUpdate}
+import io.delta.sql.analysis.{DeltaSqlResolution, PreprocessTableUpdateDelete}
 import io.delta.sql.parser.DeltaSqlParser
 import org.apache.spark.sql.SparkSessionExtensions
 
@@ -78,7 +78,7 @@ class DeltaSparkSessionExtension extends (SparkSessionExtensions => Unit) {
     }
 
     extensions.injectPostHocResolutionRule { session =>
-      new PreprocessTableUpdate(session)
+      new PreprocessTableUpdateDelete(session)
     }
   }
 }
