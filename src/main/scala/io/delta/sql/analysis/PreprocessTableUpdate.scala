@@ -38,10 +38,11 @@ class PreprocessTableUpdateDelete(
 
       val targetColNameParts =
         update.updateColumns.map{col => new UnresolvedAttribute(col.name.split("\\.")).nameParts}
-
       val alignedUpdateExprs = generateUpdateExpressions(
         update.child.output, targetColNameParts, update.updateExpressions, conf.resolver)
-      UpdateCommand(index, update.child, alignedUpdateExprs, update.condition)
+      val command = UpdateCommand(index, update.child, alignedUpdateExprs, update.condition)
+      spark.sessionState.analyzer.checkAnalysis(command)
+      command
 
     case delete: Delete =>
       val index = EliminateSubqueryAliases(delete.child) match {
@@ -50,7 +51,9 @@ class PreprocessTableUpdateDelete(
         case o =>
           throw DeltaErrors.notADeltaSourceException("DELETE", Some(o))
       }
-      DeleteCommand(index, delete.child, delete.condition)
+      val command = DeleteCommand(index, delete.child, delete.condition)
+      spark.sessionState.analyzer.checkAnalysis(command)
+      command
   }
 
   override def conf: SQLConf = spark.sessionState.conf

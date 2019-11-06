@@ -57,7 +57,7 @@ case class CheckDeltaInvariant(
   private def generateNotNullCode(ctx: CodegenContext): String = {
     val childGen = child.genCode(ctx)
     val invariantField = ctx.addReferenceObj("errMsg", invariant)
-    """${childGen.code}
+    s"""${childGen.code}
        |
        |if (${childGen.isNull}) {
        |  throw org.apache.spark.sql.delta.schema.InvariantViolationException.apply(
@@ -74,7 +74,7 @@ case class CheckDeltaInvariant(
     val childGen = resolvedExpr.genCode(ctx)
     val invariantField = ctx.addReferenceObj("errMsg", invariant)
     val eValue = ctx.freshName("elementResult")
-    """${elementValue.code}
+    s"""${elementValue.code}
        |${childGen.code}
        |
        |if (${childGen.isNull} || ${childGen.value} == false) {

@@ -24,10 +24,15 @@ scalaVersion := crossScalaVersions.value.head
 
 sparkVersion := "2.3.0"
 
+val parquetVersion = "1.8.3-encryption-ebay0.1-SNAPSHOT"
+val parquetFormatVersion = "2.3.1-encryption-ebay0.1-SNAPSHOT"
+
 unmanagedBase := baseDirectory.value / "lib"
 
 libraryDependencies ++= Seq(
   // Adding test classifier seems to break transitive resolution of the core dependencies
+  "org.apache.parquet" % "parquet-column" % parquetVersion % "provided",
+  "org.apache.parquet" % "parquet-hadoop" % parquetVersion % "provided",
   "org.apache.spark" %% "spark-hive" % sparkVersion.value % "provided",
   "org.apache.spark" %% "spark-sql" % sparkVersion.value % "provided",
   "org.apache.spark" %% "spark-core" % sparkVersion.value % "provided",
@@ -242,4 +247,9 @@ releaseProcess := Seq[ReleaseStep](
   publishArtifacts,
   setNextVersion,
   commitNextVersion
+)
+
+resolvers ++= Seq(
+  "ebaycentral.snapshots" at "http://ebaycentral.qa.ebay.com/content/repositories/snapshots",
+  "ebaycentral.releases"  at "http://ebaycentral.qa.ebay.com/content/repositories/releases"
 )
