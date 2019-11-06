@@ -43,8 +43,13 @@ trait DeltaTableOperations extends AnalysisHelper { self: DeltaTable =>
     subqueryNotSupportedCheck(condition, "DELETE")
 
     val qe = sparkSession.sessionState.executePlan(delete)
-    val resolvedDelete = qe.analyzed.asInstanceOf[Delete]
-    val deleteCommand = DeleteCommand(resolvedDelete)
+    val deleteCommand = qe.analyzed match {
+      case command: DeleteCommand =>
+        command
+      case _ =>
+        val resolvedDelete = qe.analyzed.asInstanceOf[Delete]
+        DeleteCommand(resolvedDelete)
+    }
     deleteCommand.run(sparkSession)
   }
 
