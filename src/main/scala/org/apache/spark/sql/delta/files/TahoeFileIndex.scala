@@ -74,6 +74,13 @@ abstract class TahoeFileIndex(
     }.toSeq
   }
 
+  override def listFiles(
+      partitionFilters: Seq[Expression],
+      dynamicPartitionFilters: Seq[Expression],
+      dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {
+    listFiles(partitionFilters, dataFilters)
+  }
+
   override def partitionSchema: StructType = deltaLog.snapshot.metadata.partitionSchema
 
   protected def absolutePath(child: String): Path = {

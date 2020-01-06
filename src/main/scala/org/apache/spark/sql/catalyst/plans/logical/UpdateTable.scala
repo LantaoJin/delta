@@ -17,26 +17,44 @@
 package org.apache.spark.sql.catalyst.plans.logical
 
 import org.apache.spark.sql.AnalysisException
-import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.catalyst.analysis.{UnresolvedAttribute, UnresolvedStar}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, ExtractValue, GetStructField}
+import org.apache.spark.sql.execution.datasources.Assignment
 
 /**
  * Perform UPDATE on a table
  *
- * @param child the logical plan representing target table
+ * @param target the logical plan representing target table
  * @param updateColumns: the to-be-updated target columns
  * @param updateExpressions: the corresponding update expression if the condition is matched
  * @param condition: Only rows that match the condition will be updated
  */
 case class UpdateTable(
-    child: LogicalPlan,
+    target: LogicalPlan,
     updateColumns: Seq[Attribute],
     updateExpressions: Seq[Expression],
-    condition: Option[Expression])
-  extends UnaryNode {
+    condition: Option[Expression]) extends Command {
 
   assert(updateColumns.size == updateExpressions.size)
 
+  override def children: Seq[LogicalPlan] = Seq(target)
+  override def output: Seq[Attribute] = Seq.empty
+}
+
+/**
+ * Perform UPDATE on a table
+ */
+case class UpdateWithJoinTable(
+    target: LogicalPlan,
+    source: LogicalPlan,
+    updateColumns: Seq[Attribute],
+    updateExpressions: Seq[Expression],
+    condition: Expression,
+    updateClause: MergeIntoUpdateClause) extends Command {
+
+  assert(updateColumns.size == updateExpressions.size)
+
+  override def children: Seq[LogicalPlan] = Seq(target, source)
   override def output: Seq[Attribute] = Seq.empty
 }
 
@@ -45,7 +63,7 @@ object UpdateTable {
   /** Resolve all the references of target columns and condition using the given `resolver` */
   def resolveReferences(update: UpdateTable, resolver: Expression => Expression): UpdateTable = {
     if (update.resolved) return update
-    assert(update.child.resolved)
+    assert(update.target.resolved)
 
     val UpdateTable(child, updateColumns, updateExpressions, condition) = update
 
@@ -107,5 +125,15 @@ object UpdateTable {
     }
 
     extractRecursively(resolvedTargetCol)
+  }
+
+  def toActionFromAssignments(
+      assignments: Seq[Assignment],
+      isEmptySeqEqualToStar: Boolean = true): Seq[Expression] = {
+    if (assignments.isEmpty && isEmptySeqEqualToStar) {
+      Seq[Expression](UnresolvedStar(None))
+    } else {
+      assignments.map(a => MergeAction(Seq(a.key.asInstanceOf[AttributeReference].name), a.value))
+    }
   }
 }

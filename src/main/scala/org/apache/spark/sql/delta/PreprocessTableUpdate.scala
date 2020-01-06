@@ -24,7 +24,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 case class PreprocessTableUpdate(conf: SQLConf) extends UpdateExpressionsSupport {
   def apply(update: UpdateTable): UpdateCommand = {
-    val index = EliminateSubqueryAliases(update.child) match {
+    val index = EliminateSubqueryAliases(update.target) match {
       case DeltaFullTable(tahoeFileIndex) =>
         tahoeFileIndex
       case o =>
@@ -35,7 +35,7 @@ case class PreprocessTableUpdate(conf: SQLConf) extends UpdateExpressionsSupport
       update.updateColumns.map{col => new UnresolvedAttribute(col.name.split("\\.")).nameParts}
 
     val alignedUpdateExprs = generateUpdateExpressions(
-      update.child.output, targetColNameParts, update.updateExpressions, conf.resolver)
-    UpdateCommand(index, update.child, alignedUpdateExprs, update.condition)
+      update.target.output, targetColNameParts, update.updateExpressions, conf.resolver)
+    UpdateCommand(index, update, alignedUpdateExprs, update.condition)
   }
 }

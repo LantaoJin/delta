@@ -23,11 +23,11 @@ import org.apache.spark.sql.execution.{SparkPlan, SparkStrategy}
 
 case class DeltaSqlStrategy(spark: SparkSession) extends SparkStrategy {
   def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
-    case u @ UpdateCommand(_, _, _, _) =>
+    case u: UpdateCommand =>
       u.run(spark)
       Nil
-    case u @ DeleteCommand(_, _, _) =>
-      u.run(spark)
+    case d: DeleteCommand =>
+      d.run(spark)
       Nil
     case _ => Nil
   }
