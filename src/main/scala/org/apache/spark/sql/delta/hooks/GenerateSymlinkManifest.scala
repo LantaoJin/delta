@@ -22,7 +22,6 @@ import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.storage.LogStore
 import org.apache.spark.sql.delta.util.DeltaFileOperations
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
@@ -30,7 +29,7 @@ import org.apache.spark.sql.catalyst.catalog.ExternalCatalogUtils
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, Literal, ScalaUDF}
 import org.apache.spark.sql.execution.datasources.InMemoryFileIndex
 import org.apache.spark.sql.functions.col
-import org.apache.spark.sql.types.StringType
+import org.apache.spark.sql.types.{BooleanType, StringType}
 import org.apache.spark.util.SerializableConfiguration
 
 /**
@@ -336,7 +335,7 @@ trait GenerateSymlinkManifestImpl extends PostCommitHook with DeltaLogging with 
         ExternalCatalogUtils.getPartitionPathString _,
         StringType,
         Seq(Literal(colName), Cast(col, StringType, Option(timeZoneId))),
-        Seq(true, true))
+        Seq(BooleanType, BooleanType))
       if (i == 0) Seq(partitionName) else Seq(Literal(Path.SEPARATOR), partitionName)
     }
   )

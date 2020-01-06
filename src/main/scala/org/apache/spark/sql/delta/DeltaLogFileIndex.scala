@@ -48,6 +48,13 @@ case class DeltaLogFileIndex(format: FileFormat, files: Array[FileStatus]) exten
   override val sizeInBytes: Long = files.map(_.getLen).sum
 
   override def partitionSchema: StructType = new StructType()
+
+  override def listFiles(
+      partitionFilters: Seq[Expression],
+      dynamicPartitionFilters: Seq[Expression],
+      dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {
+    listFiles(partitionFilters, dataFilters)
+  }
 }
 
 object DeltaLogFileIndex {
