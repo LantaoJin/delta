@@ -166,8 +166,6 @@ spIncludeMaven := true
 
 spIgnoreProvided := true
 
-packagedArtifacts in publishM2 <<= packagedArtifacts in spPublishLocal
-
 packageBin in Compile := spPackage.value
 
 sparkComponents := Seq("sql")
