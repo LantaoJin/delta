@@ -157,7 +157,7 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
         outputSpec = outputSpec,
         hadoopConf = spark.sessionState.newHadoopConfWithOptions(metadata.configuration),
         partitionColumns = partitioningColumns,
-        bucketSpec = None,
+        bucketSpec = snapshot.metadata.bucketSpec,
         statsTrackers = statsTrackers,
         options = Map.empty)
     }

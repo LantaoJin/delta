@@ -36,7 +36,7 @@ import org.apache.spark.sql.functions._
 /**
  * Performs an update join with a source query/table.
  *
- * Issues an error message when the ON search_condition of the MERGE statement can match
+ * Issues an error message when the WHERE search_condition of the UPDATE statement can match
  * a single row from the target table with multiple rows of the source table-reference.
  *
  * Algorithm:
@@ -46,7 +46,7 @@ import org.apache.spark.sql.functions._
  *    This is implemented as an inner-join using the given condition. See [[findTouchedFiles]]
  *    for more details.
  *
- * Phase 2: Read the touched files again and write new files with updated and/or inserted rows.
+ * Phase 2: Read the touched files again and write new files with updated rows.
  *
  * Phase 3: Use the Delta protocol to atomically remove the touched files and add the new files.
  *
@@ -93,10 +93,8 @@ case class UpdateWithJoinCommand(
         }
         deltaTxn.commit(
           deltaActions,
-          DeltaOperations.Merge(
-            Option(condition.sql),
-            updateClause.condition.map(_.sql),
-            None, None))
+          DeltaOperations.Update(
+            Option(condition.sql)))
 
         // Record metrics
         val stats = UpdateStats(
@@ -140,7 +138,7 @@ case class UpdateWithJoinCommand(
 
     // Accumulator to collect all the distinct touched files
     val touchedFilesAccum = new SetAccumulator[String]()
-    spark.sparkContext.register(touchedFilesAccum, "MergeIntoDelta.touchedFiles")
+    spark.sparkContext.register(touchedFilesAccum, "UpdateWithJoin.touchedFiles")
 
     // UDFs to records touched files names and add them to the accumulator
     val recordTouchedFileName = udf { (fileName: String) => {
@@ -181,7 +179,7 @@ case class UpdateWithJoinCommand(
     logTrace(s"findTouchedFiles: matched files:\n\t${touchedFileNames.mkString("\n\t")}")
 
     val nameToAddFileMap = generateCandidateFileMap(targetDeltaLog.dataPath, dataSkippedFiles)
-    val touchedAddFiles = touchedFileNames.map(f =>
+    val touchedAddFiles = touchedFileNames.filter(_.nonEmpty).map(f =>
       getTouchedFile(targetDeltaLog.dataPath, f, nameToAddFileMap))
 
     metrics("numFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
@@ -216,7 +214,7 @@ case class UpdateWithJoinCommand(
     val incrUpdatedCountExpr = makeMetricUpdateUDF("numRowsUpdated")
     val incrNoopCountExpr = makeMetricUpdateUDF("numRowsCopied")
 
-    // Apply full outer join to find both, matches and non-matches. We are adding two boolean fields
+    // Apply left outer join to find matches . We are adding two boolean fields
     // with value `true`, one to each side of the join. Whether this field is null or not after
     // the full outer join, will allow us to identify whether the resultanet joined row was a
     // matched inner result or an unmatched result with null on one side.
@@ -225,7 +223,7 @@ case class UpdateWithJoinCommand(
         .withColumn(SOURCE_ROW_PRESENT_COL, new Column(incrSourceRowCountExpr))
       val targetDF = Dataset.ofRows(spark, newTarget)
         .withColumn(TARGET_ROW_PRESENT_COL, lit(true))
-      sourceDF.join(targetDF, new Column(condition), "fullOuter")
+      targetDF.join(sourceDF, new Column(condition), "left")
     }
 
     val joinedPlan = joinedDF.queryExecution.analyzed

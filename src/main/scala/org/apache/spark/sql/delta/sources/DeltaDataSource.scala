@@ -18,6 +18,8 @@ package org.apache.spark.sql.delta.sources
 
 import scala.util.{Failure, Success, Try}
 
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
+
 // scalastyle:off import.ordering.noEmptyLine
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.commands.WriteIntoDelta
@@ -209,6 +211,84 @@ class DeltaDataSource
     }
 
     deltaLog.createRelation(partitionFilters, timeTravelByParams.orElse(timeTravelByPath))
+  }
+
+  override def createRelation(
+      sqlContext: SQLContext,
+      table: Option[CatalogTable],
+      parameters: Map[String, String]): BaseRelation = {
+    val maybePath = parameters.getOrElse("path", {
+      throw DeltaErrors.pathNotSpecifiedException
+    })
+
+    // Log any invalid options that are being passed in
+    DeltaOptions.verifyOptions(CaseInsensitiveMap(parameters))
+
+    // Handle time travel
+    val maybeTimeTravel =
+      DeltaTableUtils.extractIfPathContainsTimeTravel(sqlContext.sparkSession, maybePath)
+    val (path, timeTravelByPath) =
+      maybeTimeTravel.map { case (p, tt) => p -> Some(tt) }.getOrElse(maybePath -> None)
+    val timeTravelByParams = getTimeTravelVersion(parameters)
+
+    if (timeTravelByParams.isDefined && timeTravelByPath.isDefined) {
+      throw DeltaErrors.multipleTimeTravelSyntaxUsed
+    }
+
+    val hadoopPath = new Path(path)
+    val rootPath = DeltaTableUtils.findDeltaTableRoot(sqlContext.sparkSession, hadoopPath)
+      .getOrElse {
+        val fs = hadoopPath.getFileSystem(sqlContext.sparkSession.sessionState.newHadoopConf())
+        if (!fs.exists(hadoopPath)) {
+          throw DeltaErrors.pathNotExistsException(path)
+        }
+        hadoopPath
+      }
+
+    val deltaLog = DeltaLog.forTable(sqlContext.sparkSession, rootPath)
+
+    val partitionFilters = if (rootPath != hadoopPath) {
+      logConsole(
+        """
+          |WARNING: loading partitions directly with delta is not recommended.
+          |If you are trying to read a specific partition, use a where predicate.
+          |
+          |CORRECT: spark.read.format("delta").load("/data").where("part=1")
+          |INCORRECT: spark.read.format("delta").load("/data/part=1")
+        """.stripMargin)
+
+      val fragment = hadoopPath.toString().substring(rootPath.toString().length() + 1)
+      val partitions = try {
+        PartitionUtils.parsePathFragmentAsSeq(fragment)
+      } catch {
+        case _: ArrayIndexOutOfBoundsException =>
+          throw DeltaErrors.partitionPathParseException(fragment)
+      }
+
+      val snapshot = deltaLog.update()
+      val metadata = snapshot.metadata
+
+      val badColumns = partitions.map(_._1).filterNot(metadata.partitionColumns.contains)
+      if (badColumns.nonEmpty) {
+        throw DeltaErrors.partitionPathInvolvesNonPartitionColumnException(badColumns, fragment)
+      }
+
+      val filters = partitions.map { case (key, value) =>
+        // Nested fields cannot be partitions, so we pass the key as a identifier
+        EqualTo(UnresolvedAttribute(Seq(key)), Literal(value))
+      }
+      val files = DeltaLog.filterFileList(
+        metadata.partitionSchema, snapshot.allFiles.toDF(), filters)
+      if (files.count() == 0) {
+        throw DeltaErrors.pathNotExistsException(path)
+      }
+      filters
+    } else {
+      Nil
+    }
+
+    deltaLog.createRelation(
+      partitionFilters, timeTravelByParams.orElse(timeTravelByPath), table, parameters)
   }
 
   override def shortName(): String = {

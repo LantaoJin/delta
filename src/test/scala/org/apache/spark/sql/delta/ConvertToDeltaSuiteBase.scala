@@ -109,7 +109,7 @@ abstract class ConvertToDeltaSuiteBase extends QueryTest
       val ae = intercept[AnalysisException] {
         convertToDelta(s"`$tempDir`", None)
       }
-      assert(ae.getMessage.contains(parquetOnlyMsg))
+      assert(ae.getMessage.contains("not found in database"))
     }
   }
 

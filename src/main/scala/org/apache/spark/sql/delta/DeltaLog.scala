@@ -35,12 +35,13 @@ import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.storage.LogStoreProvider
 import com.google.common.cache.{CacheBuilder, RemovalListener, RemovalNotification}
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.SparkContext
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Expression, In, InSet, Literal}
 import org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper
+import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -615,7 +616,7 @@ class DeltaLog private(
       fileIndex,
       partitionSchema = snapshot.metadata.partitionSchema,
       dataSchema = snapshot.metadata.schema,
-      bucketSpec = None,
+      bucketSpec = snapshot.metadata.bucketSpec,
       snapshot.fileFormat,
       snapshot.metadata.format.options)(spark)
 
@@ -630,7 +631,9 @@ class DeltaLog private(
    */
   def createRelation(
       partitionFilters: Seq[Expression] = Nil,
-      timeTravel: Option[DeltaTimeTravelSpec] = None): BaseRelation = {
+      timeTravel: Option[DeltaTimeTravelSpec] = None,
+      table: Option[CatalogTable] = None,
+      parameters: Map[String, String] = Map.empty): BaseRelation = {
 
     val versionToUse = timeTravel.map { tt =>
       val (version, accessType) = DeltaTableUtils.resolveTimeTravelVersion(
@@ -650,11 +653,23 @@ class DeltaLog private(
 
     new HadoopFsRelation(
       fileIndex,
-      partitionSchema = snapshotToUse.metadata.partitionSchema,
-      dataSchema = snapshotToUse.metadata.schema,
-      bucketSpec = None,
+      partitionSchema = table match {
+        case Some(t) => t.partitionSchema
+        case None => snapshotToUse.metadata.partitionSchema
+      },
+      dataSchema = table match {
+        case Some(t) => t.schema
+        case None => snapshotToUse.metadata.schema
+      },
+      bucketSpec = table match {
+        case Some(t) => t.bucketSpec
+        case None => None
+      },
       snapshotToUse.fileFormat,
-      snapshotToUse.metadata.format.options)(spark) with InsertableRelation {
+      table match {
+        case Some(t) => t.properties ++ snapshotToUse.metadata.format.options
+        case None => snapshotToUse.metadata.format.options
+      })(spark) with InsertableRelation {
       def insert(data: DataFrame, overwrite: Boolean): Unit = {
         val mode = if (overwrite) SaveMode.Overwrite else SaveMode.Append
         WriteIntoDelta(

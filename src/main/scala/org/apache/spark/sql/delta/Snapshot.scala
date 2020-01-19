@@ -180,7 +180,7 @@ class Snapshot(
         index,
         index.partitionSchema,
         logSchema,
-        None,
+        None, // todo (lajin) bucketSpec = metadata.bucketSpec?
         index.format,
         Map.empty[String, String])(spark)
       LogicalRelation(fsRelation)

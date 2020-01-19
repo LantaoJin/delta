@@ -727,6 +727,10 @@ object DeltaErrors
     new IllegalArgumentException(
       s"Specified mode '$modeName' is not supported. Supported modes are: $supportedModes")
   }
+
+  def cannotUpdateAViewException(tableIdentifier: TableIdentifier): Throwable = {
+    new AnalysisException(s"Can not update a View $tableIdentifier.")
+  }
 }
 
 /** The basic class for all Tahoe commit conflict exceptions. */

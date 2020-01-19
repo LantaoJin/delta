@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, CurrentDate,
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.toPrettySQL
+import org.apache.spark.sql.delta.DeltaErrors
 import org.apache.spark.sql.execution.datasources._
 
 class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
@@ -33,6 +34,9 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
     case u @ UpdateTableStatement(target, assignments, condition, source)
         if !u.resolved && target.resolved &&
           (if (source.isDefined) source.exists(_.resolved) else true) =>
+      target.collect {
+        case View(table, _, _) => throw DeltaErrors.cannotUpdateAViewException(table.identifier)
+      }
       val resolvedAssignments = resolveAssignments(assignments, u)
       val columns = resolvedAssignments.map(_.key.asInstanceOf[Attribute])
       val values = resolvedAssignments.map(_.value)

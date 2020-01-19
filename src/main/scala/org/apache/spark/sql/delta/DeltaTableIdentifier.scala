@@ -18,9 +18,9 @@ package org.apache.spark.sql.delta
 
 import org.apache.spark.sql.delta.sources.DeltaSourceUtils
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.catalog.CatalogUtils
 
 /**
  * An identifier for a Delta table containing one of the path or the table identifier.
@@ -28,7 +28,6 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 case class DeltaTableIdentifier(
     path: Option[String] = None,
     table: Option[TableIdentifier] = None) {
-  assert(path.isDefined ^ table.isDefined, "Please provide one of the path or the table identifier")
 
   val identifier: String = path.getOrElse(table.get.identifier)
 
@@ -88,9 +87,22 @@ object DeltaTableIdentifier {
    */
   def apply(spark: SparkSession, identifier: TableIdentifier): Option[DeltaTableIdentifier] = {
     if (isDeltaPath(spark, identifier)) {
-      Some(DeltaTableIdentifier(path = Option(identifier.table)))
-    } else if (DeltaTableUtils.isDeltaTable(spark, identifier)) {
-      Some(DeltaTableIdentifier(table = Option(identifier)))
+      return Some(DeltaTableIdentifier(path = Option(identifier.table)))
+    }
+    val catalog = spark.sessionState.catalog
+    val tableIsNotTemporaryTable = !catalog.isTemporaryTable(identifier)
+    val tableExists =
+      (identifier.database.isEmpty || catalog.databaseExists(identifier.database.get)) &&
+        catalog.tableExists(identifier)
+    if (tableIsNotTemporaryTable && tableExists) {
+      val catalogTable = catalog.getTableMetadata(identifier)
+      if (DeltaTableUtils.isDeltaTable(catalogTable)) {
+        Some(DeltaTableIdentifier(
+          path = Option(CatalogUtils.URIToString(catalogTable.location)),
+          table = Option(identifier)))
+      } else {
+        None
+      }
     } else {
       None
     }

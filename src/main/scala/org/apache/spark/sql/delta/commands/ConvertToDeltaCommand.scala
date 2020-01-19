@@ -25,17 +25,16 @@ import scala.util.control.NonFatal
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.{AddFile, CommitInfo, Metadata, Protocol}
 import org.apache.spark.sql.delta.schema.SchemaUtils
-import org.apache.spark.sql.delta.sources.{DeltaSourceUtils, DeltaSQLConf}
+import org.apache.spark.sql.delta.sources.{DeltaSQLConf, DeltaSourceUtils}
 import org.apache.spark.sql.delta.util.{DateFormatter, DeltaFileOperations, PartitionUtils, TimestampFormatter}
 import org.apache.spark.sql.delta.util.FileNames.deltaFile
 import org.apache.spark.sql.delta.util.SerializableFileStatus
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
-
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.Resolver
-import org.apache.spark.sql.catalyst.catalog.CatalogTable
+import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogUtils}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetToSparkSchemaConverter}
@@ -104,11 +103,39 @@ abstract class ConvertToDeltaCommandBase(
   protected def getConvertProperties(
       spark: SparkSession,
       tableIdentifier: TableIdentifier): ConvertProperties = {
-    ConvertProperties(
-      None,
-      tableIdentifier.database,
-      tableIdentifier.table,
-      Map.empty[String, String])
+    def convertForPath(tableIdentifier: TableIdentifier): ConvertProperties = {
+      // convert to delta format.`path`
+      ConvertProperties(
+        None,
+        tableIdentifier.database,
+        tableIdentifier.table,
+        Map.empty[String, String])
+    }
+
+    def convertForTable(tableIdentifier: TableIdentifier): ConvertProperties = {
+      val table = spark.sessionState.catalog.getTableMetadata(tableIdentifier)
+      ConvertProperties(
+        Some(table),
+        table.provider,
+        CatalogUtils.URIToString(table.location),
+        table.properties)
+    }
+
+    val identifier = if (tableIdentifier.database.isEmpty) {
+      tableIdentifier.copy(database = Some(spark.sessionState.catalog.getCurrentDatabase))
+    } else {
+      tableIdentifier.copy(
+        database = tableIdentifier.database.map(_.toLowerCase(Locale.ROOT)))
+    }
+
+    val formats = Seq("delta", "parquet", "orc", "json", "csv", "tsv", "hive", "jdbc")
+    if (formats.exists(identifier.database.contains(_))) {
+      // convert to delta format.`path`
+      convertForPath(identifier)
+    } else {
+      // convert to delta table
+      convertForTable(identifier)
+    }
   }
 
   protected def handleExistingTransactionLog(
@@ -167,7 +194,8 @@ abstract class ConvertToDeltaCommandBase(
       }
 
       val schema = constructTableSchema(spark, dataSchema, partitionFields)
-      val metadata = Metadata(schemaString = schema.json, partitionColumns = partitionColNames)
+      val metadata = Metadata(schemaString = schema.json, partitionColumns = partitionColNames,
+        bucketSpec = convertProperties.catalogTable.flatMap(_.bucketSpec))
       txn.updateMetadata(metadata)
 
       val statsBatchSize =
@@ -177,6 +205,13 @@ abstract class ConvertToDeltaCommandBase(
         val adds = batch.map(createAddFile(_, txn.deltaLog.dataPath, fs, spark.sessionState.conf))
         adds.toIterator
       }
+
+      // change provider to delta
+      if (convertProperties.catalogTable.isDefined) {
+        val newTable = convertProperties.catalogTable.get.copy(provider = Some("delta"))
+        spark.sessionState.catalog.alterTable(newTable)
+      }
+
       streamWrite(
         spark,
         txn,
