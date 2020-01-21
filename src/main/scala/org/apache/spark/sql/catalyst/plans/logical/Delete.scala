@@ -26,3 +26,13 @@ case class Delete(
   extends UnaryNode {
   override def output: Seq[Attribute] = Seq.empty
 }
+
+case class DeleteWithJoinTable(
+    target: LogicalPlan,
+    source: LogicalPlan,
+    condition: Expression,
+    deleteClause: MergeIntoDeleteClause) extends Command {
+
+  override def children: Seq[LogicalPlan] = Seq(target, source)
+  override def output: Seq[Attribute] = Seq.empty
+}

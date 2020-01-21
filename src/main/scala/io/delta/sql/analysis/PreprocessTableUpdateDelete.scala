@@ -20,9 +20,9 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
 import org.apache.spark.sql.catalyst.expressions.{Expression, SubqueryExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
-import org.apache.spark.sql.catalyst.plans.logical.{Delete, LogicalPlan, MergeAction, UpdateTable, UpdateWithJoinTable}
+import org.apache.spark.sql.catalyst.plans.logical.{Delete, DeleteWithJoinTable, LogicalPlan, MergeAction, UpdateTable, UpdateWithJoinTable}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.delta.commands.{DeleteCommand, UpdateCommand, UpdateWithJoinCommand}
+import org.apache.spark.sql.delta.commands.{DeleteCommand, DeleteWithJoinCommand, UpdateCommand, UpdateWithJoinCommand}
 import org.apache.spark.sql.delta.{DeltaErrors, DeltaFullTable, UpdateExpressionsSupport}
 import org.apache.spark.sql.internal.SQLConf
 
@@ -73,6 +73,18 @@ class PreprocessTableUpdateDelete(
           throw DeltaErrors.notADeltaSourceException("DELETE", Some(o))
       }
       val command = DeleteCommand(index, table, condition)
+      spark.sessionState.analyzer.checkAnalysis(command)
+      command
+
+    case DeleteWithJoinTable(target, source, condition, delete) =>
+      checkCondition(condition, "delete")
+      val index = EliminateSubqueryAliases(target) match {
+        case DeltaFullTable(tahoeFileIndex) =>
+          tahoeFileIndex
+        case o =>
+          throw DeltaErrors.notADeltaSourceException("DELETE", Some(o))
+      }
+      val command = DeleteWithJoinCommand(source, target, index, condition, delete)
       spark.sessionState.analyzer.checkAnalysis(command)
       command
   }

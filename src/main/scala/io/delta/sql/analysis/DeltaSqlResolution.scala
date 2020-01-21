@@ -31,28 +31,37 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
   private def resolver = spark.sessionState.conf.resolver
 
   override def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
-    case u @ UpdateTableStatement(target, assignments, condition, source)
-        if !u.resolved && target.resolved &&
-          (if (source.isDefined) source.exists(_.resolved) else true) =>
-      target.collect {
-        case View(table, _, _) => throw DeltaErrors.cannotUpdateAViewException(table.identifier)
-      }
+    case u @ UpdateTableStatement(table, assignments, condition, None)
+        if !u.resolved && table.resolved =>
+      checkTargetTable(table)
       val resolvedAssignments = resolveAssignments(assignments, u)
       val columns = resolvedAssignments.map(_.key.asInstanceOf[Attribute])
       val values = resolvedAssignments.map(_.value)
       val resolvedUpdateCondition = condition.map(resolveExpressionTopDown(_, u))
-      source match {
-        case Some(s) =>
-          val updateActions = UpdateTable.toActionFromAssignments(resolvedAssignments)
-          val actions = MergeIntoUpdateClause(resolvedUpdateCondition, updateActions)
-          UpdateWithJoinTable(target, s, columns, values, condition.get, actions)
-        case None =>
-          UpdateTable(target, columns, values, resolvedUpdateCondition)
-      }
+      UpdateTable(table, columns, values, resolvedUpdateCondition)
 
-    case d @ DeleteFromStatement(table, condition)
-      if !d.resolved && table.resolved =>
+    case u @ UpdateTableStatement(target, assignments, condition, Some(source))
+        if !u.resolved && target.resolved && source.resolved =>
+      checkTargetTable(target)
+      val resolvedAssignments = resolveAssignments(assignments, u)
+      val columns = resolvedAssignments.map(_.key.asInstanceOf[Attribute])
+      val values = resolvedAssignments.map(_.value)
+      val resolvedUpdateCondition = condition.map(resolveExpressionTopDown(_, u))
+      val updateActions = UpdateTable.toActionFromAssignments(resolvedAssignments)
+      val actions = MergeIntoUpdateClause(resolvedUpdateCondition, updateActions)
+      UpdateWithJoinTable(target, source, columns, values, condition.get, actions)
+
+    case d @ DeleteFromStatement(table, condition, None)
+        if !d.resolved && table.resolved =>
+      checkTargetTable(table)
       Delete(table, condition)
+
+    case d @ DeleteFromStatement(target, condition, Some(source))
+        if !d.resolved && target.resolved && source.resolved =>
+      checkTargetTable(target)
+      val resolvedDeleteCondition = condition.map(resolveExpressionTopDown(_, d))
+      val actions = MergeIntoDeleteClause(resolvedDeleteCondition)
+      DeleteWithJoinTable(target, source, condition.get, actions)
 
 //    case m @ MergeIntoTableStatement(targetTable, sourceTable,
 //        mergeCondition, matchedActions, notMatchedActions)
@@ -157,5 +166,12 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
     val name = nameParts.head
     val func = literalFunctions.find(e => caseInsensitiveResolution(e.prettyName, name))
     func.map(wrapper)
+  }
+
+  private def checkTargetTable(targetTable: LogicalPlan): Unit = {
+    targetTable.collect {
+      case View(t, _, _) =>
+        throw DeltaErrors.cannotUpdateAViewException(t.identifier)
+    }
   }
 }
