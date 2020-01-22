@@ -32,7 +32,7 @@ import org.apache.spark.sql.delta.util.SerializableFileStatus
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
-import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.{QualifiedTableName, TableIdentifier}
 import org.apache.spark.sql.catalyst.analysis.Resolver
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogUtils}
 import org.apache.spark.sql.catalyst.expressions.Cast
@@ -210,6 +210,8 @@ abstract class ConvertToDeltaCommandBase(
       if (convertProperties.catalogTable.isDefined) {
         val newTable = convertProperties.catalogTable.get.copy(provider = Some("delta"))
         spark.sessionState.catalog.alterTable(newTable)
+        spark.sessionState.catalog.invalidateCachedTable(
+          QualifiedTableName(newTable.database, newTable.identifier.table))
       }
 
       streamWrite(
