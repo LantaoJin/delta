@@ -101,7 +101,7 @@ trait DeltaCommand extends DeltaLogging {
       nameToAddFileMap: Map[String, AddFile],
       filesToRewrite: Seq[String],
       operationTimestamp: Long): Seq[RemoveFile] = {
-    filesToRewrite.map { absolutePath =>
+    filesToRewrite.filter(_.nonEmpty).map { absolutePath =>
       val addFile = getTouchedFile(deltaLog.dataPath, absolutePath, nameToAddFileMap)
       addFile.removeWithTimestamp(operationTimestamp)
     }
@@ -119,7 +119,8 @@ trait DeltaCommand extends DeltaLogging {
       inputLeafFiles: Seq[String],
       nameToAddFileMap: Map[String, AddFile]): HadoopFsRelation = {
     val deltaLog = txn.deltaLog
-    val scannedFiles = inputLeafFiles.map(f => getTouchedFile(rootPath, f, nameToAddFileMap))
+    val scannedFiles = inputLeafFiles.filter(_.nonEmpty).map { f =>
+      getTouchedFile(rootPath, f, nameToAddFileMap) }
     val fileIndex = new TahoeBatchFileIndex(
       spark, actionType, scannedFiles, deltaLog, rootPath, txn.snapshot)
     HadoopFsRelation(

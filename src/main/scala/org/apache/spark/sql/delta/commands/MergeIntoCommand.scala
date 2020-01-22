@@ -231,7 +231,7 @@ case class MergeIntoCommand(
     logTrace(s"findTouchedFiles: matched files:\n\t${touchedFileNames.mkString("\n\t")}")
 
     val nameToAddFileMap = generateCandidateFileMap(targetDeltaLog.dataPath, dataSkippedFiles)
-    val touchedAddFiles = touchedFileNames.map(f =>
+    val touchedAddFiles = touchedFileNames.filter(_.nonEmpty).map(f =>
       getTouchedFile(targetDeltaLog.dataPath, f, nameToAddFileMap))
 
     metrics("numTargetFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
