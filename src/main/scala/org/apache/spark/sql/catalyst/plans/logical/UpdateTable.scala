@@ -49,7 +49,7 @@ case class UpdateWithJoinTable(
     source: LogicalPlan,
     updateColumns: Seq[Attribute],
     updateExpressions: Seq[Expression],
-    condition: Expression,
+    condition: Option[Expression],
     updateClause: MergeIntoUpdateClause) extends Command {
 
   assert(updateColumns.size == updateExpressions.size)

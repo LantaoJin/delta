@@ -18,13 +18,12 @@ package org.apache.spark.sql.delta.commands
 
 import scala.collection.JavaConverters._
 
+import org.apache.spark.SparkContext
+import org.apache.spark.sql._
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.AddFile
 import org.apache.spark.sql.delta.files._
 import org.apache.spark.sql.delta.util.{AnalysisHelper, SetAccumulator}
-
-import org.apache.spark.SparkContext
-import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical._
@@ -32,6 +31,7 @@ import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.BooleanType
 
 /**
  * Performs an update join with a source query/table.
@@ -56,11 +56,11 @@ import org.apache.spark.sql.functions._
  * @param condition         Condition for a source row to match with a target row
  * @param updateClause      Info related to matched clauses.
  */
-case class UpdateWithJoinCommand(
+case class  UpdateWithJoinCommand(
     @transient source: LogicalPlan,
     @transient target: LogicalPlan,
     @transient targetFileIndex: TahoeFileIndex,
-    condition: Expression,
+    condition: Option[Expression],
     updateClause: MergeIntoUpdateClause) extends RunnableCommand
   with DeltaCommand with PredicateHelper with AnalysisHelper {
 
@@ -93,13 +93,12 @@ case class UpdateWithJoinCommand(
         }
         deltaTxn.commit(
           deltaActions,
-          DeltaOperations.Update(
-            Option(condition.sql)))
+          DeltaOperations.Update(condition.map(_.toString)))
 
         // Record metrics
         val stats = UpdateStats(
           // Expressions
-          conditionExpr = condition.sql,
+          conditionExpr = condition.map(_.sql).getOrElse("true"),
           updateConditionExpr = updateClause.condition.map(_.sql).orNull,
           updateExprs = updateClause.actions.map(_.sql).toArray,
 
@@ -146,9 +145,10 @@ case class UpdateWithJoinCommand(
       1
     }}.asNondeterministic()
 
+    val joinCondition = condition.getOrElse(Literal(true, BooleanType))
     // Skip data based on the update condition
     val targetOnlyPredicates =
-      splitConjunctivePredicates(condition).filter(_.references.subsetOf(target.outputSet))
+      splitConjunctivePredicates(joinCondition).filter(_.references.subsetOf(target.outputSet))
     val dataSkippedFiles = deltaTxn.filterFiles(targetOnlyPredicates)
 
     // Apply inner join to between source and target using the update condition to find matches
@@ -161,7 +161,7 @@ case class UpdateWithJoinCommand(
       val targetDF = Dataset.ofRows(spark, buildTargetPlanWithFiles(deltaTxn, dataSkippedFiles))
         .withColumn(ROW_ID_COL, monotonically_increasing_id())
         .withColumn(FILE_NAME_COL, input_file_name())
-      sourceDF.join(targetDF, new Column(condition), "inner")
+      sourceDF.join(targetDF, new Column(joinCondition), "inner")
     }
 
     // Process the matches from the inner join to record touched files and find multiple matches
@@ -223,7 +223,7 @@ case class UpdateWithJoinCommand(
         .withColumn(SOURCE_ROW_PRESENT_COL, new Column(incrSourceRowCountExpr))
       val targetDF = Dataset.ofRows(spark, newTarget)
         .withColumn(TARGET_ROW_PRESENT_COL, lit(true))
-      targetDF.join(sourceDF, new Column(condition), "left")
+      targetDF.join(sourceDF, new Column(condition.getOrElse(Literal(true, BooleanType))), "left")
     }
 
     val joinedPlan = joinedDF.queryExecution.analyzed

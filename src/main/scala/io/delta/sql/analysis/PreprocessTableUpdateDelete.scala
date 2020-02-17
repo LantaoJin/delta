@@ -77,7 +77,7 @@ class PreprocessTableUpdateDelete(
       command
 
     case DeleteWithJoinTable(target, source, condition, delete) =>
-      checkCondition(condition, "delete")
+      condition.foreach(checkCondition(_, "delete"))
       val index = EliminateSubqueryAliases(target) match {
         case DeltaFullTable(tahoeFileIndex) =>
           tahoeFileIndex

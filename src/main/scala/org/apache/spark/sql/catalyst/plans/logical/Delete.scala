@@ -30,7 +30,7 @@ case class Delete(
 case class DeleteWithJoinTable(
     target: LogicalPlan,
     source: LogicalPlan,
-    condition: Expression,
+    condition: Option[Expression],
     deleteClause: MergeIntoDeleteClause) extends Command {
 
   override def children: Seq[LogicalPlan] = Seq(target, source)

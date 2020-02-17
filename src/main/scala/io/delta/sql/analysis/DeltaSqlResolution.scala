@@ -47,9 +47,17 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
       val columns = resolvedAssignments.map(_.key.asInstanceOf[Attribute])
       val values = resolvedAssignments.map(_.value)
       val resolvedUpdateCondition = condition.map(resolveExpressionTopDown(_, u))
-      val updateActions = UpdateTable.toActionFromAssignments(resolvedAssignments)
-      val actions = MergeIntoUpdateClause(resolvedUpdateCondition, updateActions)
-      UpdateWithJoinTable(target, source, columns, values, condition.get, actions)
+      // todo (lajin) we can use assignments.forall(_.foldable) after change to
+      // 'override def foldable: Boolean = value.foldable' in class Assignment in Spark
+      if (condition.isEmpty && values.forall(_.foldable)) {
+        // update with join with no condition equals condition is true
+        // if SET expressions are all foldable, skip join and fallback to simple update
+        UpdateTable(target, columns, values, resolvedUpdateCondition)
+      } else {
+        val updateActions = UpdateTable.toActionFromAssignments(resolvedAssignments)
+        val actions = MergeIntoUpdateClause(resolvedUpdateCondition, updateActions)
+        UpdateWithJoinTable(target, source, columns, values, resolvedUpdateCondition, actions)
+      }
 
     case d @ DeleteFromStatement(table, condition, None)
         if !d.resolved && table.resolved =>
@@ -61,7 +69,7 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
       checkTargetTable(target)
       val resolvedDeleteCondition = condition.map(resolveExpressionTopDown(_, d))
       val actions = MergeIntoDeleteClause(resolvedDeleteCondition)
-      DeleteWithJoinTable(target, source, condition.get, actions)
+      DeleteWithJoinTable(target, source, resolvedDeleteCondition, actions)
 
 //    case m @ MergeIntoTableStatement(targetTable, sourceTable,
 //        mergeCondition, matchedActions, notMatchedActions)

@@ -18,18 +18,19 @@ package org.apache.spark.sql.delta.commands
 
 import scala.collection.JavaConverters._
 
+import org.apache.spark.SparkContext
+import org.apache.spark.sql._
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.AddFile
 import org.apache.spark.sql.delta.files._
 import org.apache.spark.sql.delta.util.{AnalysisHelper, SetAccumulator}
-import org.apache.spark.SparkContext
-import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.BooleanType
 
 /**
  * Performs a Delete based on a join with a source query/table.
@@ -53,7 +54,7 @@ case class DeleteWithJoinCommand(
     @transient source: LogicalPlan,
     @transient target: LogicalPlan,
     @transient targetFileIndex: TahoeFileIndex,
-    condition: Expression,
+    condition: Option[Expression],
     deleteClause: MergeIntoDeleteClause) extends RunnableCommand
   with DeltaCommand with PredicateHelper with AnalysisHelper {
 
@@ -86,12 +87,12 @@ case class DeleteWithJoinCommand(
           filesToRewrite.map(_.remove) ++ newWrittenFiles
         }
         if (deltaActions.nonEmpty) {
-          deltaTxn.commit(deltaActions, DeltaOperations.Delete(Seq(condition.sql)))
+          deltaTxn.commit(deltaActions, DeltaOperations.Delete(condition.map(_.sql).toSeq))
         }
         // Record metrics
         val stats = UpdateStats(
           // Expressions
-          conditionExpr = condition.sql,
+          conditionExpr = condition.map(_.sql).getOrElse("true"),
           updateConditionExpr = deleteClause.condition.map(_.sql).orNull,
           updateExprs = deleteClause.actions.map(_.sql).toArray,
 
@@ -139,8 +140,9 @@ case class DeleteWithJoinCommand(
     }}.asNondeterministic()
 
     // Skip data based on the delete condition
+    val joinCondition = condition.getOrElse(Literal(true, BooleanType))
     val targetOnlyPredicates =
-      splitConjunctivePredicates(condition).filter(_.references.subsetOf(target.outputSet))
+      splitConjunctivePredicates(joinCondition).filter(_.references.subsetOf(target.outputSet))
     val dataSkippedFiles = deltaTxn.filterFiles(targetOnlyPredicates)
 
     // Apply inner join to between source and target using the delete condition to find matches
@@ -153,7 +155,7 @@ case class DeleteWithJoinCommand(
       val targetDF = Dataset.ofRows(spark, buildTargetPlanWithFiles(deltaTxn, dataSkippedFiles))
         .withColumn(ROW_ID_COL, monotonically_increasing_id())
         .withColumn(FILE_NAME_COL, input_file_name())
-      sourceDF.join(targetDF, new Column(condition), "inner")
+      sourceDF.join(targetDF, new Column(joinCondition), "inner")
     }
 
     // Process the matches from the inner join to record touched files and find multiple matches
@@ -198,7 +200,8 @@ case class DeleteWithJoinCommand(
     val targetDF = Dataset.ofRows(spark, newTarget)
     val sourceDF = Dataset.ofRows(spark, source)
     // Apply left anti join.
-    val updatedDF = targetDF.join(sourceDF, new Column(condition), "leftanti")
+    val joinCondition = condition.getOrElse(Literal(true, BooleanType))
+    val updatedDF = targetDF.join(sourceDF, new Column(joinCondition), "leftanti")
 
     // Write to Delta
     val newFiles = deltaTxn.writeFiles(updatedDF)
