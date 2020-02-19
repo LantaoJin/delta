@@ -19,7 +19,7 @@ package io.delta.sql.analysis
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.analysis
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedAttribute, caseInsensitiveResolution}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, CurrentDate, CurrentTimestamp, Expression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Cast, CurrentDate, CurrentTimestamp, Expression}
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.toPrettySQL
@@ -105,7 +105,7 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
         case o => o
       }
       val resolvedValue = assign.value match {
-        case c if !c.resolved => resolveExpressionTopDown(c, update)
+        case c if !c.resolved => resolveExpressionTopDown(Cast(c, resolvedKey.dataType), update)
         case o => o
       }
       Assignment(resolvedKey, resolvedValue)
