@@ -61,7 +61,7 @@ case class  UpdateWithJoinCommand(
     @transient target: LogicalPlan,
     @transient targetFileIndex: TahoeFileIndex,
     condition: Option[Expression],
-    updateClause: MergeIntoUpdateClause) extends RunnableCommand
+    updateClause: DeltaMergeIntoUpdateClause) extends RunnableCommand
   with DeltaCommand with PredicateHelper with AnalysisHelper {
 
   import SQLMetrics._
@@ -232,13 +232,13 @@ case class  UpdateWithJoinCommand(
       exprs.map { expr => tryResolveReferences(spark)(expr, joinedPlan) }
     }
 
-    def updateOutput(u: MergeIntoUpdateClause): Seq[Expression] = {
+    def updateOutput(u: DeltaMergeIntoUpdateClause): Seq[Expression] = {
       // Generate update expressions and set ROW_DELETED_COL = false
       val exprs = u.resolvedActions.map(_.expr) :+ Literal(false) :+ incrUpdatedCountExpr
       resolveOnJoinedPlan(exprs)
     }
 
-    def clauseCondition(clause: Option[MergeIntoClause]): Option[Expression] = {
+    def clauseCondition(clause: Option[DeltaMergeIntoClause]): Option[Expression] = {
       val condExprOption = clause.map(_.condition.getOrElse(Literal(true)))
       resolveOnJoinedPlan(condExprOption.toSeq).headOption
     }

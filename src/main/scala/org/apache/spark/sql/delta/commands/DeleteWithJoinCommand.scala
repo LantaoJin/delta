@@ -55,7 +55,7 @@ case class DeleteWithJoinCommand(
     @transient target: LogicalPlan,
     @transient targetFileIndex: TahoeFileIndex,
     condition: Option[Expression],
-    deleteClause: MergeIntoDeleteClause) extends RunnableCommand
+    deleteClause: DeltaMergeIntoDeleteClause) extends RunnableCommand
   with DeltaCommand with PredicateHelper with AnalysisHelper {
 
   import SQLMetrics._

@@ -24,7 +24,6 @@ import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.toPrettySQL
 import org.apache.spark.sql.delta.DeltaErrors
-import org.apache.spark.sql.execution.datasources._
 
 class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
 
@@ -55,7 +54,7 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
         UpdateTable(target, columns, values, resolvedUpdateCondition)
       } else {
         val updateActions = UpdateTable.toActionFromAssignments(resolvedAssignments)
-        val actions = MergeIntoUpdateClause(resolvedUpdateCondition, updateActions)
+        val actions = DeltaMergeIntoUpdateClause(resolvedUpdateCondition, updateActions)
         UpdateWithJoinTable(target, source, columns, values, resolvedUpdateCondition, actions)
       }
 
@@ -68,7 +67,7 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
         if !d.resolved && target.resolved && source.resolved =>
       checkTargetTable(target)
       val resolvedDeleteCondition = condition.map(resolveExpressionTopDown(_, d))
-      val actions = MergeIntoDeleteClause(resolvedDeleteCondition)
+      val actions = DeltaMergeIntoDeleteClause(resolvedDeleteCondition)
       DeleteWithJoinTable(target, source, resolvedDeleteCondition, actions)
 
 //    case m @ MergeIntoTableStatement(targetTable, sourceTable,

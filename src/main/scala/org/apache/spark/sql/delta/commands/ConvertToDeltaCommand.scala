@@ -33,8 +33,8 @@ import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
 import org.apache.spark.sql.catalyst.{QualifiedTableName, TableIdentifier}
-import org.apache.spark.sql.catalyst.analysis.Resolver
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogUtils}
+import org.apache.spark.sql.catalyst.analysis.Analyzer
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetToSparkSchemaConverter}
@@ -136,6 +136,39 @@ abstract class ConvertToDeltaCommandBase(
       // convert to delta table
       convertForTable(identifier)
     }
+  }
+
+  /**
+   * Calls DeltaCommand.isCatalogTable. With Convert, we may get a format check error in cases where
+   * the metastore and the underlying table don't align, e.g. external table where the underlying
+   * files are converted to delta but the metadata has not been converted yet. In these cases,
+   * catch the error and return based on whether the provided Table Identifier could reasonably be
+   * a path
+   *
+   * @param analyzer The session state analyzer to call
+   * @param tableIdent Table Identifier to determine whether is path based or not
+   * @return Boolean where true means that the table is a table in a metastore and false means the
+   *         table is a path based table
+   */
+  override def isCatalogTable(analyzer: Analyzer, tableIdent: TableIdentifier): Boolean = {
+    try {
+      super.isCatalogTable(analyzer, tableIdentifier)
+    } catch {
+      case e: AnalysisException if e.getMessage.contains("Incompatible format detected") =>
+        !isPathIdentifier(tableIdentifier)
+    }
+  }
+
+  /**
+   * Override this method since parquet paths are valid for Convert
+   * @param tableIdent the provided table or path
+   * @return Whether or not the ident provided can refer to a table by path
+   */
+  override def isPathIdentifier(tableIdent: TableIdentifier): Boolean = {
+    val provider = tableIdent.database.getOrElse("")
+    // If db doesnt exist or db is called delta/tahoe then check if path exists
+    (DeltaSourceUtils.isDeltaDataSourceName(provider) || provider == "parquet") &&
+      new Path(tableIdent.table).isAbsolute
   }
 
   protected def handleExistingTransactionLog(
@@ -240,8 +273,9 @@ abstract class ConvertToDeltaCommandBase(
     val timestampFormatter =
       TimestampFormatter(timestampPartitionPattern, java.util.TimeZone.getDefault)
     val resolver = conf.resolver
+    val dir = if (file.isDir) file.getPath else file.getPath.getParent
     val (partitionOpt, _) = PartitionUtils.parsePartition(
-      path,
+      dir,
       typeInference = false,
       basePaths = Set.empty,
       userSpecifiedDataTypes = Map.empty,

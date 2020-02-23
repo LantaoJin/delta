@@ -20,7 +20,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
 import org.apache.spark.sql.catalyst.expressions.{Expression, SubqueryExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
-import org.apache.spark.sql.catalyst.plans.logical.{Delete, DeleteWithJoinTable, LogicalPlan, MergeAction, UpdateTable, UpdateWithJoinTable}
+import org.apache.spark.sql.catalyst.plans.logical.{Delete, DeleteWithJoinTable, DeltaMergeAction, LogicalPlan, UpdateTable, UpdateWithJoinTable}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.delta.commands.{DeleteCommand, DeleteWithJoinCommand, UpdateCommand, UpdateWithJoinCommand}
 import org.apache.spark.sql.delta.{DeltaErrors, DeltaFullTable, UpdateExpressionsSupport}
@@ -58,8 +58,8 @@ class PreprocessTableUpdateDelete(
       }
       val alignedUpdateExprs = generateUpdateExpressions(
         target.output, resolveNameParts, updateExpressions, conf.resolver)
-      val alignedActions: Seq[MergeAction] = alignedUpdateExprs.zip(target.output).map {
-        case (expr, attrib) => MergeAction(Seq(attrib.name), expr)
+      val alignedActions = alignedUpdateExprs.zip(target.output).map {
+        case (expr, attrib) => DeltaMergeAction(Seq(attrib.name), expr)
       }
       val update = updateClause.copy(updateClause.condition, alignedActions)
 
