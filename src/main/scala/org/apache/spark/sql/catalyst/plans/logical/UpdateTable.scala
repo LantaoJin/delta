@@ -19,7 +19,6 @@ package org.apache.spark.sql.catalyst.plans.logical
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedAttribute, UnresolvedStar}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, ExtractValue, GetStructField}
-import org.apache.spark.sql.execution.datasources.Assignment
 
 /**
  * Perform UPDATE on a table
@@ -50,7 +49,7 @@ case class UpdateWithJoinTable(
     updateColumns: Seq[Attribute],
     updateExpressions: Seq[Expression],
     condition: Option[Expression],
-    updateClause: MergeIntoUpdateClause) extends Command {
+    updateClause: DeltaMergeIntoUpdateClause) extends Command {
 
   assert(updateColumns.size == updateExpressions.size)
 
@@ -133,7 +132,8 @@ object UpdateTable {
     if (assignments.isEmpty && isEmptySeqEqualToStar) {
       Seq[Expression](UnresolvedStar(None))
     } else {
-      assignments.map(a => MergeAction(Seq(a.key.asInstanceOf[AttributeReference].name), a.value))
+      assignments.map(a =>
+        DeltaMergeAction(Seq(a.key.asInstanceOf[AttributeReference].name), a.value))
     }
   }
 }
