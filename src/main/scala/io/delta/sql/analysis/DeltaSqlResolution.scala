@@ -40,7 +40,8 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
       UpdateTable(table, columns, values, resolvedUpdateCondition)
 
     case u @ UpdateTableStatement(target, assignments, condition, Some(source))
-        if !u.resolved && target.resolved && source.resolved =>
+        if !u.resolved && target.resolved && source.resolved &&
+          target.outputSet.intersect(source.outputSet).isEmpty => // no conflicting attributes
       checkTargetTable(target)
       val resolvedAssignments = resolveAssignments(assignments, u)
       val columns = resolvedAssignments.map(_.key.asInstanceOf[Attribute])
@@ -64,7 +65,8 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
       Delete(table, condition)
 
     case d @ DeleteFromStatement(target, condition, Some(source))
-        if !d.resolved && target.resolved && source.resolved =>
+        if !d.resolved && target.resolved && source.resolved &&
+          target.outputSet.intersect(source.outputSet).isEmpty => // no conflicting attributes
       checkTargetTable(target)
       val resolvedDeleteCondition = condition.map(resolveExpressionTopDown(_, d))
       val actions = DeltaMergeIntoDeleteClause(resolvedDeleteCondition)
@@ -72,7 +74,8 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
 
 //    case m @ MergeIntoTableStatement(targetTable, sourceTable,
 //        mergeCondition, matchedActions, notMatchedActions)
-//      if !m.resolved && targetTable.resolved && sourceTable.resolved =>
+//        if !m.resolved && targetTable.resolved && sourceTable.resolved &&
+//          target.outputSet.intersect(source.outputSet).isEmpty => // no conflicting attributes
 //      val resolvedMergeCondition = resolveExpressionTopDown(mergeCondition, m)
 //      val newMatchedActions = matchedActions.collect {
 //        case DeleteAction(deleteCondition) =>
