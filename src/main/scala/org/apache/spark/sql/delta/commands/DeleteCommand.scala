@@ -54,7 +54,9 @@ case class DeleteCommand(
 
   override lazy val metrics = Map[String, SQLMetric](
     "numRemovedFiles" -> createMetric(sc, "number of files removed."),
-    "numAddedFiles" -> createMetric(sc, "number of files added.")
+    "numAddedFiles" -> createMetric(sc, "number of files added."),
+    "numRowsCopied" -> createMetric(sc, "number of rows rewritten unmodified."),
+    "numRowsDeleted" -> createMetric(sc, "number of deleted rows.")
   )
 
   final override def run(sparkSession: SparkSession): Seq[Row] = {
@@ -87,6 +89,7 @@ case class DeleteCommand(
     val deleteActions: Seq[Action] = condition match {
       case None =>
         // Case 1: Delete the whole table if the condition is true
+        logInfo("Delete the whole table since condition is true")
         val allFiles = txn.filterFiles(Nil)
 
         numTouchedFiles = allFiles.size
@@ -102,6 +105,7 @@ case class DeleteCommand(
         if (otherPredicates.isEmpty) {
           // Case 2: The condition can be evaluated using metadata only.
           //         Delete a set of files without the need of scanning any data files.
+          logInfo("Delete a set of files without the need of scanning any data files.")
           val operationTimestamp = System.currentTimeMillis()
           val candidateFiles = txn.filterFiles(metadataPredicates)
 
@@ -123,18 +127,21 @@ case class DeleteCommand(
           val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex)
           val data = Dataset.ofRows(sparkSession, newTarget)
           val filesToRewrite =
-            withStatusCode("DELTA", s"Finding files to rewrite for DELETE operation") {
+            withStatusCode("DELTA",
+                s"Finding $numTouchedFiles files to rewrite for DELETE operation") {
               if (numTouchedFiles == 0) {
                 Array.empty[String]
               } else {
+                // InputFileName() has problem when spark.sql.files.scan.multiThread.enabled=true
                 data.filter(new Column(cond)).select(new Column(InputFileName())).distinct()
                   .as[String].collect()
               }
-            }
+            }.filter(_.nonEmpty)
 
           scanTimeMs = (System.nanoTime() - startTime) / 1000 / 1000
           if (filesToRewrite.isEmpty) {
             // Case 3.1: no row matches and no delete will be triggered
+            logInfo("No row matches and no delete will be triggered")
             Nil
           } else {
             // Case 3.2: some files need an update to remove the deleted files

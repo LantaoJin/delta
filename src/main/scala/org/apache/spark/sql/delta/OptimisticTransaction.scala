@@ -289,7 +289,7 @@ trait OptimisticTransactionImpl extends TransactionalWrite with SQLMetricsReport
           clock.getTimeMillis(),
           op.name,
           op.jsonEncodedValues,
-          Map.empty,
+          Map("user" -> spark.sessionState.catalog.getCurrentUser),
           Some(readVersion).filter(_ >= 0),
           None,
           Some(isBlindAppend),

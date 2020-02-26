@@ -76,8 +76,8 @@ case class  UpdateWithJoinCommand(
     "numRowsUpdated" -> createMetric(sc, "number of updated rows"),
     "numFilesBeforeSkipping" -> createMetric(sc, "number of target files before skipping"),
     "numFilesAfterSkipping" -> createMetric(sc, "number of target files after skipping"),
-    "numFilesRemoved" -> createMetric(sc, "number of files removed to target"),
-    "numFilesAdded" -> createMetric(sc, "number of files added to target"))
+    "numRemovedFiles" -> createMetric(sc, "number of files removed to target"),
+    "numAddedFiles" -> createMetric(sc, "number of files added to target"))
 
   override def run(spark: SparkSession): Seq[Row] = {
     recordDeltaOperation(targetDeltaLog, "delta.dml.update") {
@@ -91,6 +91,7 @@ case class  UpdateWithJoinCommand(
           val newWrittenFiles = writeAllChanges(spark, deltaTxn, filesToRewrite)
           filesToRewrite.map(_.remove) ++ newWrittenFiles
         }
+        deltaTxn.registerSQLMetrics(spark, metrics)
         deltaTxn.commit(
           deltaActions,
           DeltaOperations.Update(condition.map(_.toString)))
@@ -110,8 +111,8 @@ case class  UpdateWithJoinCommand(
             UpdateDataFiles(metrics("numFilesAfterSkipping").value),
 
           // Data change sizes
-          filesAdded = metrics("numFilesAdded").value,
-          filesRemoved = metrics("numFilesRemoved").value,
+          filesAdded = metrics("numAddedFiles").value,
+          filesRemoved = metrics("numRemovedFiles").value,
           rowsCopied = metrics("numRowsCopied").value,
           rowsUpdated = metrics("numRowsUpdated").value)
         recordDeltaEvent(targetFileIndex.deltaLog, "delta.dml.update.stats", data = stats)
@@ -184,7 +185,7 @@ case class  UpdateWithJoinCommand(
 
     metrics("numFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
     metrics("numFilesAfterSkipping") += dataSkippedFiles.size
-    metrics("numFilesRemoved") += touchedAddFiles.size
+    metrics("numRemovedFiles") += touchedAddFiles.size
     touchedAddFiles
   }
 
@@ -267,7 +268,7 @@ case class  UpdateWithJoinCommand(
 
     // Write to Delta
     val newFiles = deltaTxn.writeFiles(outputDF)
-    metrics("numFilesAdded") += newFiles.size
+    metrics("numAddedFiles") += newFiles.size
     newFiles
   }
 

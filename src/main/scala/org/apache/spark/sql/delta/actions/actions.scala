@@ -312,6 +312,7 @@ object CommitInfo {
       operationMetrics: Option[Map[String, String]]): CommitInfo = {
     val getUserName = commandContext.get("user").flatMap {
       case "unknown" => None
+      case "" => None
       case other => Option(other)
     }
 

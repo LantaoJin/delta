@@ -16,6 +16,8 @@
 
 package io.delta.tables.execution
 
+import java.sql.Timestamp
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Encoders, Row, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -29,7 +31,7 @@ case class DescribeDeltaHistoryCommand(
     table: Option[TableIdentifier],
     limit: Option[Int]) extends RunnableCommand {
 
-  override val output: Seq[Attribute] = Encoders.product[CommitInfo].schema
+  override val output: Seq[Attribute] = Encoders.product[SimpleCommitInfo].schema
     .map(f => AttributeReference(f.name, f.dataType, f.nullable, f.metadata)())
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
@@ -57,6 +59,30 @@ case class DescribeDeltaHistoryCommand(
     }
 
     import sparkSession.implicits._
-    deltaLog.history.getHistory(limit).toDF().collect().toSeq
+    deltaLog.history.getHistory(limit).map(simplify).toDF().collect().toSeq
+  }
+
+  private def simplify(commit: CommitInfo): SimpleCommitInfo = {
+    SimpleCommitInfo(
+      commit.version,
+      commit.timestamp,
+      commit.userName,
+      commit.operation,
+      commit.operationParameters,
+      commit.operationMetrics,
+      commit.readVersion,
+      commit.isBlindAppend,
+      commit.isolationLevel)
   }
 }
+
+case class SimpleCommitInfo(
+    version: Option[Long],
+    timestamp: Timestamp,
+    userName: Option[String],
+    operation: String,
+    operationParameters: Map[String, String],
+    operationMetrics: Option[Map[String, String]],
+    readVersion: Option[Long],
+    isBlindAppend: Option[Boolean],
+    isolationLevel: Option[String])

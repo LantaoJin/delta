@@ -20,6 +20,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.SparkContext
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.encoders.RowEncoder
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.AddFile
 import org.apache.spark.sql.delta.files._
@@ -67,11 +68,11 @@ case class DeleteWithJoinCommand(
   override lazy val metrics = Map[String, SQLMetric](
     "numSourceRows" -> createMetric(sc, "number of source rows"),
     "numRowsCopied" -> createMetric(sc, "number of target rows rewritten unmodified"),
-    "numRowsUpdated" -> createMetric(sc, "number of updated rows"),
+    "numRowsDeleted" -> createMetric(sc, "number of deleted rows"),
     "numFilesBeforeSkipping" -> createMetric(sc, "number of target files before skipping"),
     "numFilesAfterSkipping" -> createMetric(sc, "number of target files after skipping"),
-    "numFilesRemoved" -> createMetric(sc, "number of files removed to target"),
-    "numFilesAdded" -> createMetric(sc, "number of files added to target"))
+    "numRemovedFiles" -> createMetric(sc, "number of files removed to target"),
+    "numAddedFiles" -> createMetric(sc, "number of files added to target"))
 
   override def run(spark: SparkSession): Seq[Row] = {
     recordDeltaOperation(targetDeltaLog, "delta.dml.delete") {
@@ -87,27 +88,28 @@ case class DeleteWithJoinCommand(
           filesToRewrite.map(_.remove) ++ newWrittenFiles
         }
         if (deltaActions.nonEmpty) {
+          deltaTxn.registerSQLMetrics(spark, metrics)
           deltaTxn.commit(deltaActions, DeltaOperations.Delete(condition.map(_.sql).toSeq))
         }
         // Record metrics
-        val stats = UpdateStats(
+        val stats = DeleteStats(
           // Expressions
           conditionExpr = condition.map(_.sql).getOrElse("true"),
           updateConditionExpr = deleteClause.condition.map(_.sql).orNull,
           updateExprs = deleteClause.actions.map(_.sql).toArray,
 
           // Data sizes of source and target at different stages of processing
-          UpdateDataRows(metrics("numSourceRows").value),
+          DeleteDataRows(metrics("numSourceRows").value),
           beforeSkipping =
-            UpdateDataFiles(metrics("numFilesBeforeSkipping").value),
+            DeleteDataFiles(metrics("numFilesBeforeSkipping").value),
           afterSkipping =
-            UpdateDataFiles(metrics("numFilesAfterSkipping").value),
+            DeleteDataFiles(metrics("numFilesAfterSkipping").value),
 
           // Data change sizes
-          filesAdded = metrics("numFilesAdded").value,
-          filesRemoved = metrics("numFilesRemoved").value,
+          filesAdded = metrics("numAddedFiles").value,
+          filesRemoved = metrics("numRemovedFiles").value,
           rowsCopied = metrics("numRowsCopied").value,
-          rowsUpdated = metrics("numRowsUpdated").value)
+          rowsDeleted = metrics("numRowsDeleted").value)
         recordDeltaEvent(targetFileIndex.deltaLog, "delta.dml.delete.stats", data = stats)
 
         // This is needed to make the SQL metrics visible in the Spark UI
@@ -178,7 +180,7 @@ case class DeleteWithJoinCommand(
 
     metrics("numFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
     metrics("numFilesAfterSkipping") += dataSkippedFiles.size
-    metrics("numFilesRemoved") += touchedAddFiles.size
+    metrics("numRemovedFiles") += touchedAddFiles.size
     touchedAddFiles
   }
 
@@ -194,18 +196,74 @@ case class DeleteWithJoinCommand(
     if (filesToRewrite.isEmpty) {
       return Nil
     }
+
+    // UDFs to delete metrics
+    val incrSourceRowCountExpr = makeMetricDeleteUDF("numSourceRows")
+    val incrDeletedCountExpr = makeMetricDeleteUDF("numRowsDeleted")
+    val incrNoopCountExpr = makeMetricDeleteUDF("numRowsCopied")
+
     val fileIndex = new TahoeBatchFileIndex(
       spark, "delete", filesToRewrite, targetDeltaLog, targetFileIndex.path, deltaTxn.snapshot)
     val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex)
-    val targetDF = Dataset.ofRows(spark, newTarget)
-    val sourceDF = Dataset.ofRows(spark, source)
-    // Apply left anti join.
-    val joinCondition = condition.getOrElse(Literal(true, BooleanType))
-    val updatedDF = targetDF.join(sourceDF, new Column(joinCondition), "leftanti")
+
+    // we also can use leftanti join to implement delete.
+    // but it cannot get the metrics like 'numRowsDeleted'
+//    val targetDF = Dataset.ofRows(spark, newTarget)
+//    val sourceDF = Dataset.ofRows(spark, source)
+//    // Apply left anti join.
+//    val joinCondition = condition.getOrElse(Literal(true, BooleanType))
+//    val outputDF = targetDF.join(sourceDF, new Column(joinCondition), "leftanti")
+
+    val joinedDF = {
+      val sourceDF = Dataset.ofRows(spark, source)
+        .withColumn(SOURCE_ROW_PRESENT_COL, new Column(incrSourceRowCountExpr))
+      val targetDF = Dataset.ofRows(spark, newTarget)
+        .withColumn(TARGET_ROW_PRESENT_COL, lit(true))
+      targetDF.join(sourceDF, new Column(condition.getOrElse(Literal(true, BooleanType))), "left")
+    }
+
+    val joinedPlan = joinedDF.queryExecution.analyzed
+
+    def resolveOnJoinedPlan(exprs: Seq[Expression]): Seq[Expression] = {
+      exprs.map { expr => tryResolveReferences(spark)(expr, joinedPlan) }
+    }
+
+    def deleteOutput(u: DeltaMergeIntoDeleteClause): Seq[Expression] = {
+      // Generate expressions to set the ROW_DELETED_COL = true
+      val exprs = target.output :+ Literal(true) :+ incrDeletedCountExpr
+      resolveOnJoinedPlan(exprs)
+    }
+
+    def clauseCondition(clause: Option[DeltaMergeIntoClause]): Option[Expression] = {
+      val condExprOption = clause.map(_.condition.getOrElse(Literal(true)))
+      resolveOnJoinedPlan(condExprOption.toSeq).headOption
+    }
+
+    val joinedRowEncoder = RowEncoder(joinedPlan.schema)
+    val outputRowEncoder = RowEncoder(target.schema).resolveAndBind()
+
+    val processor = new JoinedRowProcessor(
+      targetRowHasNoMatch = resolveOnJoinedPlan(Seq(col(SOURCE_ROW_PRESENT_COL).isNull.expr)).head,
+      sourceRowHasNoMatch = resolveOnJoinedPlan(Seq(col(TARGET_ROW_PRESENT_COL).isNull.expr)).head,
+      matchedCondition1 = clauseCondition(Some(deleteClause)),
+      matchedOutput1 = Option(deleteOutput(deleteClause)),
+      matchedCondition2 = None,
+      matchedOutput2 = None,
+      notMatchedCondition = None,
+      notMatchedOutput = None,
+      noopCopyOutput = resolveOnJoinedPlan(target.output :+ Literal(false) :+ incrNoopCountExpr),
+      deleteRowOutput = resolveOnJoinedPlan(target.output :+ Literal(true) :+ Literal(true)),
+      joinedAttributes = joinedPlan.output,
+      joinedRowEncoder = joinedRowEncoder,
+      outputRowEncoder = outputRowEncoder)
+
+    val outputDF =
+      Dataset.ofRows(spark, joinedPlan).mapPartitions(processor.processPartition)(outputRowEncoder)
+    logDebug("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
 
     // Write to Delta
-    val newFiles = deltaTxn.writeFiles(updatedDF)
-    metrics("numFilesAdded") += newFiles.size
+    val newFiles = deltaTxn.writeFiles(outputDF)
+    metrics("numAddedFiles") += newFiles.size
     newFiles
   }
 
@@ -232,6 +290,13 @@ case class DeleteWithJoinCommand(
     }
     Project(aliases, plan)
   }
+
+  /** Expressions to increment SQL metrics */
+  private def makeMetricDeleteUDF(name: String): Expression = {
+    // only capture the needed metric in a local variable
+    val metric = metrics(name)
+    udf { () => { metric += 1; true }}.asNondeterministic().apply().expr
+  }
 }
 
 case class DeleteDataRows(rows: Long)
@@ -252,4 +317,4 @@ case class DeleteStats(
     filesRemoved: Long,
     filesAdded: Long,
     rowsCopied: Long,
-    rowsUpdated: Long)
+    rowsDeleted: Long)

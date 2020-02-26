@@ -368,6 +368,10 @@ abstract class ConvertToDeltaCommandBase(
     Map.empty
   }
 
+  protected def getContext(spark: SparkSession): Map[String, String] = {
+    Map("user" -> spark.sessionState.catalog.getCurrentUser)
+  }
+
   /**
    * Create the first commit on the Delta log by directly writing an iterator of AddFiles to the
    * LogStore. This bypasses the Delta transactional protocol, but we assume this is ok as this is
@@ -382,7 +386,7 @@ abstract class ConvertToDeltaCommandBase(
     try {
       val deltaLog = txn.deltaLog
       val metadata = txn.metadata
-      val context = getContext
+      val context = getContext(spark)
       val commitInfo = CommitInfo(
         time = txn.clock.getTimeMillis(),
         operation = op.name,

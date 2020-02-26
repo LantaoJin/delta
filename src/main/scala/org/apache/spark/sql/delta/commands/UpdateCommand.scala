@@ -55,7 +55,9 @@ case class UpdateCommand(
 
   override lazy val metrics = Map[String, SQLMetric](
     "numAddedFiles" -> createMetric(sc, "number of files added."),
-    "numRemovedFiles" -> createMetric(sc, "number of files removed.")
+    "numRemovedFiles" -> createMetric(sc, "number of files removed."),
+    "numRowsCopied" -> createMetric(sc, "number of rows rewritten unmodified"),
+    "numRowsUpdated" -> createMetric(sc, "number of updated rows")
   )
 
   final override def run(sparkSession: SparkSession): Seq[Row] = {
@@ -96,10 +98,12 @@ case class UpdateCommand(
     val actions: Seq[Action] = if (candidateFiles.isEmpty) {
       // Case 1: Do nothing if no row qualifies the partition predicates
       // that are part of Update condition
+      logInfo("Do nothing if no row qualifies the partition predicates.")
       Nil
     } else if (dataPredicates.isEmpty) {
       // Case 2: Update all the rows from the files that are in the specified partitions
       // when the data filter is empty
+      logInfo("Update all the rows from the files that are in the specified partitions.")
       numTouchedFiles = candidateFiles.length
 
       val filesToRewrite = candidateFiles.map(_.path)
@@ -122,20 +126,24 @@ case class UpdateCommand(
       val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex)
       val data = Dataset.ofRows(sparkSession, newTarget)
       val filesToRewrite =
-        withStatusCode("DELTA", s"Finding files to rewrite for UPDATE operation") {
+        withStatusCode("DELTA",
+          s"Finding $numTouchedFiles files to rewrite for UPDATE operation") {
+          // InputFileName() has problem when spark.sql.files.scan.multiThread.enabled=true
           data.filter(new Column(updateCondition)).select(input_file_name())
             .distinct().as[String].collect()
-        }
+        }.filter(_.nonEmpty)
 
       scanTimeMs = (System.nanoTime() - startTime) / 1000 / 1000
       numTouchedFiles = filesToRewrite.length
 
       if (filesToRewrite.isEmpty) {
         // Case 3.1: Do nothing if no row qualifies the UPDATE condition
+        logInfo("Do nothing if no row qualifies the UPDATE condition.")
         Nil
       } else {
         // Case 3.2: Delete the old files and generate the new files containing the updated
         // values
+        logInfo("Delete the old files and generate the new files.")
         val operationTimestamp = System.currentTimeMillis()
         val deleteActions =
           removeFilesFromPaths(deltaLog, nameToAddFile, filesToRewrite, operationTimestamp)

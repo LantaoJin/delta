@@ -74,7 +74,11 @@ object DeltaOperations {
     override val parameters: Map[String, Any] = Map("predicate" -> JsonUtils.toJson(predicate))
     override val operationMetrics: Seq[String] = Seq(
       "numAddedFiles",
-      "numRemovedFiles"
+      "numRemovedFiles",
+      "numOutputRows",
+      "numSourceRows",
+      "numRowsCopied",
+      "numRowsDeleted"
     )
   }
   /** Recorded when truncating the table. */
@@ -155,7 +159,11 @@ object DeltaOperations {
     override val parameters: Map[String, Any] = predicate.map("predicate" -> _).toMap
     override val operationMetrics: Seq[String] = Seq(
       "numAddedFiles",
-      "numRemovedFiles"
+      "numRemovedFiles",
+      "numOutputRows",
+      "numSourceRows",
+      "numRowsCopied",
+      "numRowsUpdated"
     )
   }
   /** Recorded when the table is created. */
