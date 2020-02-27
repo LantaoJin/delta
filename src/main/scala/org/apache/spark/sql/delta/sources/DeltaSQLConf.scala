@@ -20,7 +20,7 @@ package org.apache.spark.sql.delta.sources
 import java.util.concurrent.TimeUnit
 
 import org.apache.spark.internal.config.ConfigBuilder
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 
 /**
  * [[SQLConf]] entries for Delta features.
@@ -226,4 +226,37 @@ object DeltaSQLConf {
       .booleanConf
       .createWithDefault(true)
 
+  // ---------------------------------------------------- //
+  //                    delta manager                     //
+  // ---------------------------------------------------- //
+  // spark.databricks.delta.*
+
+  val META_TABLE_IDENTIFIER = buildStaticConf("metaTable.identifier")
+    .internal
+    .doc("Delta meta table identifier: database.table")
+    .stringConf
+    .createWithDefault("carmel_system.carmel_delta_tables")
+
+  val META_TABLE_LOCATION = buildStaticConf("metaTable.location")
+    .internal
+    .doc(s"The location of delta meta table from $META_TABLE_IDENTIFIER")
+    .stringConf
+    .createOptional
+
+  val AUTO_VACUUM_ENABLED = buildStaticConf("vacuum.auto.enabled")
+    .doc("If true, it allows to start a thread pool to execute VACUUM periodically. This should " +
+      s"only enable in reserved queue and ${StaticSQLConf.SPARK_SESSION_EXTENSIONS.key} set to " +
+      "io.delta.sql.DeltaSparkSessionExtension")
+    .booleanConf
+    .createWithDefault(false)
+
+  val AUTO_VACUUM_INTERVAL = buildStaticConf("vacuum.schedule.interval")
+    .doc("The interval hours of a vacuum task is scheduled. The default value is 24 hours.")
+    .timeConf(TimeUnit.SECONDS)
+    .createWithDefault(24 * 3600)
+
+  val VALIDATOR_INTERVAL = buildStaticConf("validator.schedule.interval")
+    .doc("The interval of delta table validator thread is scheduled.")
+    .timeConf(TimeUnit.SECONDS)
+    .createWithDefault(30 * 60) // 30 minutes by default
 }
