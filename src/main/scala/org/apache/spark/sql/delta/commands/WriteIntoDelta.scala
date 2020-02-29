@@ -17,11 +17,11 @@
 package org.apache.spark.sql.delta.commands
 
 // scalastyle:off import.ordering.noEmptyLine
+import org.apache.spark.sql._
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.{Action, AddFile}
 import org.apache.spark.sql.delta.schema.ImplicitMetadataOperation
-
-import org.apache.spark.sql._
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.command.RunnableCommand
 
 /**
@@ -48,7 +48,8 @@ case class WriteIntoDelta(
     options: DeltaOptions,
     partitionColumns: Seq[String],
     configuration: Map[String, String],
-    data: DataFrame)
+    data: DataFrame,
+    sparkPlan: Option[SparkPlan] = None)
   extends RunnableCommand
   with ImplicitMetadataOperation
   with DeltaCommand {
@@ -102,7 +103,7 @@ case class WriteIntoDelta(
       deltaLog.fs.mkdirs(deltaLog.logPath)
     }
 
-    val newFiles = txn.writeFiles(data, Some(options))
+    val newFiles = txn.writeFiles(data, Some(options), sparkPlan)
     val deletedFiles = (mode, partitionFilters) match {
       case (SaveMode.Overwrite, None) =>
         txn.filterFiles().map(_.remove)

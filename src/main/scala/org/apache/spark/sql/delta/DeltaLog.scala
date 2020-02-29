@@ -41,7 +41,7 @@ import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Expression, In, InSet, Literal}
 import org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper
-import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -670,7 +670,7 @@ class DeltaLog private(
         case Some(t) => t.properties ++ snapshotToUse.metadata.format.options
         case None => snapshotToUse.metadata.format.options
       })(spark) with InsertableRelation {
-      def insert(data: DataFrame, overwrite: Boolean): Unit = {
+      override def insert(data: DataFrame, overwrite: Boolean): Unit = {
         val mode = if (overwrite) SaveMode.Overwrite else SaveMode.Append
         WriteIntoDelta(
           deltaLog = DeltaLog.this,
@@ -678,7 +678,19 @@ class DeltaLog private(
           new DeltaOptions(Map.empty[String, String], spark.sessionState.conf),
           partitionColumns = Seq.empty,
           configuration = Map.empty,
-          data = data).run(spark)
+          data = data,
+          sparkPlan = None).run(spark)
+      }
+      override def insert(data: DataFrame, overwrite: Boolean, sparkPlan: SparkPlan): Unit = {
+        val mode = if (overwrite) SaveMode.Overwrite else SaveMode.Append
+        WriteIntoDelta(
+          deltaLog = DeltaLog.this,
+          mode = mode,
+          new DeltaOptions(Map.empty[String, String], spark.sessionState.conf),
+          partitionColumns = Seq.empty,
+          configuration = Map.empty,
+          data = data,
+          sparkPlan = Some(sparkPlan)).run(spark)
       }
     }
   }

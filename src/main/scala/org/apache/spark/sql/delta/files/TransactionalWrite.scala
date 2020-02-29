@@ -101,13 +101,7 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
     partitionColumns
   }
 
-  def writeFiles(data: Dataset[_]): Seq[AddFile] = writeFiles(data, None, isOptimize = false)
-
-  def writeFiles(data: Dataset[_], writeOptions: Option[DeltaOptions]): Seq[AddFile] =
-    writeFiles(data, writeOptions, isOptimize = false)
-
-  def writeFiles(data: Dataset[_], isOptimize: Boolean): Seq[AddFile] =
-    writeFiles(data, None, isOptimize = isOptimize)
+  def writeFiles(data: Dataset[_]): Seq[AddFile] = writeFiles(data, None, None)
 
   /**
    * Writes out the dataframe after performing schema validation. Returns a list of
@@ -116,7 +110,7 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
   def writeFiles(
       data: Dataset[_],
       writeOptions: Option[DeltaOptions],
-      isOptimize: Boolean): Seq[AddFile] = {
+      sparkPlan: Option[SparkPlan] = None): Seq[AddFile] = {
     hasWritten = true
 
     val spark = data.sparkSession
@@ -137,7 +131,10 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
         Map.empty,
         output)
 
-      val physicalPlan = DeltaInvariantCheckerExec(queryExecution.executedPlan, invariants)
+      val physicalPlan = sparkPlan match {
+        case Some(p) => p
+        case None => DeltaInvariantCheckerExec(queryExecution.executedPlan, invariants)
+      }
 
       val statsTrackers: ListBuffer[WriteJobStatsTracker] = ListBuffer()
 
