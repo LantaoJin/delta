@@ -151,7 +151,7 @@ class DeltaRetentionSuite extends QueryTest with DeltaRetentionSuiteBase with SQ
       txn2.commit(files2, testOp)
 
       clock.advance(
-        intervalStringToMillis(DeltaConfigs.TOMBSTONE_RETENTION.defaultValue) + 1000000L)
+        intervalStringToMillis(DeltaConfigs.DEFAULT_TOMBSTONE_RETENTION.defaultValue) + 1000000L)
 
       log1.checkpoint()
 

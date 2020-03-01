@@ -108,7 +108,7 @@ object VacuumCommand extends VacuumCommandImpl {
         "a Delta table? Refusing to garbage collect.")
 
       val retentionMillis = retentionHours.map(h => TimeUnit.HOURS.toMillis(math.round(h)))
-      checkRetentionPeriodSafety(spark, retentionMillis, deltaLog.tombstoneRetentionMillis)
+      checkRetentionPeriodSafety(spark, retentionMillis, deltaLog.safetyRetentionMillis)
 
       val deleteBeforeTimestamp = retentionMillis.map { millis =>
         clock.getTimeMillis() - millis
@@ -210,7 +210,7 @@ object VacuumCommand extends VacuumCommandImpl {
           val stats = DeltaVacuumStats(
             isDryRun = true,
             specifiedRetentionMillis = retentionMillis,
-            defaultRetentionMillis = deltaLog.tombstoneRetentionMillis,
+            defaultRetentionMillis = deltaLog.defaultTombstoneRetentionMillis,
             minRetainedTimestamp = deleteBeforeTimestamp,
             dirsPresentBeforeDelete = dirCounts,
             objectsDeleted = numFiles)
@@ -228,7 +228,7 @@ object VacuumCommand extends VacuumCommandImpl {
         val stats = DeltaVacuumStats(
           isDryRun = false,
           specifiedRetentionMillis = retentionMillis,
-          defaultRetentionMillis = deltaLog.tombstoneRetentionMillis,
+          defaultRetentionMillis = deltaLog.defaultTombstoneRetentionMillis,
           minRetainedTimestamp = deleteBeforeTimestamp,
           dirsPresentBeforeDelete = dirCounts,
           objectsDeleted = filesDeleted)

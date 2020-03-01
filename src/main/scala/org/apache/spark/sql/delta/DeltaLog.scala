@@ -108,8 +108,12 @@ class DeltaLog private(
     spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_MAX_SNAPSHOT_LINEAGE_LENGTH)
 
   /** How long to keep around logically deleted files before physically deleting them. */
-  private[delta] def tombstoneRetentionMillis: Long =
-    DeltaConfigs.getMilliSeconds(DeltaConfigs.TOMBSTONE_RETENTION.fromMetaData(metadata))
+  private[delta] def defaultTombstoneRetentionMillis: Long =
+    DeltaConfigs.getMilliSeconds(DeltaConfigs.DEFAULT_TOMBSTONE_RETENTION.fromMetaData(metadata))
+
+  /** How long the checkRetentionPeriodSafety function will fail out. */
+  private[delta] def safetyRetentionMillis: Long =
+    DeltaConfigs.getMilliSeconds(DeltaConfigs.SAFETY_TOMBSTONE_RETENTION.fromMetaData(metadata))
 
   // TODO: There is a race here where files could get dropped when increasing the
   // retention interval...
@@ -119,7 +123,7 @@ class DeltaLog private(
    * Tombstones before this timestamp will be dropped from the state and the files can be
    * garbage collected.
    */
-  def minFileRetentionTimestamp: Long = clock.getTimeMillis() - tombstoneRetentionMillis
+  def minFileRetentionTimestamp: Long = clock.getTimeMillis() - defaultTombstoneRetentionMillis
 
   /**
    * Checks whether this table only accepts appends. If so it will throw an error in operations that

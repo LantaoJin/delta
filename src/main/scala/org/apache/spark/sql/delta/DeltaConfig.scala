@@ -311,13 +311,21 @@ object DeltaConfigs extends DeltaLogging {
    *   doesn't stop longer than this value. Otherwise, the query may not be able to restart as it
    *   still needs to read old files.
    */
-  val TOMBSTONE_RETENTION = buildConfig[CalendarInterval](
-    "deletedFileRetentionDuration",
+  val DEFAULT_TOMBSTONE_RETENTION = buildConfig[CalendarInterval](
+    "defaultDeletedFileRetentionDuration",
     "interval 1 week",
     parseCalendarInterval,
     isValidIntervalConfigValue,
     "needs to be provided as a calendar interval such as '2 weeks'. Months " +
     "and years are not accepted. You may specify '365 days' for a year instead.")
+
+  val SAFETY_TOMBSTONE_RETENTION = buildConfig[CalendarInterval](
+    "safetyDeletedFileRetentionDuration",
+    "interval 2 days",
+    parseCalendarInterval,
+    isValidIntervalConfigValue,
+    "needs to be provided as a calendar interval such as '2 days'. Months " +
+      "and years are not accepted. You may specify '365 days' for a year instead.")
 
   /**
    * Whether to use a random prefix in a file path instead of partition information. This is
