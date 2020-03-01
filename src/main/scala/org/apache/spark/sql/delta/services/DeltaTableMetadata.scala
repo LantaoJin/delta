@@ -16,20 +16,18 @@
 
 package org.apache.spark.sql.delta.services
 
-import io.delta.tables.DeltaTable
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
-import org.apache.spark.sql.internal.SQLConf
 
 /**
  * The metadata entities which contained in [[DELTA_META_TABLE_IDENTIFIER]]
  */
 case class DeltaTableMetadata(
     db: String, tbl: String, maker: String, path: String,
-    vacuum: Boolean, retention: Option[Long]) extends Ordered [DeltaTableMetadata] {
+    vacuum: Boolean, retention: Long = 7 * 24) extends Ordered [DeltaTableMetadata] {
 
   override def hashCode: scala.Int = {
     31 * db.hashCode() + tbl.hashCode()
@@ -58,7 +56,7 @@ case class DeltaTableMetadata(
 
   override def toString: String = {
     if (vacuum) {
-      s"Delta Table ${identifier.unquotedString} with vacuum retention ${retention.getOrElse(-1L)}"
+      s"Delta Table ${identifier.unquotedString} with vacuum retention $retention"
     } else {
       s"Delta Table ${identifier.unquotedString} without vacuum"
     }
@@ -67,57 +65,132 @@ case class DeltaTableMetadata(
   def identifier: TableIdentifier = TableIdentifier(tbl, Option(db))
 }
 
+
+// ----------------------------------- //
+//                 API                 //
+// ----------------------------------- //
 object DeltaTableMetadata extends Logging {
-  // --------------
-  //      API
-  // --------------
 
   def deltaMetaTableIdentifier(conf: SparkConf): String = {
     conf.get(DeltaSQLConf.META_TABLE_IDENTIFIER)
   }
 
-  def deltaMetaTableLocation(conf: SQLConf): Option[String] = {
-    conf.getConf(DeltaSQLConf.META_TABLE_LOCATION)
+  def deltaMetaTableIdentifier(spark: SparkSession): String = {
+    spark.sessionState.conf.getConf(DeltaSQLConf.META_TABLE_IDENTIFIER)
   }
 
-  def createDataFrameOfDeltaMetaTable(spark: SparkSession): Option[DataFrame] = {
-    deltaMetaTableLocation(spark.sessionState.conf).flatMap { location =>
-      try {
-        Some(spark.read.parquet(location))
-      } catch {
-        case e: Exception =>
-          logWarning(s"Failed to create dataframe for Delta meta table from $location", e)
-          None
-      }
-    }
+  /**
+   * SELECT * FROM DELTA_META_TABLE
+   */
+  def selectFromMetadataTable(spark: SparkSession): Iterable[DeltaTableMetadata] = iterableCatch {
+    import spark.implicits._
+    val sqlText =
+      s"""
+         |SELECT * FROM ${deltaMetaTableIdentifier(spark)}
+         |""".stripMargin
+    logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
+    val df = spark.sql(sqlText)
+    df.as[DeltaTableMetadata].collect()
   }
 
-  def buildDeltaTableFromLocation(spark: SparkSession, location: String): DeltaTable = {
-    DeltaTable.forPath(spark, location)
+  /**
+   * Get rows from DELTA_META_TABLE
+   */
+  def getRowsFromMetadataTable(spark: SparkSession): Iterable[Row] = iterableCatch {
+    val sqlText =
+      s"""
+         |SELECT * FROM ${deltaMetaTableIdentifier(spark)}
+         |""".stripMargin
+    logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
+    val df = spark.sql(sqlText)
+    df.collect()
   }
 
-  def deleteWithCondition(spark: SparkSession, condition: String): Boolean = {
-    val deltaMetaTableName = deltaMetaTableIdentifier(spark.sparkContext.conf)
-    val location = deltaMetaTableLocation(spark.sessionState.conf)
-    if (location.isDefined) {
-      try {
-        DeltaTable.convertToDelta(spark, deltaMetaTableName)
-        val deltaMetaTable = DeltaTable.forPath(spark, location.get)
-        deltaMetaTable.delete(condition)
-        true
-      } catch {
-        case _: Throwable => false
-      }
-    } else {
-      false
-    }
+  /**
+   * INSERT INTO DELTA_META_TABLE
+   */
+  def insertIntoMetadataTable(
+      spark: SparkSession, metadata: DeltaTableMetadata): Boolean = booleanCatch {
+    val sqlText =
+      s"""
+        |INSERT INTO ${deltaMetaTableIdentifier(spark)}
+        |VALUES (${toValues(metadata)})
+        |""".stripMargin
+    logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
+    spark.sql(sqlText)
   }
 
-  def deleteWithCondition(spark: SparkSession, database: String, table: String): Boolean = {
-    deleteWithCondition(spark, s"db=$database and tbl=$table")
+  /**
+   * UPDATE DELTA_META_TABLE VALUES
+   */
+  def updateMetadataTable(
+      spark: SparkSession, metadata: DeltaTableMetadata): Boolean = booleanCatch {
+    val sqlText =
+      s"""
+         |UPDATE ${deltaMetaTableIdentifier(spark)}
+         |SET
+         |${toSets(metadata)}
+         |WHERE
+         |${toWheres(metadata)}
+         |""".stripMargin
+    logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
+    spark.sql(sqlText)
+  }
+
+  /**
+   * DELETE FROM DELTA_META_TABLE VALUES
+   */
+  def deleteFromMetadataTable(
+      spark: SparkSession, metadata: DeltaTableMetadata): Boolean = booleanCatch {
+    val sqlText =
+      s"""
+         |DELETE FROM ${deltaMetaTableIdentifier(spark)}
+         |WHERE
+         |${toWheres(metadata)}
+         |""".stripMargin
+    logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
+    spark.sql(sqlText)
   }
 
   def asMetadata(table: TableIdentifier): DeltaTableMetadata = {
-    DeltaTableMetadata(table.database.getOrElse(""), table.table, null, null, false, None)
+    DeltaTableMetadata(table.database.getOrElse(""), table.table, null, null, false)
+  }
+
+  private def booleanCatch(f: => Unit): Boolean = {
+    try {
+      f
+      true
+    } catch {
+      case e: Throwable =>
+        logError("", e)
+        false
+    }
+  }
+
+  private def iterableCatch[T](f: => Iterable[T]): Iterable[T] = {
+    try {
+      f
+    } catch {
+      case e: Throwable =>
+        logError("", e)
+        Iterable.empty[T]
+    }
+  }
+
+  def toValues(m: DeltaTableMetadata): String = {
+    s"'${m.db}', '${m.tbl}', '${m.maker}', '${m.path}', ${m.vacuum}, ${m.retention}"
+  }
+
+  def toSets(m: DeltaTableMetadata): String = {
+    s"""  db='${m.db}',
+       |  tbl='${m.tbl}',
+       |  maker='${m.maker}',
+       |  path='${m.path}',
+       |  vacuum=${m.vacuum},
+       |  retention=${m.retention}""".stripMargin
+  }
+
+  def toWheres(m: DeltaTableMetadata): String = {
+    s"  db='${m.db}' and tbl='${m.tbl}'"
   }
 }

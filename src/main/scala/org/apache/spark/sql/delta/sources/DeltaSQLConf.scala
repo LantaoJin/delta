@@ -237,12 +237,6 @@ object DeltaSQLConf {
     .stringConf
     .createWithDefault("carmel_system.carmel_delta_tables")
 
-  val META_TABLE_LOCATION = buildStaticConf("metaTable.location")
-    .internal
-    .doc(s"The location of delta meta table from $META_TABLE_IDENTIFIER")
-    .stringConf
-    .createOptional
-
   val AUTO_VACUUM_ENABLED = buildStaticConf("vacuum.auto.enabled")
     .doc("If true, it allows to start a thread pool to execute VACUUM periodically. This should " +
       s"only enable in reserved queue and ${StaticSQLConf.SPARK_SESSION_EXTENSIONS.key} set to " +

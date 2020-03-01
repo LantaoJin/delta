@@ -30,7 +30,6 @@ import org.apache.spark.sql.delta.util.DeltaFileOperations
 import org.apache.spark.sql.delta.util.DeltaFileOperations.tryDeleteNonRecursive
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize
 import org.apache.hadoop.fs.{FileSystem, Path}
-
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 import org.apache.spark.util.{Clock, SerializableConfiguration, SystemClock}
 

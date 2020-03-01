@@ -16,9 +16,10 @@
 
 package org.apache.spark.sql.delta.services
 
-import org.apache.spark.sql.QueryTest
+import org.apache.spark.sql.{QueryTest, Row}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
+import org.apache.spark.sql.execution.datasources.IndexUtils
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 
 class AutoVacuumSuite extends QueryTest
@@ -37,22 +38,21 @@ class AutoVacuumSuite extends QueryTest
        | USING parquet
        |""".stripMargin
 
-  test("test auto vacuum") {
+  test("test auto vacuum and show deltas") {
     sys.props("spark.testing") = "true"
-    withTempDir { f =>
-      spark.sparkContext.conf.set(DeltaSQLConf.AUTO_VACUUM_ENABLED, true)
-      val path = f.getAbsolutePath
-      spark.sessionState.conf.setConf(DeltaSQLConf.META_TABLE_LOCATION, Some(path))
+    spark.sparkContext.conf.set(DeltaSQLConf.AUTO_VACUUM_ENABLED, true)
+    spark.sessionState.conf.setConf(DeltaSQLConf.META_TABLE_IDENTIFIER, DELTA_META_TABLE_NAME)
+    withTempDir{ dir =>
       withTable(s"$DELTA_META_TABLE_NAME") {
         sql(
           s"""
              |${DELTA_META_TABLE_CREATION_SQL}
-             |LOCATION "file:$path"
+             |LOCATION '$dir'
              |""".stripMargin)
         sql(
           s"""
              |INSERT INTO TABLE $DELTA_META_TABLE_NAME
-             |VALUES ('db1', 'tbl1', 'user1', 'path1', false, -1)
+             |VALUES ('db1', 'tbl1', 'user1', 'path1', false, 7 * 24)
              |""".stripMargin)
         sql(
           s"""
@@ -61,17 +61,38 @@ class AutoVacuumSuite extends QueryTest
              |""".stripMargin)
         sql(
           s"""
-            |CONVERT TO DELTA $DELTA_META_TABLE_NAME
-            |""".stripMargin)
+             |CONVERT TO DELTA $DELTA_META_TABLE_NAME
+
+             |""".stripMargin)
         val mgr = new AutoVacuum(spark.sparkContext)
         Thread.sleep(2000) // wait vacuum threads completed
         val all = mgr.vacuuming.keys.toSeq
         // only store the records which field vacuum is true
         assert(
-          !all.contains(DeltaTableMetadata("db1", "tbl1", "user1", "path1", false, Some(-1))))
+          !all.contains(DeltaTableMetadata("db1", "tbl1", "user1", "path1", false, 168L)))
         assert(
-          all.contains(DeltaTableMetadata("default", "tbl", "user", "path", true, Some(24))))
+          all.contains(DeltaTableMetadata("default", "tbl", "user", "path", true, 24L)))
         mgr.stopAll()
+
+        checkAnswer(
+          sql("SHOW DELTAS"),
+          Seq(
+            Row("db1", "tbl1", "user1", "path1", false, 168L),
+            Row("default", "tbl", "user", "path", true, 24L),
+            Row("default", "test_carmel_delta_tables", "",
+              s"${IndexUtils.removeEndPathSep(dir.toURI.toString)}", false, 168L))
+        )
+
+        sql(s"VACUUM $DELTA_META_TABLE_NAME RETAIN 200 HOURS AUTO RUN")
+        sql("SHOW DELTAS").show()
+        checkAnswer(
+          sql("SHOW DELTAS"),
+          Seq(
+            Row("db1", "tbl1", "user1", "path1", false, 168L),
+            Row("default", "tbl", "user", "path", true, 24L),
+            Row("default", "test_carmel_delta_tables", "",
+              s"${IndexUtils.removeEndPathSep(dir.toURI.toString)}", true, 200L))
+        )
       }
     }
   }

@@ -22,6 +22,8 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.delta.{DeltaErrors, DeltaLog, DeltaTableIdentifier, DeltaTableUtils}
 import org.apache.spark.sql.delta.commands.VacuumCommand
+import org.apache.spark.sql.delta.services.DeltaTableMetadata
+import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.types.StringType
 
@@ -35,7 +37,8 @@ case class VacuumTableCommand(
     path: Option[String],
     table: Option[TableIdentifier],
     horizonHours: Option[Double],
-    dryRun: Boolean) extends RunnableCommand {
+    dryRun: Boolean,
+    autoRun: Boolean = false) extends RunnableCommand {
 
   override val output: Seq[Attribute] =
     Seq(AttributeReference("path", StringType, nullable = true)())
@@ -63,6 +66,41 @@ case class VacuumTableCommand(
         "VACUUM",
         DeltaTableIdentifier(path = Some(pathToVacuum.toString)))
     }
-    VacuumCommand.gc(sparkSession, deltaLog, dryRun, horizonHours).collect()
+    if (autoRun) {
+      if (table.isDefined) {
+        logInfo(s"VACUUM ${table.get.unquotedString} AUTO RUN command won't execute immediately")
+        updateMetaTable(sparkSession, table.get, pathToVacuum.toString)
+        Seq.empty[Row]
+      } else {
+        throw DeltaErrors.tableOnlySupportedException("VACUUM with AUTO RUN")
+      }
+    } else {
+      VacuumCommand.gc(sparkSession, deltaLog, dryRun, horizonHours).collect()
+    }
+  }
+
+
+  private def updateMetaTable(
+      spark: SparkSession, table: TableIdentifier, pathToVacuum: String): Unit = {
+    val catalog = spark.sessionState.catalog
+    val metadata = DeltaTableMetadata(
+      table.database.getOrElse(catalog.getCurrentDatabase),
+      table.table,
+      catalog.getCurrentUser,
+      pathToVacuum,
+      vacuum = true,
+      horizonHours.getOrElse(7 * 24D).toLong)
+    val res = DeltaTableMetadata.updateMetadataTable(spark, metadata)
+    if (res) {
+      logInfo(s"Update ${table.identifier} in delta metadata table")
+    } else {
+      logWarning(
+        s"""
+           |${DeltaSQLConf.META_TABLE_IDENTIFIER.key} may not be created.
+           |Skip to store delta metadata to ${DeltaTableMetadata.deltaMetaTableIdentifier(spark)}.
+           |This is triggered by command:\n
+           |VACUUM ${table.identifier} (RETAIN number HOURS)? AUTO RUN;
+           |""".stripMargin)
+    }
   }
 }

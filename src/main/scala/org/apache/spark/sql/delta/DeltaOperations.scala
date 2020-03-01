@@ -16,11 +16,11 @@
 
 package org.apache.spark.sql.delta
 
-import org.apache.spark.sql.delta.actions.{Metadata, Protocol}
-import org.apache.spark.sql.delta.util.JsonUtils
-
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.delta.actions.{Metadata, Protocol}
+import org.apache.spark.sql.delta.commands.ConvertProperties
+import org.apache.spark.sql.delta.util.JsonUtils
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.{StructField, StructType}
 
@@ -102,11 +102,13 @@ object DeltaOperations {
       numFiles: Long,
       partitionBy: Seq[String],
       collectStats: Boolean,
-      catalogTable: Option[String]) extends Operation("CONVERT") {
+      convertProperties: ConvertProperties) extends Operation("CONVERT") {
     override val parameters: Map[String, Any] = Map(
       "numFiles" -> numFiles,
       "partitionedBy" -> JsonUtils.toJson(partitionBy),
-      "collectStats" -> collectStats) ++ catalogTable.map("catalogTable" -> _)
+      "collectStats" -> collectStats,
+      "targetDir" -> convertProperties.targetDir) ++
+      convertProperties.catalogTable.map("catalogTable" -> _.identifier.unquotedString)
   }
   /** Recorded when optimizing the table. */
   case class Optimize(

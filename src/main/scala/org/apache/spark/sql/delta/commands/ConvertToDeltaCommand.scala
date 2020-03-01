@@ -36,6 +36,7 @@ import org.apache.spark.sql.catalyst.{QualifiedTableName, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogUtils}
 import org.apache.spark.sql.catalyst.analysis.Analyzer
 import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.delta.services.DeltaTableMetadata
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetToSparkSchemaConverter}
 import org.apache.spark.sql.internal.SQLConf
@@ -66,14 +67,15 @@ import org.apache.spark.util.{SerializableConfiguration, Utils}
 abstract class ConvertToDeltaCommandBase(
     tableIdentifier: TableIdentifier,
     partitionSchema: Option[StructType],
-    deltaPath: Option[String]) extends RunnableCommand with DeltaCommand {
+    deltaPath: Option[String],
+    properties: Map[String, String] = Map.empty) extends RunnableCommand with DeltaCommand {
 
   lazy val partitionColNames : Seq[String] = partitionSchema.map(_.fieldNames.toSeq).getOrElse(Nil)
   lazy val partitionFields : Seq[StructField] = partitionSchema.map(_.fields.toSeq).getOrElse(Nil)
   val timestampPartitionPattern = "yyyy-MM-dd HH:mm:ss[.S]"
 
   override def run(spark: SparkSession): Seq[Row] = {
-    val convertProperties = getConvertProperties(spark, tableIdentifier)
+    val convertProperties = getConvertProperties(spark, tableIdentifier, properties)
 
     convertProperties.provider match {
       case Some(providerName) => providerName.toLowerCase(Locale.ROOT) match {
@@ -102,14 +104,15 @@ abstract class ConvertToDeltaCommandBase(
 
   protected def getConvertProperties(
       spark: SparkSession,
-      tableIdentifier: TableIdentifier): ConvertProperties = {
+      tableIdentifier: TableIdentifier,
+      properties: Map[String, String]): ConvertProperties = {
     def convertForPath(tableIdentifier: TableIdentifier): ConvertProperties = {
       // convert to delta format.`path`
       ConvertProperties(
         None,
         tableIdentifier.database,
         tableIdentifier.table,
-        Map.empty[String, String])
+        properties)
     }
 
     def convertForTable(tableIdentifier: TableIdentifier): ConvertProperties = {
@@ -255,7 +258,7 @@ abstract class ConvertToDeltaCommandBase(
           numFiles,
           partitionColNames,
           collectStats = false,
-          None))
+          convertProperties))
     } finally {
       fileListResultDf.unpersist()
     }
@@ -409,6 +412,7 @@ abstract class ConvertToDeltaCommandBase(
       }
 
       logInfo(s"Committed delta #$firstVersion to ${deltaLog.logPath}")
+      saveToMetaTable(spark, op.convertProperties)
 
       try {
         deltaLog.checkpoint()
@@ -527,15 +531,44 @@ abstract class ConvertToDeltaCommandBase(
     }
   }
 
-  protected case class ConvertProperties(
-      catalogTable: Option[CatalogTable],
-      provider: Option[String],
-      targetDir: String,
-      properties: Map[String, String])
+  private def saveToMetaTable(spark: SparkSession, convertProperties: ConvertProperties): Unit = {
+    convertProperties.catalogTable.foreach { table =>
+      val vacuum = convertProperties.properties.getOrElse("vacuum", "false").toBoolean
+      val horizonHours = convertProperties.properties.get("horizonHours").map(_.toLong)
+      val metadata = DeltaTableMetadata(
+        table.identifier.database.getOrElse(""),
+        table.identifier.table,
+        spark.sessionState.catalog.getCurrentUser,
+        convertProperties.targetDir,
+        vacuum,
+        horizonHours.getOrElse(7 * 24))
+      val res = DeltaTableMetadata.insertIntoMetadataTable(spark, metadata)
+      if (res) {
+        logInfo(s"Insert ${table.identifier} into delta metadata table")
+      } else {
+        logWarning(
+          s"""
+             |${DeltaSQLConf.META_TABLE_IDENTIFIER.key} may not be created.
+             |Skip to store delta metadata to ${DeltaTableMetadata.deltaMetaTableIdentifier(spark)}.
+             |This is triggered by command:\n
+             |CONVERT TO DELTA ${table.identifier} ${if (vacuum) "VACUUM" else ""}
+             |${if (horizonHours.isDefined) s" RETAIN ${horizonHours.get} HOURS" else ""}
+             |""".stripMargin)
+      }
+    }
+  }
 }
+
+case class ConvertProperties(
+    catalogTable: Option[CatalogTable],
+    provider: Option[String],
+    targetDir: String,
+    properties: Map[String, String])
 
 case class ConvertToDeltaCommand(
     tableIdentifier: TableIdentifier,
     partitionSchema: Option[StructType],
-    deltaPath: Option[String])
-  extends ConvertToDeltaCommandBase(tableIdentifier, partitionSchema, deltaPath)
+    deltaPath: Option[String],
+    properties: Map[String, String] = Map.empty)
+  extends ConvertToDeltaCommandBase(tableIdentifier, partitionSchema, deltaPath, properties) {
+}

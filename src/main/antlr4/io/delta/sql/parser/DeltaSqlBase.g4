@@ -73,13 +73,15 @@ singleStatement
 // If you add keywords here that should not be reserved, add them to 'nonReserved' list.
 statement
     : VACUUM (path=STRING | table=qualifiedName)
-        (RETAIN number HOURS)? (DRY RUN)?                               #vacuumTable
+        (RETAIN number HOURS)? ((DRY | AUTO) RUN)?                      #vacuumTable
     | (DESC | DESCRIBE) DETAIL (path=STRING | table=qualifiedName)      #describeDeltaDetail
     | GENERATE modeName=identifier FOR TABLE table=qualifiedName        #generate
     | (DESC | DESCRIBE) HISTORY (path=STRING | table=qualifiedName)
         (LIMIT limit=INTEGER_VALUE)?                                    #describeDeltaHistory
     | CONVERT TO DELTA table=qualifiedName
-        (PARTITIONED BY '(' colTypeList ')')?                           #convert
+        (PARTITIONED BY '(' colTypeList ')')?
+        (VACUUM (RETAIN number HOURS)?)?                                #convert
+    | SHOW DELTAS                                                       #showDeltas
     | .*?                                                               #passThrough
     ;
 
@@ -122,10 +124,11 @@ number
 // Add keywords here so that people's queries don't break if they have a column name as one of
 // these tokens
 nonReserved
-    : VACUUM | RETAIN | HOURS | DRY | RUN
+    : VACUUM | RETAIN | HOURS | DRY | AUTO | RUN
     | CONVERT | TO | DELTA | PARTITIONED | BY
     | DESC | DESCRIBE | LIMIT | DETAIL
     | GENERATE | FOR | TABLE
+    | SHOW | DELTAS
     ;
 
 // Define how the keywords above should appear in a user's SQL statement.
@@ -138,6 +141,7 @@ DESCRIBE: 'DESCRIBE';
 DETAIL: 'DETAIL';
 GENERATE: 'GENERATE';
 DRY: 'DRY';
+AUTO: 'AUTO';
 HISTORY: 'HISTORY';
 HOURS: 'HOURS';
 LIMIT: 'LIMIT';
@@ -151,6 +155,8 @@ RETAIN: 'RETAIN';
 RUN: 'RUN';
 TO: 'TO';
 VACUUM: 'VACUUM';
+SHOW: 'SHOW';
+DELTAS: 'DELTAS';
 
 STRING
     : '\'' ( ~('\''|'\\') | ('\\' .) )* '\''

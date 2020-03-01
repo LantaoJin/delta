@@ -56,7 +56,7 @@ import org.apache.spark.sql.types.BooleanType
  * @param condition         Condition for a source row to match with a target row
  * @param updateClause      Info related to matched clauses.
  */
-case class  UpdateWithJoinCommand(
+case class UpdateWithJoinCommand(
     @transient source: LogicalPlan,
     @transient target: LogicalPlan,
     @transient targetFileIndex: TahoeFileIndex,

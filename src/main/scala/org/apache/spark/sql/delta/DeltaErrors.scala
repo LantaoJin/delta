@@ -196,6 +196,10 @@ object DeltaErrors
     new AnalysisException(s"Table is not supported in $operation. Please use a path instead.")
   }
 
+  def tableOnlySupportedException(operation: String): Throwable = {
+    new AnalysisException(s"Table is only supported in $operation. Please use a table instead.")
+  }
+
   def vacuumBasePathMissingException(baseDeltaPath: Path): Throwable = {
     new AnalysisException(
       s"Please provide the base path ($baseDeltaPath) when Vacuuming Delta tables. " +

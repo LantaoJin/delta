@@ -63,36 +63,34 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
     ThreadUtils.newDaemonFixedThreadScheduledExecutor(16, "delta-auto-vacuum-pool")
 
   override def run(): Unit = {
-    createDataFrameOfDeltaMetaTable(spark).foreach { df =>
-      df.as[DeltaTableMetadata].collect().foreach { meta =>
-        if (DeltaTableUtils.isDeltaTable(spark, meta.identifier) || Utils.isTesting) {
-          if (vacuuming.contains(meta)) {
-            if (meta.vacuum && meta.retention.getOrElse(-1L) > 0L) {
-              // just logging
-              logDebug(s"Found ${meta.toString}, vacuuming in progressing")
-            } else {
-              invalidate(meta)
-            }
+    selectFromMetadataTable(spark).foreach { meta =>
+      if (DeltaTableUtils.isDeltaTable(spark, meta.identifier) || Utils.isTesting) {
+        if (vacuuming.contains(meta)) {
+          if (meta.vacuum) {
+            // just logging
+            logDebug(s"Found ${meta.toString}, vacuuming in progressing")
           } else {
-            if (meta.vacuum && meta.retention.getOrElse(-1L) > 0L) {
-              if (conf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
-                val interval = conf.get(DeltaSQLConf.AUTO_VACUUM_INTERVAL)
-                val vacuumTask = new VacuumTask(meta)
-                val schedule = vacuumPool.scheduleWithFixedDelay(
-                  vacuumTask, interval, interval, TimeUnit.SECONDS)
-                vacuuming(meta) = schedule
-                logInfo(s"Found ${meta.toString}, vacuum it in $interval seconds")
-              } else { // just logging
-                logDebug(s"Found ${meta.toString}, " +
-                  s"but ${DeltaSQLConf.AUTO_VACUUM_INTERVAL.key} is false")
-              }
-            } else { // just logging
-              logInfo(s"Found ${meta.toString}, no need to vacuum")
-            }
+            invalidate(meta)
           }
         } else {
-          invalidate(meta)
+          if (meta.vacuum && meta.retention > 0L) {
+            if (conf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
+              val interval = conf.get(DeltaSQLConf.AUTO_VACUUM_INTERVAL)
+              val vacuumTask = new VacuumTask(meta)
+              val schedule = vacuumPool.scheduleWithFixedDelay(
+                vacuumTask, interval, interval, TimeUnit.SECONDS)
+              vacuuming(meta) = schedule
+              logInfo(s"Found ${meta.toString}, vacuum it in $interval seconds")
+            } else { // just logging
+              logDebug(s"Found ${meta.toString}, " +
+                s"but ${DeltaSQLConf.AUTO_VACUUM_INTERVAL.key} is false")
+            }
+          } else { // just logging
+            logInfo(s"Found ${meta.toString}, no need to vacuum")
+          }
         }
+      } else {
+        invalidate(meta)
       }
     }
   }
@@ -103,7 +101,7 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
     // It has been dropped or is not a delta table any more,
     // we should delete it from DELTA_META_TABLE
     val deltaMetaTable = deltaMetaTableIdentifier(conf)
-    if (deleteWithCondition(spark, meta.db, meta.tbl)) {
+    if (deleteFromMetadataTable(spark, meta)) {
       logInfo(s"Deleted expired ${meta.toString} from $deltaMetaTable")
     } else {
       logWarning(s"Failed to delete expired ${meta.toString} from $deltaMetaTable")

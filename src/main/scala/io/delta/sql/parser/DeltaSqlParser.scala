@@ -44,12 +44,11 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.sql.delta.commands.DeltaGenerateCommand
 import io.delta.sql.parser.DeltaSqlBaseParser._
-import io.delta.tables.execution.{DescribeDeltaHistoryCommand, VacuumTableCommand}
+import io.delta.tables.execution.{DescribeDeltaHistoryCommand, ShowDeltasCommand, VacuumTableCommand}
 import org.antlr.v4.runtime._
 import org.antlr.v4.runtime.atn.PredictionMode
 import org.antlr.v4.runtime.misc.{Interval, ParseCancellationException}
 import org.antlr.v4.runtime.tree._
-
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
@@ -151,7 +150,8 @@ class DeltaSqlAstBuilder extends DeltaSqlBaseBaseVisitor[AnyRef] {
       Option(ctx.path).map(string),
       Option(ctx.table).map(visitTableIdentifier),
       Option(ctx.number).map(_.getText.toDouble),
-      ctx.RUN != null)
+      ctx.DRY != null,
+      ctx.AUTO != null)
   }
 
   override def visitDescribeDeltaDetail(
@@ -176,10 +176,19 @@ class DeltaSqlAstBuilder extends DeltaSqlBaseBaseVisitor[AnyRef] {
   }
 
   override def visitConvert(ctx: ConvertContext): LogicalPlan = withOrigin(ctx) {
+    val properties =
+      Map("vacuum" -> s"${ctx.VACUUM != null}") ++
+        Option(ctx.number).map(x => ("horizonHours", x.getText))
+
     ConvertToDeltaCommand(
       visitTableIdentifier(ctx.table),
       Option(ctx.colTypeList).map(colTypeList => StructType(visitColTypeList(colTypeList))),
-      None)
+      None,
+      properties)
+  }
+
+  override def visitShowDeltas(ctx: ShowDeltasContext): AnyRef = withOrigin(ctx) {
+    ShowDeltasCommand()
   }
 
   override def visitSingleStatement(ctx: SingleStatementContext): LogicalPlan = withOrigin(ctx) {
