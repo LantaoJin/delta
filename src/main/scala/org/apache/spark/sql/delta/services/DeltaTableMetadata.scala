@@ -162,7 +162,7 @@ object DeltaTableMetadata extends Logging {
       true
     } catch {
       case e: Throwable =>
-        logError("", e)
+        logWarning("", e)
         false
     }
   }
@@ -172,7 +172,7 @@ object DeltaTableMetadata extends Logging {
       f
     } catch {
       case e: Throwable =>
-        logError("", e)
+        logWarning("", e)
         Iterable.empty[T]
     }
   }

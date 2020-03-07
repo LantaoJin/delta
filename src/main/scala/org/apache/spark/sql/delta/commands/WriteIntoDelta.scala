@@ -18,11 +18,13 @@ package org.apache.spark.sql.delta.commands
 
 // scalastyle:off import.ordering.noEmptyLine
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.{Action, AddFile}
 import org.apache.spark.sql.delta.schema.ImplicitMetadataOperation
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.execution.datasources.LogicalRelation
 
 /**
  * Used to write a [[DataFrame]] into a delta table.
@@ -49,6 +51,7 @@ case class WriteIntoDelta(
     partitionColumns: Seq[String],
     configuration: Map[String, String],
     data: DataFrame,
+    catalogTable: Option[CatalogTable] = None,
     sparkPlan: Option[SparkPlan] = None)
   extends RunnableCommand
   with ImplicitMetadataOperation
@@ -65,7 +68,7 @@ case class WriteIntoDelta(
     deltaLog.withNewTransaction { txn =>
       val actions = write(txn, sparkSession)
       val operation = DeltaOperations.Write(mode, Option(partitionColumns), options.replaceWhere)
-      txn.commit(actions, operation)
+      txn.commit(actions, operation, catalogTable)
     }
     Seq.empty
   }

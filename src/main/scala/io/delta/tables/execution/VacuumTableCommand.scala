@@ -24,7 +24,7 @@ import org.apache.spark.sql.delta.{DeltaErrors, DeltaLog, DeltaTableIdentifier, 
 import org.apache.spark.sql.delta.commands.VacuumCommand
 import org.apache.spark.sql.delta.services.DeltaTableMetadata
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
-import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.execution.command.{CommandUtils, RunnableCommand}
 import org.apache.spark.sql.types.StringType
 
 /**
@@ -75,7 +75,12 @@ case class VacuumTableCommand(
         throw DeltaErrors.tableOnlySupportedException("VACUUM with AUTO RUN")
       }
     } else {
-      VacuumCommand.gc(sparkSession, deltaLog, dryRun, horizonHours).collect()
+      val res = VacuumCommand.gc(sparkSession, deltaLog, dryRun, horizonHours).collect()
+      table.foreach { t =>
+        val catalogTable = sparkSession.sessionState.catalog.getTableMetadata(t)
+        CommandUtils.updateTableStats(sparkSession, catalogTable)
+      }
+      res
     }
   }
 

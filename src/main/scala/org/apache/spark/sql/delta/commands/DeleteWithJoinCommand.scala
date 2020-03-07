@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.BooleanType
@@ -89,7 +90,14 @@ case class DeleteWithJoinCommand(
         }
         if (deltaActions.nonEmpty) {
           deltaTxn.registerSQLMetrics(spark, metrics)
-          deltaTxn.commit(deltaActions, DeltaOperations.Delete(condition.map(_.sql).toSeq))
+
+          val catalogTable = target.collectFirst {
+            case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
+          }
+          deltaTxn.commit(
+            deltaActions,
+            DeltaOperations.Delete(condition.map(_.sql).toSeq),
+            catalogTable)
         }
         // Record metrics
         val stats = DeleteStats(

@@ -33,9 +33,10 @@ import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.schema.SchemaUtils
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.execution.command.CommandUtils
 import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
 import org.apache.spark.util.{Clock, Utils}
 
@@ -259,7 +260,8 @@ trait OptimisticTransactionImpl extends TransactionalWrite with SQLMetricsReport
    * @param op          Details of operation that is performing this transactional commit
    */
   @throws(classOf[ConcurrentModificationException])
-  def commit(actions: Seq[Action], op: DeltaOperations.Operation): Long = recordDeltaOperation(
+  def commit(actions: Seq[Action], op: DeltaOperations.Operation,
+        catalogTable: Option[CatalogTable] = None): Long = recordDeltaOperation(
       deltaLog,
       "delta.commit") {
     val version = try {
@@ -295,6 +297,11 @@ trait OptimisticTransactionImpl extends TransactionalWrite with SQLMetricsReport
           Some(isBlindAppend),
           getOperationMetrics(op))
         finalActions = commitInfo +: finalActions
+      }
+
+      // the table stats may be not accurate
+      if (catalogTable.nonEmpty) {
+        CommandUtils.updateTableStats(spark, catalogTable.get)
       }
 
       // Register post-commit hooks if any

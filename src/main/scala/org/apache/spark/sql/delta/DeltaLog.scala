@@ -683,6 +683,7 @@ class DeltaLog private(
           partitionColumns = Seq.empty,
           configuration = Map.empty,
           data = data,
+          catalogTable = table,
           sparkPlan = None).run(spark)
       }
       override def insert(data: DataFrame, overwrite: Boolean, sparkPlan: SparkPlan): Unit = {
@@ -694,6 +695,7 @@ class DeltaLog private(
           partitionColumns = Seq.empty,
           configuration = Map.empty,
           data = data,
+          catalogTable = table,
           sparkPlan = Some(sparkPlan)).run(spark)
       }
     }

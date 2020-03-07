@@ -23,7 +23,6 @@ import org.apache.spark.sql.delta.actions.AddFile
 import org.apache.spark.sql.delta.files._
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.util.{AnalysisHelper, SetAccumulator}
-
 import org.apache.spark.SparkContext
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.InternalRow
@@ -33,6 +32,7 @@ import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.functions._
 
@@ -136,13 +136,18 @@ case class MergeIntoCommand(
        }
       }
       deltaTxn.registerSQLMetrics(spark, metrics)
+
+      val catalogTable = target.collectFirst {
+        case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
+      }
       deltaTxn.commit(
         deltaActions,
         DeltaOperations.Merge(
           Option(condition.sql),
           updateClause.flatMap(_.condition).map(_.sql),
           deleteClause.flatMap(_.condition).map(_.sql),
-          notMatchedClause.flatMap(_.condition).map(_.sql)))
+          notMatchedClause.flatMap(_.condition).map(_.sql)),
+        catalogTable)
 
       // Record metrics
       val stats = MergeStats(

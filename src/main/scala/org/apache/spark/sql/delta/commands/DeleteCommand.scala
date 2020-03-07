@@ -19,7 +19,6 @@ package org.apache.spark.sql.delta.commands
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.Action
 import org.apache.spark.sql.delta.files.{TahoeBatchFileIndex, TahoeFileIndex}
-
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
@@ -28,6 +27,7 @@ import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.{Delete, LogicalPlan}
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.metric.SQLMetrics.createMetric
 import org.apache.spark.sql.types.BooleanType
@@ -174,7 +174,11 @@ case class DeleteCommand(
       metrics("numRemovedFiles").set(numTouchedFiles)
       metrics("numAddedFiles").set(numRewrittenFiles)
       txn.registerSQLMetrics(sparkSession, metrics)
-      txn.commit(deleteActions, DeltaOperations.Delete(condition.map(_.sql).toSeq))
+
+      val catalogTable = target.collectFirst {
+        case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
+      }
+      txn.commit(deleteActions, DeltaOperations.Delete(condition.map(_.sql).toSeq), catalogTable)
       // This is needed to make the SQL metrics visible in the Spark UI
       val executionId = sparkSession.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       SQLMetrics.postDriverMetricUpdates(

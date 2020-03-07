@@ -16,11 +16,11 @@
 
 package org.apache.spark.sql.delta.commands
 
+import org.apache.hadoop.fs.Path
+
 import org.apache.spark.sql.delta.{DeltaLog, DeltaOperations, DeltaTableUtils, OptimisticTransaction}
 import org.apache.spark.sql.delta.actions.{Action, AddFile}
 import org.apache.spark.sql.delta.files.{TahoeBatchFileIndex, TahoeFileIndex}
-import org.apache.hadoop.fs.Path
-
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Expression, If, Literal}
@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.metric.SQLMetrics.createMetric
 import org.apache.spark.sql.functions.input_file_name
@@ -164,7 +165,11 @@ case class UpdateCommand(
       metrics("numAddedFiles").set(numRewrittenFiles)
       metrics("numRemovedFiles").set(numTouchedFiles)
       txn.registerSQLMetrics(sparkSession, metrics)
-      txn.commit(actions, DeltaOperations.Update(condition.map(_.toString)))
+
+      val catalogTable = target collectFirst  {
+        case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
+      }
+      txn.commit(actions, DeltaOperations.Update(condition.map(_.toString)), catalogTable)
       // This is needed to make the SQL metrics visible in the Spark UI
       val executionId = sparkSession.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       SQLMetrics.postDriverMetricUpdates(
