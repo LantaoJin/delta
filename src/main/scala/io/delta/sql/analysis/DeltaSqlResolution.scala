@@ -16,10 +16,9 @@
 
 package io.delta.sql.analysis
 
-import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.analysis
-import org.apache.spark.sql.catalyst.analysis.{UnresolvedAttribute, caseInsensitiveResolution}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Cast, CurrentDate, CurrentTimestamp, Expression}
+import org.apache.spark.sql.{AnalysisException, SparkSession}
+import org.apache.spark.sql.catalyst.analysis.{GetColumnByOrdinal, UnresolvedAttribute, UnresolvedExtractValue, caseInsensitiveResolution, withPosition}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Cast, CurrentDate, CurrentTimestamp, Expression, ExtractValue}
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.toPrettySQL
@@ -36,7 +35,7 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
       val resolvedAssignments = resolveAssignments(assignments, u)
       val columns = resolvedAssignments.map(_.key.asInstanceOf[Attribute])
       val values = resolvedAssignments.map(_.value)
-      val resolvedUpdateCondition = condition.map(resolveExpressionTopDown(_, u))
+      val resolvedUpdateCondition = condition.map(resolveExpression(_, u))
       UpdateTable(table, columns, values, resolvedUpdateCondition)
 
     case u @ UpdateTableStatement(target, assignments, condition, Some(source))
@@ -46,7 +45,7 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
       val resolvedAssignments = resolveAssignments(assignments, u)
       val columns = resolvedAssignments.map(_.key.asInstanceOf[Attribute])
       val values = resolvedAssignments.map(_.value)
-      val resolvedUpdateCondition = condition.map(resolveExpressionTopDown(_, u))
+      val resolvedUpdateCondition = condition.map(resolveExpression(_, u))
       // todo (lajin) we can use assignments.forall(_.foldable) after change to
       // 'override def foldable: Boolean = value.foldable' in class Assignment in Spark
       if (condition.isEmpty && values.forall(_.foldable)) {
@@ -68,7 +67,7 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
         if !d.resolved && target.resolved && source.resolved &&
           target.outputSet.intersect(source.outputSet).isEmpty => // no conflicting attributes
       checkTargetTable(target)
-      val resolvedDeleteCondition = condition.map(resolveExpressionTopDown(_, d))
+      val resolvedDeleteCondition = condition.map(resolveExpression(_, d))
       val actions = DeltaMergeIntoDeleteClause(resolvedDeleteCondition)
       DeleteWithJoinTable(target, source, resolvedDeleteCondition, actions)
 
@@ -76,20 +75,20 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
 //        mergeCondition, matchedActions, notMatchedActions)
 //        if !m.resolved && targetTable.resolved && sourceTable.resolved &&
 //          target.outputSet.intersect(source.outputSet).isEmpty => // no conflicting attributes
-//      val resolvedMergeCondition = resolveExpressionTopDown(mergeCondition, m)
+//      val resolvedMergeCondition = resolveExpression(mergeCondition, m)
 //      val newMatchedActions = matchedActions.collect {
 //        case DeleteAction(deleteCondition) =>
-//          val resolvedDeleteCondition = deleteCondition.map(resolveExpressionTopDown(_, m))
+//          val resolvedDeleteCondition = deleteCondition.map(resolveExpression(_, m))
 //          MergeIntoDeleteClause(resolvedDeleteCondition)
 //        case UpdateAction(updateCondition, assignments) =>
-//          val resolvedUpdateCondition = updateCondition.map(resolveExpressionTopDown(_, m))
+//          val resolvedUpdateCondition = updateCondition.map(resolveExpression(_, m))
 //          val resolvedAssignments = resolveAssignments(assignments, m)
 //          val updateActions = MergeIntoClause.toActionFromAssignments(resolvedAssignments)
 //          MergeIntoUpdateClause(resolvedUpdateCondition, updateActions)
 //      }
 //      val newNotMatchedActions = notMatchedActions.collectFirst {
 //        case InsertAction(insertCondition, assignments) =>
-//          val resolvedInsertCondition = insertCondition.map(resolveExpressionTopDown(_, m))
+//          val resolvedInsertCondition = insertCondition.map(resolveExpression(_, m))
 //          val resolvedAssignments = resolveAssignments(assignments, m)
 //          val insertActions = MergeIntoClause.toActionFromAssignments(resolvedAssignments)
 //          MergeIntoInsertClause(resolvedInsertCondition, insertActions)
@@ -103,54 +102,40 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
       update: LogicalPlan): Seq[Assignment] = {
     assignments.map { assign =>
       val resolvedKey = assign.key match {
-        case c if !c.resolved => resolveExpressionTopDown(c, update)
+        case c if !c.resolved => resolveExpression(c, update)
         case o => o
       }
       val resolvedValue = assign.value match {
-        case c if !c.resolved => resolveExpressionTopDown(Cast(c, resolvedKey.dataType), update)
+        case c if !c.resolved => resolveExpression(Cast(c, resolvedKey.dataType), update)
         case o => o
       }
       Assignment(resolvedKey, resolvedValue)
     }
   }
 
-  private def resolveAssignments(
-      assignments: Seq[Assignment],
-      mergeInto: MergeIntoTableStatement): Seq[Assignment] = {
-    if (assignments.isEmpty) {
-      val expandedColumns = mergeInto.targetTable.output
-      val expandedValues = mergeInto.sourceTable.output
-      expandedColumns.zip(expandedValues).map(kv => Assignment(kv._1, kv._2))
-    } else {
-      assignments.map { assign =>
-        val resolvedKey = assign.key match {
-          case c if !c.resolved => resolveExpressionTopDown(c, mergeInto.targetTable)
-          case o => o
-        }
-        val resolvedValue = assign.value match {
-          // The update values may contain target and/or source references.
-          case c if !c.resolved => resolveExpressionTopDown(c, mergeInto)
-          case o => o
-        }
-        Assignment(resolvedKey, resolvedValue)
-      }
-    }
-  }
-
-  private def resolveExpressionTopDown(e: Expression, q: LogicalPlan): Expression = {
-    if (e.resolved) return e
-    e match {
-      case u @ UnresolvedAttribute(nameParts) =>
-        // Leave unchanged if resolution fails. Hopefully will be resolved next round.
-        val result =
-          analysis.withPosition(u) {
-            q.resolveChildren(nameParts, resolver)
-              .orElse(resolveLiteralFunction(nameParts, u, q))
+  private def resolveExpression(
+      expr: Expression,
+      plan: LogicalPlan,
+      throws: Boolean = false): Expression = {
+    if (expr.resolved) return expr
+    // Resolve expression in one round.
+    // If throws == false or the desired attribute doesn't exist
+    // (like try to resolve `a.b` but `a` doesn't exist), fail and return the origin one.
+    // Else, throw exception.
+    try {
+      expr transformDown {
+        case GetColumnByOrdinal(ordinal, _) => plan.output(ordinal)
+        case u @ UnresolvedAttribute(nameParts) =>
+          withPosition(u) {
+            plan.resolveChildren(nameParts, resolver)
+              .orElse(resolveLiteralFunction(nameParts, u, plan))
               .getOrElse(u)
           }
-        logDebug(s"Resolving $u to $result")
-        result
-      case _ => e.mapChildren(resolveExpressionTopDown(_, q))
+        case UnresolvedExtractValue(child, fieldName) if child.resolved =>
+          ExtractValue(child, fieldName, resolver)
+      }
+    } catch {
+      case a: AnalysisException if !throws => expr
     }
   }
 
