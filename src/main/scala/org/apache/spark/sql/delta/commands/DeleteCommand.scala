@@ -22,7 +22,7 @@ import org.apache.spark.sql.delta.files.{TahoeBatchFileIndex, TahoeFileIndex}
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
-import org.apache.spark.sql.catalyst.expressions.{EqualNullSafe, Expression, InputFileName, Literal, Not}
+import org.apache.spark.sql.catalyst.expressions.{EqualNullSafe, Expression, InputFileName, Not}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.{Delete, LogicalPlan}
 import org.apache.spark.sql.execution.SQLExecution
@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.metric.SQLMetrics.createMetric
-import org.apache.spark.sql.types.BooleanType
+import org.apache.spark.sql.functions.udf
 
 /**
  * Performs a Delete based on the search condition
@@ -55,7 +55,6 @@ case class DeleteCommand(
   override lazy val metrics = Map[String, SQLMetric](
     "numRemovedFiles" -> createMetric(sc, "number of files removed."),
     "numAddedFiles" -> createMetric(sc, "number of files added."),
-    "numRowsCopied" -> createMetric(sc, "number of rows rewritten unmodified."),
     "numRowsDeleted" -> createMetric(sc, "number of deleted rows.")
   )
 
@@ -94,6 +93,9 @@ case class DeleteCommand(
 
         numTouchedFiles = allFiles.size
         scanTimeMs = (System.nanoTime() - startTime) / 1000 / 1000
+
+        val data = Dataset.ofRows(sparkSession, target)
+        metrics("numRowsDeleted").set(data.count())
 
         val operationTimestamp = System.currentTimeMillis()
         allFiles.map(_.removeWithTimestamp(operationTimestamp))
@@ -152,8 +154,9 @@ case class DeleteCommand(
             // that only involves the affected files instead of all files.
             val newTarget = DeltaTableUtils.replaceFileIndex(target, baseRelation.location)
 
+            val incrDeletedCountExpr = makeMetricUpdateUDF("numRowsDeleted")
             val targetDF = Dataset.ofRows(sparkSession, newTarget)
-            val filterCond = Not(EqualNullSafe(cond, Literal(true, BooleanType)))
+            val filterCond = Not(EqualNullSafe(cond, incrDeletedCountExpr))
             val updatedDF = targetDF.filter(new Column(filterCond))
 
             val rewrittenFiles = withStatusCode(
@@ -197,6 +200,12 @@ case class DeleteCommand(
         rewriteTimeMs)
     )
   }
+
+  private def makeMetricUpdateUDF(name: String): Expression = {
+    // only capture the needed metric in a local variable
+    val metric = metrics(name)
+    udf { () => { metric += 1; true } }.asNondeterministic().apply().expr
+  }
 }
 
 object DeleteCommand {
@@ -211,6 +220,7 @@ object DeleteCommand {
   }
 
   val FILE_NAME_COLUMN = "_input_file_name_"
+  val METRICS_COLUMN = "__metrics_column__"
 }
 
 /**

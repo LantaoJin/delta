@@ -73,7 +73,6 @@ case class UpdateWithJoinCommand(
 
   override lazy val metrics = Map[String, SQLMetric](
     "numSourceRows" -> createMetric(sc, "number of source rows"),
-    "numRowsCopied" -> createMetric(sc, "number of target rows rewritten unmodified"),
     "numRowsUpdated" -> createMetric(sc, "number of updated rows"),
     "numFilesBeforeSkipping" -> createMetric(sc, "number of target files before skipping"),
     "numFilesAfterSkipping" -> createMetric(sc, "number of target files after skipping"),
@@ -118,7 +117,6 @@ case class UpdateWithJoinCommand(
           // Data change sizes
           filesAdded = metrics("numAddedFiles").value,
           filesRemoved = metrics("numRemovedFiles").value,
-          rowsCopied = metrics("numRowsCopied").value,
           rowsUpdated = metrics("numRowsUpdated").value)
         recordDeltaEvent(targetFileIndex.deltaLog, "delta.dml.update.stats", data = stats)
 
@@ -218,7 +216,6 @@ case class UpdateWithJoinCommand(
     // UDFs to update metrics
     val incrSourceRowCountExpr = makeMetricUpdateUDF("numSourceRows")
     val incrUpdatedCountExpr = makeMetricUpdateUDF("numRowsUpdated")
-    val incrNoopCountExpr = makeMetricUpdateUDF("numRowsCopied")
 
     // Apply left outer join to find matches . We are adding two boolean fields
     // with value `true`, one to each side of the join. Whether this field is null or not after
@@ -261,7 +258,7 @@ case class UpdateWithJoinCommand(
       matchedOutput2 = None,
       notMatchedCondition = None,
       notMatchedOutput = None,
-      noopCopyOutput = resolveOnJoinedPlan(target.output :+ Literal(false) :+ incrNoopCountExpr),
+      noopCopyOutput = resolveOnJoinedPlan(target.output :+ Literal(false) :+ Literal(true)),
       deleteRowOutput = resolveOnJoinedPlan(target.output :+ Literal(true) :+ Literal(true)),
       joinedAttributes = joinedPlan.output,
       joinedRowEncoder = joinedRowEncoder,
@@ -328,5 +325,4 @@ case class UpdateStats(
     // Data change sizes
     filesRemoved: Long,
     filesAdded: Long,
-    rowsCopied: Long,
     rowsUpdated: Long)

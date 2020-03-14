@@ -17,7 +17,6 @@
 package org.apache.spark.sql.delta.commands
 
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.sql.delta.{DeltaLog, DeltaOperations, DeltaTableUtils, OptimisticTransaction}
 import org.apache.spark.sql.delta.actions.{Action, AddFile}
 import org.apache.spark.sql.delta.files.{TahoeBatchFileIndex, TahoeFileIndex}
@@ -26,12 +25,15 @@ import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Expression, If, Literal}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.delta.util.AnalysisHelper
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.metric.SQLMetrics.createMetric
 import org.apache.spark.sql.functions.input_file_name
+import org.apache.spark.sql.functions.udf
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.BooleanType
 
 /**
@@ -48,7 +50,8 @@ case class UpdateCommand(
     target: LogicalPlan,
     updateExpressions: Seq[Expression],
     condition: Option[Expression])
-  extends RunnableCommand with DeltaCommand {
+  extends RunnableCommand with DeltaCommand with AnalysisHelper {
+  import UpdateCommand._
 
   override def innerChildren: Seq[QueryPlan[_]] = Seq(target)
 
@@ -57,7 +60,6 @@ case class UpdateCommand(
   override lazy val metrics = Map[String, SQLMetric](
     "numAddedFiles" -> createMetric(sc, "number of files added."),
     "numRemovedFiles" -> createMetric(sc, "number of files removed."),
-    "numRowsCopied" -> createMetric(sc, "number of rows rewritten unmodified"),
     "numRowsUpdated" -> createMetric(sc, "number of updated rows")
   )
 
@@ -203,13 +205,22 @@ case class UpdateCommand(
     val baseRelation = buildBaseRelation(
       spark, txn, "update", rootPath, inputLeafFiles, nameToAddFileMap)
     val newTarget = DeltaTableUtils.replaceFileIndex(target, baseRelation.location)
+
+    val incrUpdatedCountExpr = makeMetricUpdateUDF("numRowsUpdated")
+    val updateMetrics = If(condition, incrUpdatedCountExpr, Literal.TrueLiteral)
     val targetDf = Dataset.ofRows(spark, newTarget)
+      .withColumn(METRICS_COLUMN, new Column(Alias(updateMetrics, METRICS_COLUMN)()))
     val updatedDataFrame = {
-      val updatedColumns = buildUpdatedColumns(condition)
+      val updatedColumns = buildUpdatedColumns(condition) :+ col(METRICS_COLUMN)
       targetDf.select(updatedColumns: _*)
     }
-
     txn.writeFiles(updatedDataFrame)
+  }
+
+  private def makeMetricUpdateUDF(name: String): Expression = {
+    // only capture the needed metric in a local variable
+    val metric = metrics(name)
+    udf { () => { metric += 1; true } }.asNondeterministic().apply().expr
   }
 
   /**
@@ -226,6 +237,7 @@ case class UpdateCommand(
 
 object UpdateCommand {
   val FILE_NAME_COLUMN = "_input_file_name_"
+  val METRICS_COLUMN = "__metrics_column__"
 }
 
 /**

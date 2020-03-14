@@ -68,7 +68,6 @@ case class DeleteWithJoinCommand(
 
   override lazy val metrics = Map[String, SQLMetric](
     "numSourceRows" -> createMetric(sc, "number of source rows"),
-    "numRowsCopied" -> createMetric(sc, "number of target rows rewritten unmodified"),
     "numRowsDeleted" -> createMetric(sc, "number of deleted rows"),
     "numFilesBeforeSkipping" -> createMetric(sc, "number of target files before skipping"),
     "numFilesAfterSkipping" -> createMetric(sc, "number of target files after skipping"),
@@ -116,7 +115,6 @@ case class DeleteWithJoinCommand(
           // Data change sizes
           filesAdded = metrics("numAddedFiles").value,
           filesRemoved = metrics("numRemovedFiles").value,
-          rowsCopied = metrics("numRowsCopied").value,
           rowsDeleted = metrics("numRowsDeleted").value)
         recordDeltaEvent(targetFileIndex.deltaLog, "delta.dml.delete.stats", data = stats)
 
@@ -208,7 +206,6 @@ case class DeleteWithJoinCommand(
     // UDFs to delete metrics
     val incrSourceRowCountExpr = makeMetricDeleteUDF("numSourceRows")
     val incrDeletedCountExpr = makeMetricDeleteUDF("numRowsDeleted")
-    val incrNoopCountExpr = makeMetricDeleteUDF("numRowsCopied")
 
     val fileIndex = new TahoeBatchFileIndex(
       spark, "delete", filesToRewrite, targetDeltaLog, targetFileIndex.path, deltaTxn.snapshot)
@@ -259,7 +256,7 @@ case class DeleteWithJoinCommand(
       matchedOutput2 = None,
       notMatchedCondition = None,
       notMatchedOutput = None,
-      noopCopyOutput = resolveOnJoinedPlan(target.output :+ Literal(false) :+ incrNoopCountExpr),
+      noopCopyOutput = resolveOnJoinedPlan(target.output :+ Literal(false) :+ Literal(true)),
       deleteRowOutput = resolveOnJoinedPlan(target.output :+ Literal(true) :+ Literal(true)),
       joinedAttributes = joinedPlan.output,
       joinedRowEncoder = joinedRowEncoder,
@@ -324,5 +321,4 @@ case class DeleteStats(
     // Data change sizes
     filesRemoved: Long,
     filesAdded: Long,
-    rowsCopied: Long,
     rowsDeleted: Long)
