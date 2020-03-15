@@ -153,10 +153,11 @@ class SQLQuerySuite extends QueryTest
         checkKeywordsExist(
           sql("desc history target").filter("version = '2'").select("operationMetrics"),
           "numRemovedFiles -> 3", "numRowsDeleted -> 2", "numAddedFiles -> 1")
-        sql(
+        val df1 = sql(
           """
             |INSERT INTO TABLE target VALUES (1, 1)
             |""".stripMargin)
+        assert(df1.queryExecution.sparkPlan.metrics("numOutputRows").value == 1)
         sql(
           """
             |CREATE TABLE source (a INT, b STRING) USING parquet
@@ -182,10 +183,11 @@ class SQLQuerySuite extends QueryTest
         checkKeywordsExist(
           sql("desc history target").filter("version = '4'").select("operationMetrics"),
           "numRemovedFiles -> 1", "numRowsUpdated -> 1", "numAddedFiles -> 1", "numSourceRows -> 2")
-        sql(
+        val df2 = sql(
           """
             |INSERT INTO TABLE target VALUES (3, 3)
             |""".stripMargin)
+        assert(df2.queryExecution.sparkPlan.metrics("numOutputRows").value == 1)
         sql(
           """
             |DELETE t
@@ -212,7 +214,7 @@ class SQLQuerySuite extends QueryTest
     }
   }
 
-  test("test update delete metrics") {
+  test("test insert/update/delete metrics") {
     withSQLConf(DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
       withTable("target") {
         spark.range(5000).toDF("col").createOrReplaceTempView("test")
@@ -242,13 +244,14 @@ class SQLQuerySuite extends QueryTest
           "numRemovedFiles -> 2", "numRowsDeleted -> 500",
           "numAddedFiles -> 2", "numSourceRows -> 1")
         spark.range(5000, 8000).toDF("col").createOrReplaceTempView("test2")
-        sql(
+        val insertDf = sql(
           """
             |INSERT INTO target SELECT * FROM test2
             |""".stripMargin)
+        assert(insertDf.queryExecution.sparkPlan.metrics("numOutputRows").value == 3000)
         checkKeywordsExist(
-          sql("desc history target").filter("version = '3'").select("operationMetrics"),
-          "numFiles -> 2", "numOutputRows -> 3000")
+            sql("desc history target").filter("version = '3'").select("operationMetrics"),
+        "numFiles -> 2", "numOutputRows -> 3000")
         sql(
           """
             |UPDATE t

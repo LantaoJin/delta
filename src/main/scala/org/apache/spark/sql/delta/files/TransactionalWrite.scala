@@ -24,11 +24,11 @@ import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.schema._
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.{BasicWriteJobStatsTracker, FileFormatWriter, WriteJobStatsTracker}
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.{ArrayType, MapType, StructType}
 import org.apache.spark.util.SerializableConfiguration
 
@@ -101,7 +101,14 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
     partitionColumns
   }
 
-  def writeFiles(data: Dataset[_]): Seq[AddFile] = writeFiles(data, None, None)
+  def writeFiles(data: Dataset[_]): Seq[AddFile] =
+    writeFiles(data, None, isOptimize = false, Map.empty)
+
+  def writeFiles(data: Dataset[_], writeOptions: Option[DeltaOptions]): Seq[AddFile] =
+    writeFiles(data, writeOptions, isOptimize = false, Map.empty)
+
+  def writeFiles(data: Dataset[_], isOptimize: Boolean): Seq[AddFile] =
+    writeFiles(data, None, isOptimize = isOptimize, Map.empty)
 
   /**
    * Writes out the dataframe after performing schema validation. Returns a list of
@@ -110,7 +117,8 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
   def writeFiles(
       data: Dataset[_],
       writeOptions: Option[DeltaOptions],
-      sparkPlan: Option[SparkPlan] = None): Seq[AddFile] = {
+      isOptimize: Boolean,
+      metricsToExpose: Map[String, SQLMetric]): Seq[AddFile] = {
     hasWritten = true
 
     val spark = data.sparkSession
@@ -131,19 +139,16 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
         Map.empty,
         output)
 
-      val physicalPlan = sparkPlan match {
-        case Some(p) => p
-        case None => DeltaInvariantCheckerExec(queryExecution.executedPlan, invariants)
-      }
+      val physicalPlan = DeltaInvariantCheckerExec(queryExecution.executedPlan, invariants)
 
       val statsTrackers: ListBuffer[WriteJobStatsTracker] = ListBuffer()
+      val basicWriteJobStatsTracker = new BasicWriteJobStatsTracker(
+        new SerializableConfiguration(spark.sessionState.newHadoopConf()),
+        BasicWriteJobStatsTracker.metrics)
+      statsTrackers.append(basicWriteJobStatsTracker)
 
       if (spark.conf.get(DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED)) {
-        val basicWriteJobStatsTracker = new BasicWriteJobStatsTracker(
-          new SerializableConfiguration(spark.sessionState.newHadoopConf()),
-          BasicWriteJobStatsTracker.metrics)
         registerSQLMetrics(spark, basicWriteJobStatsTracker.metrics)
-        statsTrackers.append(basicWriteJobStatsTracker)
       }
 
       FileFormatWriter.write(
@@ -157,6 +162,11 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
         bucketSpec = snapshot.metadata.bucketSpec,
         statsTrackers = statsTrackers,
         options = Map.empty)
+
+      // after written, expose the metrics
+      basicWriteJobStatsTracker.metrics.foreach { kv =>
+        metricsToExpose.get(kv._1).foreach(s => s.merge(kv._2))
+      }
     }
 
     committer.addedStatuses

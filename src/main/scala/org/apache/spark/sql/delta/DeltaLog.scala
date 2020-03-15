@@ -26,6 +26,12 @@ import scala.util.Try
 import scala.util.control.NonFatal
 
 import com.databricks.spark.util.TagDefinitions._
+import com.google.common.cache.{CacheBuilder, RemovalListener, RemovalNotification}
+
+import org.apache.hadoop.fs.Path
+
+import org.apache.spark.SparkContext
+import org.apache.spark.sql._
 import org.apache.spark.sql.delta.actions._
 import org.apache.spark.sql.delta.commands.WriteIntoDelta
 import org.apache.spark.sql.delta.files.{TahoeBatchFileIndex, TahoeLogFileIndex}
@@ -33,18 +39,14 @@ import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.schema.SchemaUtils
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.storage.LogStoreProvider
-import com.google.common.cache.{CacheBuilder, RemovalListener, RemovalNotification}
-import org.apache.hadoop.fs.Path
-import org.apache.spark.SparkContext
-import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Expression, In, InSet, Literal}
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper
-import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.sources.{BaseRelation, InsertableRelation}
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.util.{Clock, SystemClock, ThreadUtils}
@@ -674,7 +676,10 @@ class DeltaLog private(
         case Some(t) => t.properties ++ snapshotToUse.metadata.format.options
         case None => snapshotToUse.metadata.format.options
       })(spark) with InsertableRelation {
-      override def insert(data: DataFrame, overwrite: Boolean): Unit = {
+      override def insert(
+          data: DataFrame,
+          overwrite: Boolean,
+          metrics: Map[String, SQLMetric]): Unit = {
         val mode = if (overwrite) SaveMode.Overwrite else SaveMode.Append
         WriteIntoDelta(
           deltaLog = DeltaLog.this,
@@ -684,19 +689,7 @@ class DeltaLog private(
           configuration = Map.empty,
           data = data,
           catalogTable = table,
-          sparkPlan = None).run(spark)
-      }
-      override def insert(data: DataFrame, overwrite: Boolean, sparkPlan: SparkPlan): Unit = {
-        val mode = if (overwrite) SaveMode.Overwrite else SaveMode.Append
-        WriteIntoDelta(
-          deltaLog = DeltaLog.this,
-          mode = mode,
-          new DeltaOptions(Map.empty[String, String], spark.sessionState.conf),
-          partitionColumns = Seq.empty,
-          configuration = Map.empty,
-          data = data,
-          catalogTable = table,
-          sparkPlan = Some(sparkPlan)).run(spark)
+          metricsToExpose = metrics).run(spark)
       }
     }
   }

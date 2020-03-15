@@ -22,9 +22,8 @@ import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.{Action, AddFile}
 import org.apache.spark.sql.delta.schema.ImplicitMetadataOperation
-import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.command.RunnableCommand
-import org.apache.spark.sql.execution.datasources.LogicalRelation
+import org.apache.spark.sql.execution.metric.SQLMetric
 
 /**
  * Used to write a [[DataFrame]] into a delta table.
@@ -52,7 +51,7 @@ case class WriteIntoDelta(
     configuration: Map[String, String],
     data: DataFrame,
     catalogTable: Option[CatalogTable] = None,
-    sparkPlan: Option[SparkPlan] = None)
+    metricsToExpose: Map[String, SQLMetric] = Map.empty)
   extends RunnableCommand
   with ImplicitMetadataOperation
   with DeltaCommand {
@@ -106,7 +105,7 @@ case class WriteIntoDelta(
       deltaLog.fs.mkdirs(deltaLog.logPath)
     }
 
-    val newFiles = txn.writeFiles(data, Some(options), sparkPlan)
+    val newFiles = txn.writeFiles(data, Some(options), isOptimize = false, metricsToExpose)
     val deletedFiles = (mode, partitionFilters) match {
       case (SaveMode.Overwrite, None) =>
         txn.filterFiles().map(_.remove)
