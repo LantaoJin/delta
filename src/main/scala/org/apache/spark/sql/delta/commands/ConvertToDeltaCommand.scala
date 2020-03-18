@@ -70,8 +70,9 @@ abstract class ConvertToDeltaCommandBase(
     deltaPath: Option[String],
     properties: Map[String, String] = Map.empty) extends RunnableCommand with DeltaCommand {
 
-  lazy val partitionColNames : Seq[String] = partitionSchema.map(_.fieldNames.toSeq).getOrElse(Nil)
-  lazy val partitionFields : Seq[StructField] = partitionSchema.map(_.fields.toSeq).getOrElse(Nil)
+  var partitionColNames: Seq[String] = Nil
+  var partitionFields: Seq[StructField] = Nil
+
   val timestampPartitionPattern = "yyyy-MM-dd HH:mm:ss[.S]"
 
   override def run(spark: SparkSession): Seq[Row] = {
@@ -206,29 +207,39 @@ abstract class ConvertToDeltaCommandBase(
     fileListResultDf.cache()
     def fileListResult = fileListResultDf.toLocalIterator()
 
+    var numFiles = 0L
+    var dataSchema: StructType = StructType(Seq())
     try {
       if (!fileListResult.hasNext) {
-        throw DeltaErrors.emptyDirectoryException(qualifiedDir)
-      }
-
-      val schemaBatchSize =
-        spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_IMPORT_BATCH_SIZE_SCHEMA_INFERENCE)
-      var dataSchema: StructType = StructType(Seq())
-      var numFiles = 0L
-      fileListResult.asScala.grouped(schemaBatchSize).foreach { batch =>
-        numFiles += batch.size
-        // Obtain a union schema from all files.
-        // Here we explicitly mark the inferred schema nullable. This also means we don't currently
-        // support specifying non-nullable columns after the table conversion.
-        val batchSchema =
+        if (convertProperties.catalogTable.isDefined) {
+          val tableSchema = convertProperties.catalogTable.get.dataSchema
+          dataSchema = SchemaUtils.mergeSchemas(dataSchema, tableSchema)
+        } else {
+          throw DeltaErrors.emptyDirectoryException(qualifiedDir)
+        }
+      } else {
+        val schemaBatchSize =
+          spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_IMPORT_BATCH_SIZE_SCHEMA_INFERENCE)
+        fileListResult.asScala.grouped(schemaBatchSize).foreach { batch =>
+          numFiles += batch.size
+          // Obtain a union schema from all files.
+          // Here we explicitly mark the inferred schema nullable.
+          // This also means we don't currently
+          // support specifying non-nullable columns after the table conversion.
+          val batchSchema =
           recordDeltaOperation(txn.deltaLog, "delta.convert.schemaInference") {
             mergeSchemasInParallel(spark, batch.map(_.toFileStatus))
               .getOrElse(
                 throw new RuntimeException("Failed to infer schema from the given list of files."))
           }.asNullable
-        dataSchema = SchemaUtils.mergeSchemas(dataSchema, batchSchema)
+          dataSchema = SchemaUtils.mergeSchemas(dataSchema, batchSchema)
+        }
       }
 
+      partitionColNames = partitionSchema.map(_.fieldNames.toSeq).getOrElse(
+        convertProperties.catalogTable.map(_.partitionSchema.fieldNames.toSeq).getOrElse(Nil))
+      partitionFields = partitionSchema.map(_.fields.toSeq).getOrElse(
+        convertProperties.catalogTable.map(_.partitionSchema.fields.toSeq).getOrElse(Nil))
       val schema = constructTableSchema(spark, dataSchema, partitionFields)
       val metadata = Metadata(schemaString = schema.json, partitionColumns = partitionColNames,
         bucketSpec = convertProperties.catalogTable.flatMap(_.bucketSpec))

@@ -25,6 +25,7 @@ import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 
 class SQLQuerySuite extends QueryTest
   with SharedSparkSession with DeltaSQLCommandTest with SQLTestUtils {
+  import testImplicits._
 
   test("test statistics") {
     withSQLConf(SQLConf.AUTO_SIZE_UPDATE_ENABLED.key -> "true",
@@ -279,6 +280,61 @@ class SQLQuerySuite extends QueryTest
           sql("desc history target").filter("version = '6'").select("operationMetrics"),
           "numRemovedFiles -> 2", "numRowsDeleted -> 7500", "numAddedFiles -> 0")
       }
+    }
+  }
+
+  test("convert an empty table to delta") {
+    def verifyUpdateDelete(tableName: String): Unit = {
+      sql(
+        s"""
+          |DESC $tableName
+          |""".stripMargin).show
+      sql(
+        s"""
+          |INSERT INTO $tableName VALUES (4, "4")
+          |""".stripMargin)
+      sql(
+        s"""
+          |UPDATE $tableName SET col1 = "0" WHERE id % 2 = 0
+          |""".stripMargin)
+      sql(
+        s"""
+          |DELETE FROM $tableName WHERE id % 2 = 0
+          |""".stripMargin)
+      checkAnswer(sql(s"SELECT * FROM $tableName"), Nil)
+    }
+    withTable("target", "empty", "part") {
+      (1 to 3).map(x => (x, x.toString)).toDF("id", "col1").createOrReplaceTempView("source")
+      sql(
+        """
+          |CREATE TABLE target LIKE source
+          |""".stripMargin)
+      sql(
+        """
+          |CONVERT TO DELTA target
+          |""".stripMargin)
+      verifyUpdateDelete("target")
+      sql(
+        """
+          |CREATE TABLE empty (id int, col1 string)
+          |USING parquet
+          |""".stripMargin)
+      sql(
+        """
+          |CONVERT TO DELTA empty
+          |""".stripMargin)
+      verifyUpdateDelete("empty")
+      sql(
+        """
+          |CREATE TABLE part (id int, col1 string)
+          |USING parquet
+          |PARTITIONED BY (col1)
+          |""".stripMargin)
+      sql(
+        """
+          |CONVERT TO DELTA part
+          |""".stripMargin)
+      verifyUpdateDelete("part")
     }
   }
 }
