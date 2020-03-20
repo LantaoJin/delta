@@ -18,7 +18,7 @@ package io.delta.sql.analysis
 
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.{GetColumnByOrdinal, UnresolvedAttribute, UnresolvedExtractValue, caseInsensitiveResolution, withPosition}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Cast, CurrentDate, CurrentTimestamp, Expression, ExtractValue}
+import org.apache.spark.sql.catalyst.expressions.{Alias, And, Attribute, AttributeReference, BinaryComparison, Cast, CurrentDate, CurrentTimestamp, EqualTo, Expression, ExtractValue, IsNotNull}
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.toPrettySQL
@@ -46,16 +46,25 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
       val columns = resolvedAssignments.map(_.key.asInstanceOf[Attribute])
       val values = resolvedAssignments.map(_.value)
       val resolvedUpdateCondition = condition.map(resolveExpression(_, u))
-      // todo (lajin) we can use assignments.forall(_.foldable) after change to
-      // 'override def foldable: Boolean = value.foldable' in class Assignment in Spark
-      if (condition.isEmpty && values.forall(_.foldable)) {
-        // update with join with no condition equals condition is true
-        // if SET expressions are all foldable, skip join and fallback to simple update
+
+      if (resolvedUpdateCondition.isEmpty && values.forall(_.foldable)) {
+        // If join condition is empty and SET expressions are all foldable,
+        // skip join and fallback to simple update
+        logInfo(s"Update conditions are empty with foldable SET clause, fallback to simple update")
         UpdateTable(target, columns, values, resolvedUpdateCondition)
       } else {
         val updateActions = UpdateTable.toActionFromAssignments(resolvedAssignments)
         val actions = DeltaMergeIntoUpdateClause(resolvedUpdateCondition, updateActions)
-        UpdateWithJoinTable(target, source, columns, values, resolvedUpdateCondition, actions)
+        source match {
+          case _: Join =>
+            // if the source contains Join, we should fill the join criteria
+            val withFilter = extractPredicatesOnlyInSource(source, resolvedUpdateCondition.get)
+              .map(Filter(_, source)).getOrElse(source)
+            UpdateWithJoinTable(target, withFilter, columns, values,
+              resolvedUpdateCondition, actions)
+          case _ =>
+            UpdateWithJoinTable(target, source, columns, values, resolvedUpdateCondition, actions)
+        }
       }
 
     case d @ DeleteFromStatement(table, condition, None)
@@ -69,7 +78,15 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
       checkTargetTable(target)
       val resolvedDeleteCondition = condition.map(resolveExpression(_, d))
       val actions = DeltaMergeIntoDeleteClause(resolvedDeleteCondition)
-      DeleteWithJoinTable(target, source, resolvedDeleteCondition, actions)
+      source match {
+        case _: Join =>
+          // if the source contains Join, we should fill the join criteria
+          val withFilter = extractPredicatesOnlyInSource(source, resolvedDeleteCondition.get)
+            .map(Filter(_, source)).getOrElse(source)
+          DeleteWithJoinTable(target, withFilter, resolvedDeleteCondition, actions)
+        case _ =>
+          DeleteWithJoinTable(target, source, resolvedDeleteCondition, actions)
+      }
 
 //    case m @ MergeIntoTableStatement(targetTable, sourceTable,
 //        mergeCondition, matchedActions, notMatchedActions)
@@ -169,4 +186,83 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
         throw DeltaErrors.cannotUpdateAViewException(t.identifier)
     }
   }
+
+  /**
+   * Join criteria may cross target and source, this method extracts the join criteria
+   * and conditions which only related to source.
+   *
+   * For example:
+   * In below query, t1 is target, t2 is source.
+   * This method return (t2.id < 100).
+   *   Update t1
+   *   FROM t1, t2
+   *   WHERE t1.id = t2.id and t2.id < 100
+   *
+   * In below query, t1 is target, t2 join t3 is source.
+   * This method return (t2.id = t3.id), (t2.id < 100).
+   *   Update t1
+   *   FROM t2, t3, t1
+   *   WHERE t1.id = t2.id and t2.id = t3.id and t2.id < 100
+   *
+   * This method will infer and return (t2.id = t3.id), (t2.id < 100).
+   *   Update t1
+   *   FROM t2, t3, t1
+   *   WHERE t1.id = t2.id and t1.id = t3.id and t2.id < 100
+   */
+  private def extractPredicatesOnlyInSource(
+      source: LogicalPlan, predicates: Expression): Option[Expression] = {
+    val split = splitConjunctivePredicates(predicates)
+    val inferred = inferAdditionalConstraints(split.toSet)
+    val (predicatesInSourceOnly, predicatesContainsNonSource) = inferred.partition {
+      case BinaryComparison(left: AttributeReference, right: AttributeReference) =>
+        source.outputSet.contains(left) && source.outputSet.contains(right)
+      case BinaryComparison(left: AttributeReference, right: AttributeReference) =>
+        source.outputSet.contains(left) && source.outputSet.contains(right)
+      case BinaryComparison(left: AttributeReference, _) =>
+        source.outputSet.contains(left)
+      case BinaryComparison(_, right: AttributeReference) =>
+        source.outputSet.contains(right)
+      case _ => false
+    }
+    predicatesInSourceOnly.reduceLeftOption(And)
+  }
+
+  private def splitConjunctivePredicates(condition: Expression): Seq[Expression] = {
+    condition match {
+      case And(cond1, cond2) =>
+        splitConjunctivePredicates(cond1) ++ splitConjunctivePredicates(cond2)
+      case other => other :: Nil
+    }
+  }
+
+  /**
+   * Copied from [[QueryPlanConstraints]]
+   * Infers an additional set of constraints from a given set of equality constraints.
+   * For e.g., if an operator has constraints of the form (`a = 5`, `a = b`), this returns an
+   * additional constraint of the form `b = 5`.
+   */
+  private def inferAdditionalConstraints(constraints: Set[Expression]): Set[Expression] = {
+    var inferredConstraints = Set.empty[Expression]
+    // IsNotNull should be constructed by `constructIsNotNullConstraints`.
+    val predicates = constraints.filterNot(_.isInstanceOf[IsNotNull])
+    predicates.foreach {
+      case eq @ EqualTo(l: Attribute, r: Attribute) =>
+        val candidateConstraints = predicates - eq
+        inferredConstraints ++= replaceConstraints(candidateConstraints, l, r)
+        inferredConstraints ++= replaceConstraints(candidateConstraints, r, l)
+      case eq @ EqualTo(l @ Cast(_: Attribute, _, _, _), r: Attribute) =>
+        inferredConstraints ++= replaceConstraints(predicates - eq, r, l)
+      case eq @ EqualTo(l: Attribute, r @ Cast(_: Attribute, _, _, _)) =>
+        inferredConstraints ++= replaceConstraints(predicates - eq, l, r)
+      case _ => // No inference
+    }
+    inferredConstraints -- constraints
+  }
+
+  private def replaceConstraints(
+      constraints: Set[Expression],
+      source: Expression,
+      destination: Expression): Set[Expression] = constraints.map(_ transform {
+    case e: Expression if e.semanticEquals(source) => destination
+  })
 }
