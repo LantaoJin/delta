@@ -16,20 +16,20 @@
 
 package org.apache.spark.sql.delta.commands
 
+import org.apache.hadoop.fs.Path
+
+import org.apache.spark.sql.{AnalysisException, Column, Dataset, Row, SparkSession}
+import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.analysis.{Analyzer, EliminateSubqueryAliases, NoSuchTableException, UnresolvedRelation}
+import org.apache.spark.sql.catalyst.expressions.{Expression, SubqueryExpression}
+import org.apache.spark.sql.catalyst.parser.ParseException
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.delta.{DeltaLog, OptimisticTransaction}
 import org.apache.spark.sql.delta.actions.{AddFile, RemoveFile}
 import org.apache.spark.sql.delta.files.TahoeBatchFileIndex
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.sources.DeltaSourceUtils
 import org.apache.spark.sql.delta.util.DeltaFileOperations
-import org.apache.hadoop.fs.Path
-
-import org.apache.spark.sql.{AnalysisException, SparkSession}
-import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.{Analyzer, EliminateSubqueryAliases, NoSuchTableException, UnresolvedRelation}
-import org.apache.spark.sql.catalyst.expressions.{Expression, SubqueryExpression}
-import org.apache.spark.sql.catalyst.parser.ParseException
-import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, LogicalRelation}
 
 /**
@@ -200,5 +200,24 @@ trait DeltaCommand extends DeltaLogging {
     val provider = tableIdent.database.getOrElse("")
     // If db doesnt exist or db is called delta/tahoe then check if path exists
     DeltaSourceUtils.isDeltaDataSourceName(provider) && new Path(tableIdent.table).isAbsolute
+  }
+
+  protected def repartitionByBucketing(
+      target: LogicalPlan, outputDF: Dataset[Row]): Dataset[Row] = {
+    val catalogTable = target.collectFirst {
+      case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
+    }
+    catalogTable match {
+      case Some(table) =>
+        table.bucketSpec match {
+          case Some(spec) =>
+            outputDF.repartition(spec.numBuckets, spec.bucketColumnNames.map(new Column(_)): _*)
+              .orderBy(spec.sortColumnNames.map(new Column(_)): _*)
+          case None =>
+            outputDF
+        }
+      case None =>
+        outputDF
+    }
   }
 }

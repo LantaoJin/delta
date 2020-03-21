@@ -267,7 +267,7 @@ case class DeleteWithJoinCommand(
     logDebug("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
 
     // Write to Delta
-    val newFiles = deltaTxn.writeFiles(outputDF)
+    val newFiles = deltaTxn.writeFiles(repartitionByBucketing(target, outputDF))
     metrics("numAddedFiles") += newFiles.size
     newFiles
   }

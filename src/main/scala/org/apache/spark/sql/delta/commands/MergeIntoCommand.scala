@@ -283,7 +283,7 @@ case class MergeIntoCommand(
     val insertDf = sourceDF.join(targetDF, new Column(condition), "leftanti")
       .select(outputCols: _*)
 
-    val newFiles = deltaTxn.writeFiles(insertDf)
+    val newFiles = deltaTxn.writeFiles(repartitionByBucketing(target, insertDf))
     metrics("numTargetFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
     metrics("numTargetFilesAfterSkipping") += dataSkippedFiles.size
     metrics("numTargetFilesRemoved") += 0
@@ -384,7 +384,7 @@ case class MergeIntoCommand(
     logDebug("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
 
     // Write to Delta
-    val newFiles = deltaTxn.writeFiles(outputDF)
+    val newFiles = deltaTxn.writeFiles(repartitionByBucketing(target, outputDF))
     metrics("numTargetFilesAdded") += newFiles.size
     newFiles
   }
