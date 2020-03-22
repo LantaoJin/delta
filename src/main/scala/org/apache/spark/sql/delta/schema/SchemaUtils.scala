@@ -33,6 +33,7 @@ object SchemaUtils {
   private val ARRAY_ELEMENT_INDEX = 0
   private val MAP_KEY_INDEX = 0
   private val MAP_VALUE_INDEX = 1
+  val METRICS_COLUMN = "__metrics_column__"
 
   /**
    * Finds `StructField`s that match a given check `f`. Returns the path to the column, and the
@@ -211,7 +212,7 @@ object SchemaUtils {
       val baseFields = toFieldMap(baseSchema)
       val aliasExpressions = dataSchema.map { field =>
         val originalCase = baseFields.getOrElse(field.name,
-          if (field.name == "__metrics_column__") {
+          if (field.name == METRICS_COLUMN) {
             field
           } else {
             throw new AnalysisException(

@@ -25,6 +25,7 @@ import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Expression, If, Literal}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.delta.schema.SchemaUtils
 import org.apache.spark.sql.delta.util.AnalysisHelper
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
@@ -208,13 +209,13 @@ case class UpdateCommand(
 
     val incrUpdatedCountExpr = makeMetricUpdateUDF("numRowsUpdated")
     val updateMetrics = If(condition, incrUpdatedCountExpr, Literal.TrueLiteral)
-    val targetDf = Dataset.ofRows(spark, newTarget)
-      .withColumn(METRICS_COLUMN, new Column(Alias(updateMetrics, METRICS_COLUMN)()))
+    val targetDf = Dataset.ofRows(spark, newTarget).withColumn(
+      SchemaUtils.METRICS_COLUMN, new Column(Alias(updateMetrics, SchemaUtils.METRICS_COLUMN)()))
     val updatedDataFrame = {
-      val updatedColumns = buildUpdatedColumns(condition) :+ col(METRICS_COLUMN)
+      val updatedColumns = buildUpdatedColumns(condition) :+ col(SchemaUtils.METRICS_COLUMN)
       targetDf.select(updatedColumns: _*)
     }
-    txn.writeFiles(updatedDataFrame)
+    txn.writeFiles(repartitionByBucketing(target, updatedDataFrame))
   }
 
   private def makeMetricUpdateUDF(name: String): Expression = {
@@ -237,7 +238,6 @@ case class UpdateCommand(
 
 object UpdateCommand {
   val FILE_NAME_COLUMN = "_input_file_name_"
-  val METRICS_COLUMN = "__metrics_column__"
 }
 
 /**

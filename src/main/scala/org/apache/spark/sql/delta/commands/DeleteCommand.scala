@@ -22,7 +22,7 @@ import org.apache.spark.sql.delta.files.{TahoeBatchFileIndex, TahoeFileIndex}
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
-import org.apache.spark.sql.catalyst.expressions.{EqualNullSafe, Expression, InputFileName, Not}
+import org.apache.spark.sql.catalyst.expressions.{EqualNullSafe, Expression, InputFileName, Literal, Not}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.{Delete, LogicalPlan}
 import org.apache.spark.sql.execution.SQLExecution
@@ -31,6 +31,7 @@ import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.metric.SQLMetrics.createMetric
 import org.apache.spark.sql.functions.udf
+import org.apache.spark.sql.types.BooleanType
 
 /**
  * Performs a Delete based on the search condition
@@ -128,6 +129,11 @@ case class DeleteCommand(
           // that only involves the affected files instead of all files.
           val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex)
           val data = Dataset.ofRows(sparkSession, newTarget)
+          val deletedRowCount = metrics("numRowsDeleted")
+          val deletedRowUdf = udf { () =>
+            deletedRowCount += 1
+            true
+          }.asNondeterministic()
           val filesToRewrite =
             withStatusCode("DELTA",
                 s"Finding $numTouchedFiles files to rewrite for DELETE operation") {
@@ -135,7 +141,9 @@ case class DeleteCommand(
                 Array.empty[String]
               } else {
                 // InputFileName() has problem when spark.sql.files.scan.multiThread.enabled=true
-                data.filter(new Column(cond)).select(new Column(InputFileName())).distinct()
+                data.filter(new Column(cond))
+                  .filter(deletedRowUdf())
+                  .select(new Column(InputFileName())).distinct()
                   .as[String].collect()
               }
             }.filter(_.nonEmpty)
@@ -154,14 +162,13 @@ case class DeleteCommand(
             // that only involves the affected files instead of all files.
             val newTarget = DeltaTableUtils.replaceFileIndex(target, baseRelation.location)
 
-            val incrDeletedCountExpr = makeMetricUpdateUDF("numRowsDeleted")
             val targetDF = Dataset.ofRows(sparkSession, newTarget)
-            val filterCond = Not(EqualNullSafe(cond, incrDeletedCountExpr))
+            val filterCond = Not(EqualNullSafe(cond, Literal(true, BooleanType)))
             val updatedDF = targetDF.filter(new Column(filterCond))
 
             val rewrittenFiles = withStatusCode(
               "DELTA", s"Rewriting ${filesToRewrite.size} files for DELETE operation") {
-              txn.writeFiles(updatedDF)
+              txn.writeFiles(updatedDF) // no need to repartitionByBucketing(target, updatedDF))
             }
 
             numRewrittenFiles = rewrittenFiles.size
@@ -200,12 +207,6 @@ case class DeleteCommand(
         rewriteTimeMs)
     )
   }
-
-  private def makeMetricUpdateUDF(name: String): Expression = {
-    // only capture the needed metric in a local variable
-    val metric = metrics(name)
-    udf { () => { metric += 1; true } }.asNondeterministic().apply().expr
-  }
 }
 
 object DeleteCommand {
@@ -220,7 +221,6 @@ object DeleteCommand {
   }
 
   val FILE_NAME_COLUMN = "_input_file_name_"
-  val METRICS_COLUMN = "__metrics_column__"
 }
 
 /**
