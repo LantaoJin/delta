@@ -18,7 +18,7 @@ package io.delta.sql.analysis
 
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.{GetColumnByOrdinal, UnresolvedAttribute, UnresolvedExtractValue, caseInsensitiveResolution, withPosition}
-import org.apache.spark.sql.catalyst.expressions.{Alias, And, Attribute, AttributeReference, BinaryComparison, Cast, CurrentDate, CurrentTimestamp, EqualTo, Expression, ExtractValue, IsNotNull}
+import org.apache.spark.sql.catalyst.expressions.{Alias, And, Attribute, Cast, CurrentDate, CurrentTimestamp, EqualTo, Expression, ExtractValue, IsNotNull}
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.toPrettySQL
@@ -214,14 +214,7 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
     val split = splitConjunctivePredicates(predicates)
     val inferred = inferAdditionalConstraints(split.toSet)
     val (predicatesInSourceOnly, predicatesContainsNonSource) = inferred.partition {
-      case BinaryComparison(left: AttributeReference, right: AttributeReference) =>
-        source.outputSet.contains(left) && source.outputSet.contains(right)
-      case BinaryComparison(left: AttributeReference, right: AttributeReference) =>
-        source.outputSet.contains(left) && source.outputSet.contains(right)
-      case BinaryComparison(left: AttributeReference, _) =>
-        source.outputSet.contains(left)
-      case BinaryComparison(_, right: AttributeReference) =>
-        source.outputSet.contains(right)
+      case expr: Expression => expr.references.subsetOf(source.outputSet)
       case _ => false
     }
     predicatesInSourceOnly.reduceLeftOption(And)
@@ -246,13 +239,13 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
     // IsNotNull should be constructed by `constructIsNotNullConstraints`.
     val predicates = constraints.filterNot(_.isInstanceOf[IsNotNull])
     predicates.foreach {
-      case eq @ EqualTo(l: Attribute, r: Attribute) =>
+      case eq @ EqualTo(l: Expression, r: Expression) =>
         val candidateConstraints = predicates - eq
         inferredConstraints ++= replaceConstraints(candidateConstraints, l, r)
         inferredConstraints ++= replaceConstraints(candidateConstraints, r, l)
-      case eq @ EqualTo(l @ Cast(_: Attribute, _, _, _), r: Attribute) =>
+      case eq @ EqualTo(l @ Cast(_: Expression, _, _, _), r: Expression) =>
         inferredConstraints ++= replaceConstraints(predicates - eq, r, l)
-      case eq @ EqualTo(l: Attribute, r @ Cast(_: Attribute, _, _, _)) =>
+      case eq @ EqualTo(l: Expression, r @ Cast(_: Expression, _, _, _)) =>
         inferredConstraints ++= replaceConstraints(predicates - eq, l, r)
       case _ => // No inference
     }
