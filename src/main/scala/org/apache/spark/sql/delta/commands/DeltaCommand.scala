@@ -212,7 +212,7 @@ trait DeltaCommand extends DeltaLogging {
         table.bucketSpec match {
           case Some(spec) =>
             outputDF.repartition(spec.numBuckets, spec.bucketColumnNames.map(new Column(_)): _*)
-              .orderBy(spec.sortColumnNames.map(new Column(_)): _*)
+              .sortWithinPartitions(spec.sortColumnNames.map(new Column(_)): _*)
           case None =>
             outputDF
         }
