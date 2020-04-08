@@ -262,12 +262,12 @@ case class DeleteWithJoinCommand(
       joinedRowEncoder = joinedRowEncoder,
       outputRowEncoder = outputRowEncoder)
 
-    val outputDF =
-      Dataset.ofRows(spark, joinedPlan).mapPartitions(processor.processPartition)(outputRowEncoder)
-    logDebug("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
+    val outputDF = repartitionByBucketing(target,
+      Dataset.ofRows(spark, joinedPlan).mapPartitions(processor.processPartition)(outputRowEncoder))
+    logInfo("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
 
     // Write to Delta
-    val newFiles = deltaTxn.writeFiles(repartitionByBucketing(target, outputDF))
+    val newFiles = deltaTxn.writeFiles(outputDF)
     metrics("numAddedFiles") += newFiles.size
     newFiles
   }

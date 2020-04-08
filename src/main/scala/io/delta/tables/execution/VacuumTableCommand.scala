@@ -22,7 +22,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.delta.{DeltaErrors, DeltaLog, DeltaTableIdentifier, DeltaTableUtils}
 import org.apache.spark.sql.delta.commands.VacuumCommand
-import org.apache.spark.sql.delta.services.DeltaTableMetadata
+import org.apache.spark.sql.delta.services.{DeltaTableMetadata, UpdateDeltaEvent}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.execution.command.{CommandUtils, RunnableCommand}
 import org.apache.spark.sql.types.StringType
@@ -95,17 +95,21 @@ case class VacuumTableCommand(
       pathToVacuum,
       vacuum = true,
       horizonHours.getOrElse(7 * 24D).toLong)
-    val res = DeltaTableMetadata.updateMetadataTable(spark, metadata)
-    if (res) {
-      logInfo(s"Update ${table.identifier} in delta metadata table")
+    if (spark.sessionState.conf.getConf(DeltaSQLConf.META_TABLE_CRUD_ASYNC)) {
+      spark.sharedState.externalCatalog.postToAll(UpdateDeltaEvent(metadata))
     } else {
-      logWarning(
-        s"""
-           |${DeltaSQLConf.META_TABLE_IDENTIFIER.key} may not be created.
-           |Skip to store delta metadata to ${DeltaTableMetadata.deltaMetaTableIdentifier(spark)}.
-           |This is triggered by command:\n
-           |VACUUM ${table.identifier} (RETAIN number HOURS)? AUTO RUN;
-           |""".stripMargin)
+      val res = DeltaTableMetadata.updateMetadataTable(spark, metadata)
+      if (res) {
+        logInfo(s"Update ${table.identifier} in delta metadata table")
+      } else {
+        logWarning(
+          s"""
+             |${DeltaSQLConf.META_TABLE_IDENTIFIER.key} may not be created.
+             |Skip to store delta metadata to ${DeltaTableMetadata.deltaMetaTableIdentifier(spark)}.
+             |This is triggered by command:\n
+             |VACUUM ${table.identifier} (RETAIN number HOURS)? AUTO RUN;
+             |""".stripMargin)
+      }
     }
   }
 }

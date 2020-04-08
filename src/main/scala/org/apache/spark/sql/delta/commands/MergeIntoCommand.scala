@@ -280,10 +280,10 @@ case class MergeIntoCommand(
     val targetDF = Dataset.ofRows(
       spark, buildTargetPlanWithFiles(deltaTxn, dataSkippedFiles))
 
-    val insertDf = sourceDF.join(targetDF, new Column(condition), "leftanti")
-      .select(outputCols: _*)
+    val insertDf = repartitionByBucketing(target,
+      sourceDF.join(targetDF, new Column(condition), "leftanti").select(outputCols: _*))
 
-    val newFiles = deltaTxn.writeFiles(repartitionByBucketing(target, insertDf))
+    val newFiles = deltaTxn.writeFiles(insertDf)
     metrics("numTargetFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
     metrics("numTargetFilesAfterSkipping") += dataSkippedFiles.size
     metrics("numTargetFilesRemoved") += 0
@@ -379,12 +379,12 @@ case class MergeIntoCommand(
       joinedRowEncoder = joinedRowEncoder,
       outputRowEncoder = outputRowEncoder)
 
-    val outputDF =
-      Dataset.ofRows(spark, joinedPlan).mapPartitions(processor.processPartition)(outputRowEncoder)
-    logDebug("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
+    val outputDF = repartitionByBucketing(target,
+      Dataset.ofRows(spark, joinedPlan).mapPartitions(processor.processPartition)(outputRowEncoder))
+    logInfo("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
 
     // Write to Delta
-    val newFiles = deltaTxn.writeFiles(repartitionByBucketing(target, outputDF))
+    val newFiles = deltaTxn.writeFiles(outputDF)
     metrics("numTargetFilesAdded") += newFiles.size
     newFiles
   }

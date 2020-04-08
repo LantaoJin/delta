@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.{QualifiedTableName, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogUtils}
 import org.apache.spark.sql.catalyst.analysis.Analyzer
 import org.apache.spark.sql.catalyst.expressions.Cast
-import org.apache.spark.sql.delta.services.DeltaTableMetadata
+import org.apache.spark.sql.delta.services.{ConvertToDeltaEvent, DeltaTableMetadata}
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetToSparkSchemaConverter}
 import org.apache.spark.sql.internal.SQLConf
@@ -553,18 +553,23 @@ abstract class ConvertToDeltaCommandBase(
         convertProperties.targetDir,
         vacuum,
         horizonHours.getOrElse(7 * 24))
-      val res = DeltaTableMetadata.insertIntoMetadataTable(spark, metadata)
-      if (res) {
-        logInfo(s"Insert ${table.identifier} into delta metadata table")
+      if (spark.sessionState.conf.getConf(DeltaSQLConf.META_TABLE_CRUD_ASYNC)) {
+        spark.sharedState.externalCatalog.postToAll(ConvertToDeltaEvent(metadata))
       } else {
-        logWarning(
-          s"""
-             |${DeltaSQLConf.META_TABLE_IDENTIFIER.key} may not be created.
-             |Skip to store delta metadata to ${DeltaTableMetadata.deltaMetaTableIdentifier(spark)}.
-             |This is triggered by command:\n
-             |CONVERT TO DELTA ${table.identifier} ${if (vacuum) "VACUUM" else ""}
-             |${if (horizonHours.isDefined) s" RETAIN ${horizonHours.get} HOURS" else ""}
-             |""".stripMargin)
+        val res = DeltaTableMetadata.insertIntoMetadataTable(spark, metadata)
+        if (res) {
+          logInfo(s"Insert ${table.identifier} into delta metadata table")
+        } else {
+          logWarning(
+            s"""
+               |${DeltaSQLConf.META_TABLE_IDENTIFIER.key} may not be created.
+               | Skip to store delta metadata to
+               | ${DeltaTableMetadata.deltaMetaTableIdentifier(spark)}.
+               | This is triggered by command:\n
+               |CONVERT TO DELTA ${table.identifier} ${if (vacuum) "VACUUM" else ""}
+               |${if (horizonHours.isDefined) s" RETAIN ${horizonHours.get} HOURS" else ""}
+               |""".stripMargin)
+        }
       }
     }
   }

@@ -20,10 +20,18 @@ import org.apache.spark.sql.{QueryTest, Row}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 import org.apache.spark.sql.execution.datasources.IndexUtils
+import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 
 class AutoVacuumSuite extends QueryTest
     with SharedSparkSession with DeltaSQLCommandTest with SQLTestUtils {
+
+  override def afterEach(): Unit = {
+    super.afterEach()
+    sys.props("spark.testing") = "false"
+    spark.sparkContext.conf.set(DeltaSQLConf.AUTO_VACUUM_ENABLED, false)
+    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_CRUD_ASYNC, false)
+  }
 
   val DELTA_META_TABLE_NAME = "default.test_carmel_delta_tables"
 
@@ -40,8 +48,9 @@ class AutoVacuumSuite extends QueryTest
 
   test("test auto vacuum and show deltas") {
     sys.props("spark.testing") = "true"
+    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_CRUD_ASYNC, false)
     spark.sparkContext.conf.set(DeltaSQLConf.AUTO_VACUUM_ENABLED, true)
-    spark.sessionState.conf.setConf(DeltaSQLConf.META_TABLE_IDENTIFIER, DELTA_META_TABLE_NAME)
+    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_IDENTIFIER, DELTA_META_TABLE_NAME)
     withTempDir{ dir =>
       withTable(s"$DELTA_META_TABLE_NAME") {
         sql(
@@ -59,12 +68,11 @@ class AutoVacuumSuite extends QueryTest
              |INSERT INTO TABLE $DELTA_META_TABLE_NAME
              |VALUES ('default', 'tbl', 'user', 'path', true, 24)
              |""".stripMargin)
+        val mgr = new AutoVacuum(spark.sparkContext)
         sql(
           s"""
              |CONVERT TO DELTA $DELTA_META_TABLE_NAME
-
              |""".stripMargin)
-        val mgr = new AutoVacuum(spark.sparkContext)
         Thread.sleep(2000) // wait vacuum threads completed
         val all = mgr.vacuuming.keys.toSeq
         // only store the records which field vacuum is true
@@ -93,6 +101,117 @@ class AutoVacuumSuite extends QueryTest
             Row("default", "test_carmel_delta_tables", "",
               s"${IndexUtils.removeEndPathSep(dir.toURI.toString)}", true, 200L))
         )
+      }
+    }
+  }
+
+  test("test auto vacuum and show deltas async") {
+    sys.props("spark.testing") = "true"
+    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_CRUD_ASYNC, true)
+    spark.sparkContext.conf.set(DeltaSQLConf.AUTO_VACUUM_ENABLED, true)
+    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_IDENTIFIER, DELTA_META_TABLE_NAME)
+    withTempDir{ dir =>
+      withTable(s"$DELTA_META_TABLE_NAME") {
+        sql(
+          s"""
+             |${DELTA_META_TABLE_CREATION_SQL}
+             |LOCATION '$dir'
+             |""".stripMargin)
+        sql(
+          s"""
+             |INSERT INTO TABLE $DELTA_META_TABLE_NAME
+             |VALUES ('db1', 'tbl1', 'user1', 'path1', false, 7 * 24)
+             |""".stripMargin)
+        sql(
+          s"""
+             |INSERT INTO TABLE $DELTA_META_TABLE_NAME
+             |VALUES ('default', 'tbl', 'user', 'path', true, 24)
+             |""".stripMargin)
+        spark.sparkContext.conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS,
+          "io.delta.sql.DeltaSparkSessionExtension")
+        val mgr = new AutoVacuum(spark.sparkContext)
+        sql(
+          s"""
+             |CONVERT TO DELTA $DELTA_META_TABLE_NAME
+             |""".stripMargin)
+        Thread.sleep(2000) // wait vacuuming threads completed
+        val all = mgr.vacuuming.keys.toSeq
+        // only store the records which field vacuum is true
+        assert(
+          !all.contains(DeltaTableMetadata("db1", "tbl1", "user1", "path1", false, 168L)))
+        assert(
+          all.contains(DeltaTableMetadata("default", "tbl", "user", "path", true, 24L)))
+        mgr.stopAll()
+
+        checkAnswer(
+          sql("SHOW DELTAS"),
+          Seq(
+            Row("db1", "tbl1", "user1", "path1", false, 168L),
+            Row("default", "tbl", "user", "path", true, 24L),
+            Row("default", "test_carmel_delta_tables", "",
+              s"${IndexUtils.removeEndPathSep(dir.toURI.toString)}", false, 168L))
+        )
+
+        sql(s"VACUUM $DELTA_META_TABLE_NAME RETAIN 200 HOURS AUTO RUN")
+        Thread.sleep(1000) // wait updating META_TABLE async
+        sql("SHOW DELTAS").show()
+        checkAnswer(
+          sql("SHOW DELTAS"),
+          Seq(
+            Row("db1", "tbl1", "user1", "path1", false, 168L),
+            Row("default", "tbl", "user", "path", true, 24L),
+            Row("default", "test_carmel_delta_tables", "",
+              s"${IndexUtils.removeEndPathSep(dir.toURI.toString)}", true, 200L))
+        )
+      }
+    }
+  }
+
+  test("test rename and drop delta for metadata table") {
+    sys.props("spark.testing") = "true"
+    spark.sparkContext.conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS,
+      "io.delta.sql.DeltaSparkSessionExtension")
+    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_CRUD_ASYNC, true)
+    spark.sparkContext.conf.set(DeltaSQLConf.AUTO_VACUUM_ENABLED, false)
+    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_IDENTIFIER, DELTA_META_TABLE_NAME)
+    withTempPaths(numPaths = 2) { case Seq(dir, dir1) =>
+      withTable(s"$DELTA_META_TABLE_NAME") {
+        sql(
+          s"""
+             |${DELTA_META_TABLE_CREATION_SQL}
+             |LOCATION '$dir'
+             |""".stripMargin)
+        sql(
+          s"""
+             |CONVERT TO DELTA $DELTA_META_TABLE_NAME
+             |""".stripMargin)
+        sql(
+          s"""
+            |CREATE TABLE delta1(id INT) USING parquet
+            |LOCATION '$dir1'
+            |""".stripMargin)
+        sql(
+          """
+            |CONVERT TO DELTA delta1
+            |""".stripMargin)
+        Thread.sleep(3000)
+        checkAnswer(
+          sql("SHOW DELTAS"),
+          Row("default", "delta1", "",
+            s"${IndexUtils.removeEndPathSep(dir1.toURI.toString)}", false, 168L) ::
+          Row("default", "test_carmel_delta_tables", "",
+            s"${IndexUtils.removeEndPathSep(dir.toURI.toString)}", false, 168L) :: Nil)
+        sql(
+          """
+            |ALTER TABLE delta1 RENAME TO delta2
+            |""".stripMargin)
+        Thread.sleep(3000)
+        checkAnswer(
+          sql("SHOW DELTAS"),
+          Row("default", "delta2", "",
+            s"${IndexUtils.removeEndPathSep(dir1.toURI.toString)}", false, 168L) ::
+          Row("default", "test_carmel_delta_tables", "",
+            s"${IndexUtils.removeEndPathSep(dir.toURI.toString)}", false, 168L) :: Nil)
       }
     }
   }

@@ -253,4 +253,9 @@ object DeltaSQLConf {
     .doc("The interval of delta table validator thread is scheduled.")
     .timeConf(TimeUnit.SECONDS)
     .createWithDefault(30 * 60) // 30 minutes by default
+
+  val META_TABLE_CRUD_ASYNC = buildStaticConf("metaTable.crud.async")
+    .doc("Try execute CRUD on meta table async.")
+    .booleanConf
+    .createWithDefault(true)
 }

@@ -27,7 +27,11 @@ import org.apache.spark.sql.delta.sources.DeltaSQLConf
  */
 case class DeltaTableMetadata(
     db: String, tbl: String, maker: String, path: String,
-    vacuum: Boolean, retention: Long = 7 * 24) extends Ordered [DeltaTableMetadata] {
+    vacuum: Boolean, retention: Long = 7 * 24L) extends Ordered [DeltaTableMetadata] {
+
+  def this(db: String, tbl: String) {
+    this(db, tbl, "", "", false)
+  }
 
   override def hashCode: scala.Int = {
     31 * db.hashCode() + tbl.hashCode()
@@ -82,13 +86,13 @@ object DeltaTableMetadata extends Logging {
   /**
    * SELECT * FROM DELTA_META_TABLE
    */
-  def selectFromMetadataTable(spark: SparkSession): Iterable[DeltaTableMetadata] = iterableCatch {
+  def listMetadataTables(spark: SparkSession): Iterable[DeltaTableMetadata] = iterableCatch {
     import spark.implicits._
     val sqlText =
       s"""
          |SELECT * FROM ${deltaMetaTableIdentifier(spark)}
          |""".stripMargin
-    logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
+    logDebug(s"DeltaTableMetadata API execute: \n $sqlText")
     val df = spark.sql(sqlText)
     df.as[DeltaTableMetadata].collect()
   }
@@ -101,9 +105,34 @@ object DeltaTableMetadata extends Logging {
       s"""
          |SELECT * FROM ${deltaMetaTableIdentifier(spark)}
          |""".stripMargin
-    logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
+    logDebug(s"DeltaTableMetadata API execute: \n $sqlText")
     val df = spark.sql(sqlText)
     df.collect()
+  }
+
+  /**
+   * SELECT * FROM DELTA_META_TABLE WHERE db=database and tbl=tablename
+   */
+  def selectFromMetadataTable(
+      spark: SparkSession, metadata: DeltaTableMetadata): Option[DeltaTableMetadata] = {
+    import spark.implicits._
+    val sqlText =
+      s"""
+         |SELECT * FROM ${deltaMetaTableIdentifier(spark)}
+         |WHERE
+         |${toWheres(metadata)}
+         |""".stripMargin
+    logDebug(s"DeltaTableMetadata API execute: \n $sqlText")
+    val df = spark.sql(sqlText)
+    df.as[DeltaTableMetadata].collect().headOption
+  }
+
+  /**
+   * Check delta table exists in DELTA_META_TABLE
+   */
+  def metadataTableExists(
+      spark: SparkSession, metadata: DeltaTableMetadata): Boolean = booleanCatch {
+    selectFromMetadataTable(spark, metadata).nonEmpty
   }
 
   /**
@@ -118,6 +147,7 @@ object DeltaTableMetadata extends Logging {
         |""".stripMargin
     logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
     spark.sql(sqlText)
+    true
   }
 
   /**
@@ -135,6 +165,27 @@ object DeltaTableMetadata extends Logging {
          |""".stripMargin
     logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
     spark.sql(sqlText)
+    true
+  }
+
+  /**
+   * UPDATE DELTA_META_TABLE VALUES
+   */
+  def updateMetadataTable(
+      spark: SparkSession,
+      metadata: DeltaTableMetadata,
+      search: DeltaTableMetadata): Boolean = booleanCatch {
+    val sqlText =
+      s"""
+         |UPDATE ${deltaMetaTableIdentifier(spark)}
+         |SET
+         |${toSets(metadata)}
+         |WHERE
+         |${toWheres(search)}
+         |""".stripMargin
+    logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
+    spark.sql(sqlText)
+    true
   }
 
   /**
@@ -150,16 +201,16 @@ object DeltaTableMetadata extends Logging {
          |""".stripMargin
     logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
     spark.sql(sqlText)
+    true
   }
 
   def asMetadata(table: TableIdentifier): DeltaTableMetadata = {
-    DeltaTableMetadata(table.database.getOrElse(""), table.table, null, null, false)
+    new DeltaTableMetadata(table.database.getOrElse(""), table.table)
   }
 
-  private def booleanCatch(f: => Unit): Boolean = {
+  private def booleanCatch(f: => Boolean): Boolean = {
     try {
       f
-      true
     } catch {
       case e: Throwable =>
         logWarning("", e)

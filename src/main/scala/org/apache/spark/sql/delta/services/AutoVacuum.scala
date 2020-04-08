@@ -28,7 +28,53 @@ import org.apache.spark.sql.delta.DeltaTableUtils
 import org.apache.spark.sql.delta.services.DeltaTableMetadata._
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.execution.QueryExecution
+import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.util.{ThreadUtils, Utils}
+
+class AutoVacuum(ctx: SparkContext) extends Logging {
+
+  private lazy val validate = new ValidateTask(ctx.getConf)
+
+  val started: Boolean = {
+    // add delta listener only delta enabled
+    if (ctx.getConf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS)
+        .contains("io.delta.sql.DeltaSparkSessionExtension")) {
+      ctx.addSparkListener(new DeltaTableListener)
+    }
+    // DELTA_AUTO_VACUUM_ENABLED is true only in reserved queue
+    if (ctx.getConf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
+      val currentQueue = ctx.getConf.get("spark.yarn.queue", "")
+      if (!currentQueue.contains("test") || !currentQueue.contains("reserved")) {
+        logWarning(s"WARNING!!! Delta auto vacuum function should only enable in reserved queue," +
+          s" current queue is $currentQueue. " +
+          s"Please set ${DeltaSQLConf.AUTO_VACUUM_ENABLED.key} to false.")
+      }
+
+      /**
+       * Delta table validation check task from [DELTA_META_TABLE].
+       * If we find a new delta table contains auto vacuum settings, add it to vacuumer thread pool.
+       * If we find a old delta table is expired, remove it from vacuumer thread pool and
+       * delete it from [DELTA_META_TABLE].
+       */
+      val validatorInterval = ctx.getConf.get(DeltaSQLConf.VALIDATOR_INTERVAL)
+      val initialDelay = if (Utils.isTesting) 0 else 300 // 5 min
+      val validator = ThreadUtils.newDaemonSingleThreadScheduledExecutor("delta-table-validator")
+      validator.scheduleWithFixedDelay(validate, initialDelay, validatorInterval, TimeUnit.SECONDS)
+      true
+    } else {
+      false
+    }
+  }
+
+  private[sql] def vacuuming: mutable.Map[DeltaTableMetadata, ScheduledFuture[_]] = {
+    validate.vacuuming
+  }
+
+  def stopAll(): Unit = {
+    vacuuming.values.foreach(_.cancel(true))
+    vacuuming.clear()
+  }
+}
 
 /**
  * Vacuum a delta table periodically.
@@ -53,7 +99,6 @@ class VacuumTask(table: DeltaTableMetadata) extends Runnable {
 class ValidateTask(conf: SparkConf) extends Runnable with Logging {
 
   private val spark = SparkSession.getDefaultSession.get
-  import spark.implicits._
 
   // visible for testing, vacuum entity -> future
   private[sql] lazy val vacuuming =
@@ -63,7 +108,7 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
     ThreadUtils.newDaemonFixedThreadScheduledExecutor(16, "delta-auto-vacuum-pool")
 
   override def run(): Unit = {
-    selectFromMetadataTable(spark).foreach { meta =>
+    listMetadataTables(spark).foreach { meta =>
       if (DeltaTableUtils.isDeltaTable(spark, meta.identifier) || Utils.isTesting) {
         if (vacuuming.contains(meta)) {
           if (meta.vacuum) {
@@ -106,45 +151,5 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
     } else {
       logWarning(s"Failed to delete expired ${meta.toString} from $deltaMetaTable")
     }
-  }
-}
-
-class AutoVacuum(ctx: SparkContext) extends Logging {
-
-  private lazy val validate = new ValidateTask(ctx.conf)
-
-  val started: Boolean = {
-    // DELTA_AUTO_VACUUM_ENABLED is true only in reserved queue
-    if (ctx.conf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
-      val currentQueue = ctx.conf.get("spark.yarn.queue", "")
-      if (!currentQueue.contains("test") || !currentQueue.contains("reserved")) {
-        logWarning(s"WARNING!!! Delta auto vacuum function should only enable in reserved queue," +
-          s" current queue is $currentQueue. " +
-          s"Please set ${DeltaSQLConf.AUTO_VACUUM_ENABLED.key} to false.")
-      }
-
-      /**
-       * Delta table validation check task from [DELTA_META_TABLE].
-       * If we find a new delta table contains auto vacuum settings, add it to vacuumer thread pool.
-       * If we find a old delta table is expired, remove it from vacuumer thread pool and
-       * delete it from [DELTA_META_TABLE].
-       */
-      val validatorInterval = ctx.conf.get(DeltaSQLConf.VALIDATOR_INTERVAL)
-      val initialDelay = if (Utils.isTesting) 0 else 300 // 5 min
-      val validator = ThreadUtils.newDaemonSingleThreadScheduledExecutor("delta-table-validator")
-      validator.scheduleWithFixedDelay(validate, initialDelay, validatorInterval, TimeUnit.SECONDS)
-      true
-    } else {
-      false
-    }
-  }
-
-  private[sql] def vacuuming: mutable.Map[DeltaTableMetadata, ScheduledFuture[_]] = {
-    validate.vacuuming
-  }
-
-  def stopAll(): Unit = {
-    vacuuming.values.foreach(_.cancel(true))
-    vacuuming.clear()
   }
 }
