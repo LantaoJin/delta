@@ -18,7 +18,7 @@ package io.delta.sql.analysis
 
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.{GetColumnByOrdinal, UnresolvedAttribute, UnresolvedExtractValue, caseInsensitiveResolution, withPosition}
-import org.apache.spark.sql.catalyst.expressions.{Alias, And, Attribute, Cast, CurrentDate, CurrentTimestamp, EqualTo, Expression, ExtractValue, IsNotNull}
+import org.apache.spark.sql.catalyst.expressions.{Alias, And, Attribute, Cast, CurrentDate, CurrentTimestamp, EqualTo, Expression, ExtractValue, IsNotNull, NamedExpression}
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.toPrettySQL
@@ -60,10 +60,15 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
             // if the source contains Join, we should fill the join criteria
             val withFilter = extractPredicatesOnlyInSource(source, resolvedUpdateCondition.get)
               .map(Filter(_, source)).getOrElse(source)
-            UpdateWithJoinTable(target, withFilter, columns, values,
-              resolvedUpdateCondition, actions)
+            val withProject =
+              projectionForSource(withFilter, resolvedUpdateCondition, columns, values)
+            UpdateWithJoinTable(
+              target, withProject, columns, values, resolvedUpdateCondition, actions)
           case _ =>
-            UpdateWithJoinTable(target, source, columns, values, resolvedUpdateCondition, actions)
+            val withProject =
+              projectionForSource(source, resolvedUpdateCondition, columns, values)
+            UpdateWithJoinTable(
+              target, withProject, columns, values, resolvedUpdateCondition, actions)
         }
       }
 
@@ -83,9 +88,11 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
           // if the source contains Join, we should fill the join criteria
           val withFilter = extractPredicatesOnlyInSource(source, resolvedDeleteCondition.get)
             .map(Filter(_, source)).getOrElse(source)
-          DeleteWithJoinTable(target, withFilter, resolvedDeleteCondition, actions)
+          val withProject = projectionForSource(withFilter, resolvedDeleteCondition)
+          DeleteWithJoinTable(target, withProject, resolvedDeleteCondition, actions)
         case _ =>
-          DeleteWithJoinTable(target, source, resolvedDeleteCondition, actions)
+          val withProject = projectionForSource(source, resolvedDeleteCondition)
+          DeleteWithJoinTable(target, withProject, resolvedDeleteCondition, actions)
       }
 
 //    case m @ MergeIntoTableStatement(targetTable, sourceTable,
@@ -250,6 +257,20 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
       case _ => // No inference
     }
     inferredConstraints -- constraints
+  }
+
+  private def projectionForSource(
+      source: LogicalPlan,
+      condition: Option[Expression],
+      columns: Seq[NamedExpression] = Nil,
+      values: Seq[Expression] = Nil): LogicalPlan = {
+    val attributesInCondition =
+      condition.map(splitConjunctivePredicates(_).flatMap(_.references.toSeq)).toSet.flatten
+    val attributesInValues =
+      values.map(splitConjunctivePredicates(_).flatMap(_.references.toSeq)).toSet.flatten
+    val all = attributesInCondition ++ attributesInValues ++ columns.toSet
+    val attributesInSource = all.filter(source.outputSet.contains(_)).toSeq
+    Project(attributesInSource, source)
   }
 
   private def replaceConstraints(

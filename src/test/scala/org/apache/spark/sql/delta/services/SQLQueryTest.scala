@@ -337,4 +337,62 @@ class SQLQuerySuite extends QueryTest
       verifyUpdateDelete("part")
     }
   }
+
+  test("reduce columns before join") {
+    withTable("target", "source") {
+      sql(
+        """
+          |CREATE TABLE target (col1 INT, col2 INT) USING parquet
+          |""".stripMargin)
+      sql(
+        """
+          |INSERT INTO TABLE target VALUES (1, 1)
+          |""".stripMargin)
+      sql(
+        """
+          |INSERT INTO TABLE target VALUES (2, 2)
+          |""".stripMargin)
+      sql(
+        """
+          |INSERT INTO TABLE target VALUES (3, 3)
+          |""".stripMargin)
+      sql(
+        """
+          |CONVERT TO DELTA target
+          |""".stripMargin)
+      sql(
+        """
+          |CREATE TABLE source (a INT, b STRING, c INT, d STRING) USING parquet
+          |""".stripMargin)
+      sql(
+        """
+          |INSERT INTO TABLE source VALUES (2, "2000", 20, "hello")
+          |""".stripMargin)
+      sql(
+        """
+          |INSERT INTO TABLE source VALUES (3, "3000", 30, "world")
+          |""".stripMargin)
+      sql(
+        s"""
+           |UPDATE t
+           |FROM target t, source s
+           |SET t.col2 = (t.col2 + s.c)
+           |WHERE t.col1 = s.a
+           |""".stripMargin)
+      checkAnswer(
+        sql("SELECT * FROM target"),
+        Row(1, 1) :: Row(2, 22) :: Row(3, 33) :: Nil
+      )
+      sql(
+        s"""
+           |DELETE t
+           |FROM target t, source s
+           |WHERE t.col1 = s.a
+           |""".stripMargin)
+      checkAnswer(
+        sql("SELECT * FROM target"),
+        Row(1, 1) :: Nil
+      )
+    }
+  }
 }
