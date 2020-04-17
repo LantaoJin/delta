@@ -685,7 +685,7 @@ class DeltaLog private(
           deltaLog = DeltaLog.this,
           mode = mode,
           new DeltaOptions(Map.empty[String, String], spark.sessionState.conf),
-          partitionColumns = Seq.empty,
+          partitionColumns = partitionSchema.map(_.name),
           configuration = Map.empty,
           data = data,
           catalogTable = table,
