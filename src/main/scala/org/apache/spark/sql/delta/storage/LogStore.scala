@@ -94,6 +94,8 @@ trait LogStore {
    * Any LogStore implementation should override this instead of relying on the default.
    */
   def isPartialWriteVisible(path: Path): Boolean = true
+
+  def delete(paths: Traversable[Path]): Unit
 }
 
 object LogStore extends LogStoreProvider

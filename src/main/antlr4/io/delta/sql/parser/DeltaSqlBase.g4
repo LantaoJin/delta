@@ -82,6 +82,9 @@ statement
         (PARTITIONED BY '(' colTypeList ')')?
         (VACUUM (RETAIN number HOURS)?)?                                #convert
     | SHOW DELTAS                                                       #showDeltas
+    | ROLLBACK table=qualifiedName AT
+        (VERSION EQ version=INTEGER_VALUE |
+        TIMESTAMP EQ timestamp=STRING)                                  #rollback
     | .*?                                                               #passThrough
     ;
 
@@ -129,6 +132,7 @@ nonReserved
     | DESC | DESCRIBE | LIMIT | DETAIL
     | GENERATE | FOR | TABLE
     | SHOW | DELTAS
+    | ROLLBACK | AT | VERSION | TIMESTAMP | EQ
     ;
 
 // Define how the keywords above should appear in a user's SQL statement.
@@ -157,6 +161,11 @@ TO: 'TO';
 VACUUM: 'VACUUM';
 SHOW: 'SHOW';
 DELTAS: 'DELTAS';
+ROLLBACK: 'ROLLBACK';
+VERSION: 'VERSION';
+TIMESTAMP: 'TIMESTAMP';
+AT: 'AT';
+EQ  : '=' | '==';
 
 STRING
     : '\'' ( ~('\''|'\\') | ('\\' .) )* '\''

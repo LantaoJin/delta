@@ -305,4 +305,12 @@ object DeltaOperations {
      columnPath: Seq[String],
      column: StructField,
      colPosition: Option[String])
+
+  object Rollback extends Operation("Rollback") {
+    override val parameters: Map[String, Any] = Map.empty
+    override val operationMetrics: Seq[String] = Seq(
+      "numAddedFiles",
+      "numRemovedFiles"
+    )
+  }
 }

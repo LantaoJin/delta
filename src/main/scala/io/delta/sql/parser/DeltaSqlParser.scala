@@ -44,7 +44,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.sql.delta.commands.DeltaGenerateCommand
 import io.delta.sql.parser.DeltaSqlBaseParser._
-import io.delta.tables.execution.{DescribeDeltaHistoryCommand, ShowDeltasCommand, VacuumTableCommand}
+import io.delta.tables.execution.{DescribeDeltaHistoryCommand, ShowDeltasCommand, RollbackCommand, VacuumTableCommand}
 import org.antlr.v4.runtime._
 import org.antlr.v4.runtime.atn.PredictionMode
 import org.antlr.v4.runtime.misc.{Interval, ParseCancellationException}
@@ -257,6 +257,19 @@ class DeltaSqlAstBuilder extends DeltaSqlBaseBaseVisitor[AnyRef] {
         val dtStr = if (params.nonEmpty) s"$dt(${params.mkString(",")})" else dt
         throw new ParseException(s"DataType $dtStr is not supported.", ctx)
     }
+  }
+
+  override def visitRollback(ctx: RollbackContext): LogicalPlan = withOrigin(ctx) {
+    val timestamp = if (ctx.STRING() != null) Option(ctx.STRING.getText) else None
+    val version =
+      if (ctx.INTEGER_VALUE() != null) Option(ctx.INTEGER_VALUE.getText.toLong) else None
+    if (version.isDefined && version.get < 0) {
+      throw new ParseException("Version must be equal or greater than 0.", ctx)
+    }
+    RollbackCommand(
+      visitTableIdentifier(ctx.table),
+      timestamp,
+      version)
   }
 }
 

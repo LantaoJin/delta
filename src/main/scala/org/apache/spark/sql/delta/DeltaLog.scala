@@ -545,6 +545,11 @@ class DeltaLog private(
       }
     }
     val startVersion = checkpointVersion.getOrElse(-1L) + 1
+//    val startVersion = if (version == 0) {
+//      0
+//    } else {
+//      checkpointVersion.getOrElse(-1L) + 1
+//    }
     // Listing the files may be more efficient than getting the file status for each file
     val deltaData = store.listFrom(deltaFile(logPath, startVersion))
       .filter(f => isDeltaFile(f.getPath))
@@ -572,6 +577,12 @@ class DeltaLog private(
       minFileRetentionTimestamp,
       this,
       commitTimestamp.getOrElse(-1L))
+  }
+
+  def setCurrentSnapshot(newSnapshot: Snapshot): Unit = {
+    validateChecksum(newSnapshot)
+    currentSnapshot.uncache()
+    currentSnapshot = newSnapshot
   }
 
   /* ---------------------------------------- *

@@ -16,8 +16,8 @@
 
 package org.apache.spark.sql.delta.services
 
+import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerJobStart}
-import org.apache.spark.sql.{QueryTest, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
@@ -367,6 +367,79 @@ class SQLQuerySuite extends QueryTest
           |CONVERT TO DELTA part
           |""".stripMargin)
       verifyUpdateDelete("part")
+    }
+  }
+
+  test("test time travel rollback command") {
+    withSQLConf(DeltaSQLConf.RESOLVE_TIME_TRAVEL_ON_IDENTIFIER.key -> "true") {
+      withTable("test") {
+        withTempView("source") {
+          spark.range(0, 11).toDF("col").createOrReplaceTempView("source")
+          sql(
+            """
+              |CREATE TABLE test USING parquet AS SELECT col FROM source
+              |""".stripMargin)
+        }
+        sql(
+          """
+            |CONVERT TO DELTA test
+            |""".stripMargin)
+        // make sure we have two checkpoint files: 0 and 10
+        for (i <- 0 to 10) {
+          sql(
+            s"""
+              |DELETE FROM test WHERE col=$i
+              |""".stripMargin)
+        }
+        assert(sql("DESC HISTORY test").count() == 12)
+
+        sql(
+          """
+            |ROLLBACK test AT version=5
+            |""".stripMargin)
+        assert(sql("DESC HISTORY test").count() == 6)
+        checkAnswer(
+          sql("SELECT * FROM test"),
+          Row(5) :: Row(6) :: Row(7) :: Row(8) :: Row(9) :: Row(10) :: Nil
+        )
+
+        sql(
+          """
+            |ROLLBACK test AT version=0
+            |""".stripMargin)
+        assert(sql("DESC HISTORY test").count() == 1)
+        checkAnswer(
+          sql("SELECT * FROM test"),
+          Row(0) :: Row(1) :: Row(2) :: Row(3) :: Row(4) :: Row(5) ::
+          Row(6) :: Row(7) :: Row(8) :: Row(9) :: Row(10) :: Nil
+        )
+
+        // throws exception when rollback to a non-exists version
+        val e = intercept[AnalysisException](
+          sql(
+            """
+              |ROLLBACK test AT version=5
+              |""".stripMargin)
+        ).getMessage()
+        assert(e.contains("Rollback to invalid version 5"))
+
+        // we overwrite the version 5, then rollback
+        for (i <- 0 to 5) {
+          sql(
+            s"""
+               |DELETE FROM test WHERE col=$i * 2
+               |""".stripMargin)
+        }
+        sql(
+          """
+            |ROLLBACK test AT version=5
+            |""".stripMargin)
+        assert(sql("DESC HISTORY test").count() == 6)
+        checkAnswer(
+          sql("SELECT * FROM test"),
+          Row(1) ::  Row(3) :: Row(5) :: Row(7) :: Row(9) :: Row(10) :: Nil
+        )
+      }
     }
   }
 

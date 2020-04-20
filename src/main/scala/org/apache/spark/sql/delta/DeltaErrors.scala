@@ -636,7 +636,7 @@ object DeltaErrors
   }
 
   def timeTravelNotSupportedException: Throwable = {
-    new AnalysisException("Cannot time travel views, subqueries or streams.")
+    new AnalysisException("Time travel on delta table only.")
   }
 
   def multipleTimeTravelSyntaxUsed: Throwable = {
@@ -734,6 +734,10 @@ object DeltaErrors
 
   def cannotUpdateAViewException(tableIdentifier: TableIdentifier): Throwable = {
     new AnalysisException(s"Can not update a View $tableIdentifier.")
+  }
+
+  def rollbackToInvalidVersion(version: Long): Throwable = {
+    new AnalysisException(s"Rollback to invalid version $version.")
   }
 }
 
