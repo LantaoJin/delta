@@ -210,29 +210,28 @@ abstract class ConvertToDeltaCommandBase(
     var numFiles = 0L
     var dataSchema: StructType = StructType(Seq())
     try {
-      if (!fileListResult.hasNext) {
-        if (convertProperties.catalogTable.isDefined) {
-          val tableSchema = convertProperties.catalogTable.get.dataSchema
-          dataSchema = SchemaUtils.mergeSchemas(dataSchema, tableSchema)
-        } else {
-          throw DeltaErrors.emptyDirectoryException(qualifiedDir)
-        }
+      if (convertProperties.catalogTable.isDefined) {
+        val tableSchema = convertProperties.catalogTable.get.dataSchema
+        dataSchema = SchemaUtils.mergeSchemas(dataSchema, tableSchema)
       } else {
-        val schemaBatchSize =
-          spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_IMPORT_BATCH_SIZE_SCHEMA_INFERENCE)
-        fileListResult.asScala.grouped(schemaBatchSize).foreach { batch =>
-          numFiles += batch.size
-          // Obtain a union schema from all files.
-          // Here we explicitly mark the inferred schema nullable.
-          // This also means we don't currently
-          // support specifying non-nullable columns after the table conversion.
-          val batchSchema =
-          recordDeltaOperation(txn.deltaLog, "delta.convert.schemaInference") {
-            mergeSchemasInParallel(spark, batch.map(_.toFileStatus))
-              .getOrElse(
+        if (!fileListResult.hasNext) {
+          throw DeltaErrors.emptyDirectoryException(qualifiedDir)
+        } else {
+          val schemaBatchSize =
+            spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_IMPORT_BATCH_SIZE_SCHEMA_INFERENCE)
+          fileListResult.asScala.grouped(schemaBatchSize).foreach { batch =>
+            numFiles += batch.size
+            // Obtain a union schema from all files.
+            // Here we explicitly mark the inferred schema nullable.
+            // This also means we don't currently
+            // support specifying non-nullable columns after the table conversion.
+            val batchSchema =
+            recordDeltaOperation(txn.deltaLog, "delta.convert.schemaInference") {
+              mergeSchemasInParallel(spark, batch.map(_.toFileStatus)).getOrElse(
                 throw new RuntimeException("Failed to infer schema from the given list of files."))
-          }.asNullable
-          dataSchema = SchemaUtils.mergeSchemas(dataSchema, batchSchema)
+            }.asNullable
+            dataSchema = SchemaUtils.mergeSchemas(dataSchema, batchSchema)
+          }
         }
       }
 

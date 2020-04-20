@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.delta.services
 
+import org.apache.spark.scheduler.{SparkListener, SparkListenerJobStart}
 import org.apache.spark.sql.{QueryTest, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
@@ -26,6 +27,33 @@ import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 class SQLQuerySuite extends QueryTest
   with SharedSparkSession with DeltaSQLCommandTest with SQLTestUtils {
   import testImplicits._
+
+  test("test convert to delta without schema infer") {
+    withTable("test1") {
+      sql(
+        """
+          |CREATE TABLE test1 (col1 INT, col2 INT) USING parquet
+          |""".stripMargin)
+      for(i <- 0 to 50) {
+        sql(
+          s"""
+             |INSERT INTO TABLE test1 VALUES ($i, $i)
+             |""".stripMargin)
+      }
+
+      var numJobs = 0
+      val jobListener = new SparkListener() {
+        override def onJobStart(jobStart: SparkListenerJobStart): Unit = {
+          numJobs += 1
+        }
+      }
+      spark.sparkContext.addSparkListener(jobListener)
+      sql("CONVERT TO DELTA test1")
+      Thread.sleep(5000)
+      assert(numJobs > 0)
+      assert(numJobs < 5) // fail without patch CARMEL-2583
+    }
+  }
 
   test("test statistics") {
     withSQLConf(SQLConf.AUTO_SIZE_UPDATE_ENABLED.key -> "true",
@@ -218,67 +246,69 @@ class SQLQuerySuite extends QueryTest
   test("test insert/update/delete metrics") {
     withSQLConf(DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
       withTable("target") {
-        spark.range(5000).toDF("col").createOrReplaceTempView("test")
-        spark.range(1).toDF("col").createOrReplaceTempView("source")
-        sql(
-          """
-            |CREATE TABLE target USING parquet AS SELECT * FROM test
-            |""".stripMargin)
-        sql("CONVERT TO DELTA target")
-        sql(
-          """
-            |UPDATE target
-            |SET col = 0
-            |WHERE col % 10 = 0
-            |""".stripMargin)
-        checkKeywordsExist(
-          sql("desc history target").filter("version = '1'").select("operationMetrics"),
-          "numRemovedFiles -> 2", "numRowsUpdated -> 500", "numAddedFiles -> 2")
-        sql(
-          """
-            |DELETE t
-            |FROM target t, source s
-            |WHERE t.col = s.col
-            |""".stripMargin)
-        checkKeywordsExist(
-          sql("desc history target").filter("version = '2'").select("operationMetrics"),
-          "numRemovedFiles -> 2", "numRowsDeleted -> 500",
-          "numAddedFiles -> 2", "numSourceRows -> 1")
-        spark.range(5000, 8000).toDF("col").createOrReplaceTempView("test2")
-        val insertDf = sql(
-          """
-            |INSERT INTO target SELECT * FROM test2
-            |""".stripMargin)
-        assert(insertDf.queryExecution.sparkPlan.metrics("numOutputRows").value == 3000)
-        checkKeywordsExist(
+        withTempView("test", "test2", "source") {
+          spark.range(5000).toDF("col").createOrReplaceTempView("test")
+          spark.range(1).toDF("col").createOrReplaceTempView("source")
+          sql(
+            """
+              |CREATE TABLE target USING parquet AS SELECT * FROM test
+              |""".stripMargin)
+          sql("CONVERT TO DELTA target")
+          sql(
+            """
+              |UPDATE target
+              |SET col = 0
+              |WHERE col % 10 = 0
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '1'").select("operationMetrics"),
+            "numRemovedFiles -> 2", "numRowsUpdated -> 500", "numAddedFiles -> 2")
+          sql(
+            """
+              |DELETE t
+              |FROM target t, source s
+              |WHERE t.col = s.col
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '2'").select("operationMetrics"),
+            "numRemovedFiles -> 2", "numRowsDeleted -> 500",
+            "numAddedFiles -> 2", "numSourceRows -> 1")
+          spark.range(5000, 8000).toDF("col").createOrReplaceTempView("test2")
+          val insertDf = sql(
+            """
+              |INSERT INTO target SELECT * FROM test2
+              |""".stripMargin)
+          assert(insertDf.queryExecution.sparkPlan.metrics("numOutputRows").value == 3000)
+          checkKeywordsExist(
             sql("desc history target").filter("version = '3'").select("operationMetrics"),
-        "numFiles -> 2", "numOutputRows -> 3000")
-        sql(
-          """
-            |UPDATE t
-            |FROM target t, test2 s
-            |SET t.col = 0
-            |WHERE t.col = s.col
-            |""".stripMargin)
-        checkKeywordsExist(
-          sql("desc history target").filter("version = '4'").select("operationMetrics"),
-          "numRemovedFiles -> 2", "numRowsUpdated -> 3000",
-          "numAddedFiles -> 2", "numSourceRows -> 3000")
-        sql(
-          """
-            |UPDATE target
-            |SET col = 0
-            |""".stripMargin)
-        checkKeywordsExist(
-          sql("desc history target").filter("version = '5'").select("operationMetrics"),
-          "numRemovedFiles -> 4", "numRowsUpdated -> 7500", "numAddedFiles -> 2")
-        sql(
-          """
-            |DELETE FROM target
-            |""".stripMargin)
-        checkKeywordsExist(
-          sql("desc history target").filter("version = '6'").select("operationMetrics"),
-          "numRemovedFiles -> 2", "numRowsDeleted -> 7500", "numAddedFiles -> 0")
+            "numFiles -> 2", "numOutputRows -> 3000")
+          sql(
+            """
+              |UPDATE t
+              |FROM target t, test2 s
+              |SET t.col = 0
+              |WHERE t.col = s.col
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '4'").select("operationMetrics"),
+            "numRemovedFiles -> 2", "numRowsUpdated -> 3000",
+            "numAddedFiles -> 2", "numSourceRows -> 3000")
+          sql(
+            """
+              |UPDATE target
+              |SET col = 0
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '5'").select("operationMetrics"),
+            "numRemovedFiles -> 4", "numRowsUpdated -> 7500", "numAddedFiles -> 2")
+          sql(
+            """
+              |DELETE FROM target
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '6'").select("operationMetrics"),
+            "numRemovedFiles -> 2", "numRowsDeleted -> 7500", "numAddedFiles -> 0")
+        }
       }
     }
   }
@@ -304,11 +334,13 @@ class SQLQuerySuite extends QueryTest
       checkAnswer(sql(s"SELECT * FROM $tableName"), Nil)
     }
     withTable("target", "empty", "part") {
-      (1 to 3).map(x => (x, x.toString)).toDF("id", "col1").createOrReplaceTempView("source")
-      sql(
-        """
-          |CREATE TABLE target LIKE source
-          |""".stripMargin)
+      withTempView("source") {
+        (1 to 3).map(x => (x, x.toString)).toDF("id", "col1").createOrReplaceTempView("source")
+        sql(
+          """
+            |CREATE TABLE target LIKE source
+            |""".stripMargin)
+      }
       sql(
         """
           |CONVERT TO DELTA target
