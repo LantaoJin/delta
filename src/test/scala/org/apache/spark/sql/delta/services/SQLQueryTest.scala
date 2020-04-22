@@ -500,4 +500,83 @@ class SQLQuerySuite extends QueryTest
       )
     }
   }
+
+  test("resolve assignment keys when a field has same name in target and source") {
+    withTable("target", "source") {
+      sql(
+        """
+          |CREATE TABLE target (col1 INT, col2 STRING) USING parquet
+          |""".stripMargin)
+      sql("INSERT INTO target VALUES (1, 'A')")
+      sql(
+        """
+          |CREATE TABLE source (col1 INT, col2 STRING) USING parquet
+          |""".stripMargin)
+      sql("INSERT INTO source VALUES (1, 'B')")
+      sql(
+        """
+          |CONVERT TO DELTA target
+          |""".stripMargin)
+      sql( // simple update
+        """
+          |UPDATE target
+          |SET col2 = 'a'
+          |""".stripMargin)
+      checkAnswer(
+        sql("SELECT * FROM target"),
+        Row(1, "a") :: Nil
+      )
+      sql( // simple update
+        """
+          |UPDATE target
+          |SET target.col2 = 'b'
+          |""".stripMargin)
+      checkAnswer(
+        sql("SELECT * FROM target"),
+        Row(1, "b") :: Nil
+      )
+      sql( // simple update
+        """
+          |UPDATE target t
+          |SET col2 = 'c'
+          |WHERE col1 = 1
+          |""".stripMargin)
+      checkAnswer(
+        sql("SELECT * FROM target"),
+        Row(1, "c") :: Nil
+      )
+      sql( // simple update with alias
+        """
+          |UPDATE target t
+          |SET t.col2 = 'd'
+          |WHERE t.col1 = 1
+          |""".stripMargin)
+      checkAnswer(
+        sql("SELECT * FROM target"),
+        Row(1, "d") :: Nil
+      )
+      sql( // cross table update with "SET col2 ="
+        s"""
+           |UPDATE t
+           |FROM target t, source s
+           |SET col2 = CASE WHEN s.col2 IS NOT NULL THEN s.col2 ELSE t.col2 END
+           |WHERE t.col1 = s.col1
+           |""".stripMargin)
+      checkAnswer(
+        sql("SELECT * FROM target"),
+        Row(1, "B") :: Nil
+      )
+      sql( // cross table update with "SET t.col2 ="
+        s"""
+           |UPDATE t
+           |FROM target t, source s
+           |SET t.col2 = CASE WHEN s.col2 IS NOT NULL THEN s.col2 ELSE t.col2 END
+           |WHERE t.col1 = s.col1
+           |""".stripMargin)
+      checkAnswer(
+        sql("SELECT * FROM target"),
+        Row(1, "B") :: Nil
+      )
+    }
+  }
 }
