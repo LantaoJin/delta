@@ -443,6 +443,45 @@ class SQLQuerySuite extends QueryTest
     }
   }
 
+  test("test time travel rollback command on partition table") {
+    withTable("test1") {
+      withTempView("source") {
+        spark.range(0, 10).map(x => (x, (x % 2).toString)).toDF("id", "date")
+          .createOrReplaceTempView("source")
+        sql(
+          """
+            |CREATE TABLE test1(id INT, date STRING) USING parquet
+            |PARTITIONED BY (date)
+            |""".stripMargin)
+        sql(
+          """
+            |INSERT INTO test1 SELECT * FROM source
+            |""".stripMargin)
+        checkAnswer(
+          sql("SHOW PARTITIONS test1"),
+          Row("date=0") :: Row("date=1") :: Nil
+        )
+
+        sql("CONVERT TO DELTA test1")
+
+        for (i <- 10 to 22) {
+          sql(s"INSERT INTO test1 VALUES ($i, ${i.toString})")
+        }
+        checkAnswer(
+          sql("SELECT * FROM test1 WHERE date='10'"),
+          Row(10, "10") :: Nil
+        )
+
+        sql("ROLLBACK test1 AT version=0")
+        checkAnswer(sql("SELECT * FROM test1 WHERE date='10'"), Nil)
+        checkAnswer(
+          sql("SHOW PARTITIONS test1"),
+          Row("date=0") :: Row("date=1") :: Nil
+        )
+      }
+    }
+  }
+
   test("reduce columns before join") {
     withTable("target", "source") {
       sql(
