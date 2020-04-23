@@ -207,6 +207,19 @@ class Snapshot(
 
   protected def emptyActions =
     spark.createDataFrame(spark.sparkContext.emptyRDD[Row], logSchema).as[SingleAction]
+
+  def listPartitionNames: Seq[String] = {
+    val implicits = spark.implicits
+    import implicits._
+
+    val partitions =
+      allFiles.select("path", "partitionValues").join(
+        tombstones.select("path"), Seq("path"), "leftanti")
+        .select("partitionValues").as[Map[String, String]].collect().toSet
+    partitions.flatten.map {
+      case (key, value) => key + "=" + value
+    }.toSeq
+  }
 }
 
 object Snapshot extends DeltaLogging {

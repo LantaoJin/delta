@@ -764,6 +764,13 @@ object DeltaLog extends DeltaLogging {
   def forTable(spark: SparkSession, dataPath: Path, clock: Clock): DeltaLog = {
     apply(spark, new Path(dataPath, "_delta_log"), clock)
   }
+
+  /** Helper for creating a log when it stored at the root of the data. */
+  def forTable(spark: SparkSession, table: CatalogTable): DeltaLog = {
+    val dataPath = new Path(table.location)
+    apply(spark, new Path(dataPath, "_delta_log"), new SystemClock)
+  }
+
   // TODO: Don't assume the data path here.
   def apply(spark: SparkSession, rawPath: Path, clock: Clock = new SystemClock): DeltaLog = {
     val hadoopConf = spark.sessionState.newHadoopConf()
