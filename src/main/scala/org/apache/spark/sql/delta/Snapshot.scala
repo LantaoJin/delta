@@ -18,6 +18,7 @@ package org.apache.spark.sql.delta
 
 // scalastyle:off import.ordering.noEmptyLine
 import java.net.URI
+import java.util.TimeZone
 
 import org.apache.spark.sql.delta.actions._
 import org.apache.spark.sql.delta.actions.Action.logSchema
@@ -28,7 +29,9 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTablePartition, CatalogUtils, ExternalCatalogUtils}
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.plans.logical.Union
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, LogicalRelation}
 import org.apache.spark.sql.expressions.UserDefinedFunction
@@ -216,9 +219,49 @@ class Snapshot(
       allFiles.select("path", "partitionValues").join(
         tombstones.select("path"), Seq("path"), "leftanti")
         .select("partitionValues").as[Map[String, String]].collect().toSet
-    partitions.flatten.map {
-      case (key, value) => key + "=" + value
+    partitions.map { partitionKv =>
+      partitionKv.map {
+        case (key, value) => key + "=" + value
+      }.mkString("/")
+    }.toSeq.sorted
+  }
+
+  def listPartitions(table: CatalogTable): Seq[CatalogTablePartition] = {
+    val implicits = spark.implicits
+    import implicits._
+
+    val parentUri = Some(table.location)
+    val partitions =
+      allFiles.select("path", "partitionValues").join(
+        tombstones.select("path"), Seq("path"), "leftanti")
+        .select("partitionValues").as[Map[String, String]].collect().toSet
+    partitions.map { partitionKv =>
+      val tablePath = new Path(table.location)
+      val partitionPath = new Path(
+        tablePath,
+        partitionKv.map {
+          case (key, value) => key + "=" + value
+        }.mkString("/")
+      )
+      CatalogTablePartition(
+        spec = Option(partitionKv).getOrElse(Map.empty[String, String]),
+        storage = CatalogStorageFormat(
+          locationUri = Option(CatalogUtils.correctURIWithHost(partitionPath.toUri, parentUri)),
+          inputFormat = None,
+          outputFormat = None,
+          serde = None,
+          compressed = true,
+          properties = Map.empty),
+        parameters = Map.empty[String, String],
+        stats = None)
     }.toSeq
+  }
+
+  def listPartitionsByFilter(
+      table: CatalogTable, predicates: Seq[Expression]): Seq[CatalogTablePartition] = {
+    val allPartitions = listPartitions(table)
+    ExternalCatalogUtils.prunePartitionsByFilter(table, allPartitions, predicates,
+      TimeZone.getDefault.getID)
   }
 }
 
