@@ -29,6 +29,8 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.analysis.NoSuchPartitionException
+import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
 import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTablePartition, CatalogUtils, ExternalCatalogUtils}
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.catalyst.expressions.Expression
@@ -211,6 +213,13 @@ class Snapshot(
   protected def emptyActions =
     spark.createDataFrame(spark.sparkContext.emptyRDD[Row], logSchema).as[SingleAction]
 
+  /**
+   * List the names of all partitions that belong to the specified table, assuming it exists.
+   *
+   * A partial partition spec may optionally be provided to filter the partitions returned.
+   * For instance, if there exist partitions (a='1', b='2'), (a='1', b='3') and (a='2', b='4'),
+   * then a partial spec of (a='1') will return the first two only.
+   */
   def listPartitionNames: Seq[String] = {
     val implicits = spark.implicits
     import implicits._
@@ -226,16 +235,35 @@ class Snapshot(
     }.toSeq.sorted
   }
 
-  def listPartitions(table: CatalogTable): Seq[CatalogTablePartition] = {
+  /**
+   * List the metadata of all partitions that belong to the specified table, assuming it exists.
+   *
+   * A partial partition spec may optionally be provided to filter the partitions returned.
+   * For instance, if there exist partitions (a='1', b='2'), (a='1', b='3') and (a='2', b='4'),
+   * then a partial spec of (a='1') will return the first two only.
+   */
+  def listPartitions(
+      table: CatalogTable,
+      partialSpec: Option[TablePartitionSpec] = None): Seq[CatalogTablePartition] = {
     val implicits = spark.implicits
     import implicits._
+
+    partialSpec.foreach { spec =>
+      requireNonEmptyValueInPartitionSpec(Seq(spec))
+    }
 
     val parentUri = Some(table.location)
     val partitions =
       allFiles.select("path", "partitionValues").join(
         tombstones.select("path"), Seq("path"), "leftanti")
         .select("partitionValues").as[Map[String, String]].collect().toSet
-    partitions.map { partitionKv =>
+    partitions.filter { spec =>
+      if (partialSpec.isDefined) {
+        isPartialPartitionSpec(partialSpec.get, spec)
+      } else {
+        true
+      }
+    }.map { partitionKv =>
       val tablePath = new Path(table.location)
       val partitionPath = new Path(
         tablePath,
@@ -257,11 +285,52 @@ class Snapshot(
     }.toSeq
   }
 
+  /**
+   * List the metadata of partitions that belong to the specified table, assuming it exists, that
+   * satisfy the given partition-pruning predicate expressions.
+   */
   def listPartitionsByFilter(
       table: CatalogTable, predicates: Seq[Expression]): Seq[CatalogTablePartition] = {
     val allPartitions = listPartitions(table)
     ExternalCatalogUtils.prunePartitionsByFilter(table, allPartitions, predicates,
       TimeZone.getDefault.getID)
+  }
+
+  /**
+   * Retrieve the metadata of a table partition, assuming it exists.
+   * If no database is specified, assume the table is in the current database.
+   */
+  def getPartition(table: CatalogTable, spec: TablePartitionSpec): CatalogTablePartition = {
+    requireNonEmptyValueInPartitionSpec(Seq(spec))
+    listPartitions(table, Some(spec)).headOption.getOrElse(
+      throw new NoSuchPartitionException(
+        table.identifier.database.get, table.identifier.table, spec)
+    )
+  }
+
+  /**
+   * Returns true if `spec1` is a partial partition spec w.r.t. `spec2`, e.g. PARTITION (a=1) is a
+   * partial partition spec w.r.t. PARTITION (a=1,b=2).
+   */
+  private def isPartialPartitionSpec(
+      spec1: TablePartitionSpec,
+      spec2: TablePartitionSpec): Boolean = {
+    spec1.forall {
+      case (partitionColumn, value) => spec2.get(partitionColumn).contains(value)
+    }
+  }
+
+  /**
+   * Verify if the input partition spec has any empty value.
+   */
+  private def requireNonEmptyValueInPartitionSpec(specs: Seq[TablePartitionSpec]): Unit = {
+    specs.foreach { s =>
+      if (s.values.exists(_.isEmpty)) {
+        val spec = s.map(p => p._1 + "=" + p._2).mkString("[", ", ", "]")
+        throw new AnalysisException(
+          s"Partition spec is invalid. The spec ($spec) contains an empty partition column value")
+      }
+    }
   }
 }
 
