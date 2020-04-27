@@ -692,10 +692,25 @@ class DeltaLog private(
           overwrite: Boolean,
           metrics: Map[String, SQLMetric]): Unit = {
         val mode = if (overwrite) SaveMode.Overwrite else SaveMode.Append
+        val deltaOptions = data.queryExecution.logical match {
+          case InsertIntoDataSource(
+              LogicalRelation(_: HadoopFsRelation with InsertableRelation, _, Some(_), _),
+              _, _, staticPartitions, _, _) =>
+            val predicates = staticPartitions.map {
+              case (key, value) => key + "=" + value
+            }.mkString(" AND ")
+            if (predicates.isEmpty) {
+              Map.empty[String, String]
+            } else {
+              Map(DeltaOptions.REPLACE_WHERE_OPTION -> predicates)
+            }
+          case _ =>
+            Map.empty[String, String]
+        }
         WriteIntoDelta(
           deltaLog = DeltaLog.this,
           mode = mode,
-          new DeltaOptions(Map.empty[String, String], spark.sessionState.conf),
+          new DeltaOptions(deltaOptions, spark.sessionState.conf),
           partitionColumns = partitionSchema.map(_.name),
           configuration = Map.empty,
           data = data,
