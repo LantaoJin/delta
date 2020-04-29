@@ -256,8 +256,7 @@ abstract class ConvertToDeltaCommandBase(
       if (convertProperties.catalogTable.isDefined) {
         val newTable = convertProperties.catalogTable.get.copy(provider = Some("delta"))
         spark.sessionState.catalog.alterTable(newTable)
-        spark.sessionState.catalog.invalidateCachedTable(
-          QualifiedTableName(newTable.database, newTable.identifier.table))
+        spark.catalog.refreshTable(newTable.identifier.quotedString)
       }
 
       streamWrite(
