@@ -244,8 +244,8 @@ case class DeleteWithJoinCommand(
       resolveOnJoinedPlan(condExprOption.toSeq).headOption
     }
 
-    val joinedRowEncoder = RowEncoder(joinedPlan.schema)
-    val outputRowEncoder = RowEncoder(target.schema).resolveAndBind()
+    val joinedRowEncoder = RowEncoder(joinedPlan.schema, checkOverflow = false)
+    val outputRowEncoder = RowEncoder(target.schema, checkOverflow = false).resolveAndBind()
 
     val processor = new JoinedRowProcessor(
       targetRowHasNoMatch = resolveOnJoinedPlan(Seq(col(SOURCE_ROW_PRESENT_COL).isNull.expr)).head,

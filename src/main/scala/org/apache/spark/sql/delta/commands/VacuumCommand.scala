@@ -216,7 +216,7 @@ object VacuumCommand extends VacuumCommandImpl {
             objectsDeleted = numFiles)
 
           recordDeltaEvent(deltaLog, "delta.gc.stats", data = stats)
-          logConsole(s"Found $numFiles files and directories in a total of " +
+          logInfo(s"Found $numFiles files and directories in a total of " +
             s"$dirCounts directories that are safe to delete.")
 
           return diff.map(f => stringToPath(f).toString).toDF("path")
