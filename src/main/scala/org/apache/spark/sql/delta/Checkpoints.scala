@@ -16,22 +16,24 @@
 
 package org.apache.spark.sql.delta
 
-import java.io.FileNotFoundException
+import java.io.{FileNotFoundException, IOException}
 import java.util.UUID
 
 import scala.util.control.NonFatal
 
+import org.apache.hadoop.fs.Options.Rename
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.hdfs.DistributedFileSystem
+import org.apache.hadoop.mapred.{JobConf, TaskAttemptContextImpl, TaskAttemptID}
+import org.apache.hadoop.mapreduce.{Job, TaskType}
+
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.delta.actions.{Action, Metadata, SingleAction}
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.storage.LogStore
 import org.apache.spark.sql.delta.util.DeltaFileOperations
 import org.apache.spark.sql.delta.util.FileNames._
 import org.apache.spark.sql.delta.util.JsonUtils
-import org.apache.hadoop.fs.Path
-import org.apache.hadoop.mapred.{JobConf, TaskAttemptContextImpl, TaskAttemptID}
-import org.apache.hadoop.mapreduce.{Job, TaskType}
-
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.util.SerializableConfiguration
 
@@ -287,12 +289,28 @@ object Checkpoints {
     if (useRename) {
       val src = new Path(writtenPath)
       val dest = new Path(path)
-      val fs = dest.getFileSystem(spark.sessionState.newHadoopConf)
       var renameDone = false
+      val fs = dest.getFileSystem(spark.sessionState.newHadoopConf)
+
       try {
-        if (overwrite && fs.delete(dest, false) && fs.rename(src, dest)) {
-          renameDone = true
-        } else {
+        renameDone =
+          if (overwrite) {
+            fs match {
+              case dfs: DistributedFileSystem =>
+                try {
+                  dfs.rename(src, dest, Rename.OVERWRITE)
+                  true
+                } catch {
+                  case _: Exception => false
+                }
+              case _ =>
+                fs.delete(dest, false)
+                fs.rename(src, dest)
+            }
+          } else {
+            fs.rename(src, dest)
+          }
+        if (!renameDone) {
           // There should be only one writer writing the checkpoint file, so there must be
           // something wrong here.
           throw new IllegalStateException(s"Cannot rename $src to $dest")
