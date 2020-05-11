@@ -116,7 +116,7 @@ case class RollbackCommand(
           }
         // checkpoint to update _last_checkpoint
         deltaLog.setCurrentSnapshot(snapshot)
-        deltaLog.checkpoint()
+        deltaLog.checkpoint(overwrite = true)
 
         val currentSnapshot = deltaLog.update()
         assert(currentSnapshot.version == snapshot.version,
