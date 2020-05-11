@@ -444,12 +444,14 @@ object DeltaErrors
         + unknownColumns.mkString(", "))
   }
 
-  def multipleSourceRowMatchingTargetRowException(spark: SparkSession, op: String): Throwable = {
+  def multipleSourceRowMatchingTargetRowException(
+      spark: SparkSession, op: String, detailInfo: String = ""): Throwable = {
     new UnsupportedOperationException(
       s"""Cannot perform $op as multiple source rows matched and attempted to update the same
          |target row in the Delta table. By SQL semantics of $op, when multiple source rows match
          |on the same target row, the update operation is ambiguous as it is unclear which source
          |should be used to update the matching target row.
+         |$detailInfo
          |You can preprocess the source table to eliminate the possibility of multiple matches.
        """.stripMargin
     )

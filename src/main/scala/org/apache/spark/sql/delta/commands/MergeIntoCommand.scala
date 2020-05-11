@@ -213,22 +213,27 @@ case class MergeIntoCommand(
     // - a monotonically increasing row id for target rows to later identify whether the same
     //     target row is modified by multiple user or not
     // - the target file name the row is from to later identify the files touched by matched rows
+    val sourceDF = Dataset.ofRows(spark, source)
+      .withColumn(ROW_ID_COL2, monotonically_increasing_id())
+    val targetDF = Dataset.ofRows(spark, buildTargetPlanWithFiles(deltaTxn, dataSkippedFiles))
+      .withColumn(ROW_ID_COL, monotonically_increasing_id())
+      .withColumn(FILE_NAME_COL, input_file_name())
     val joinToFindTouchedFiles = {
-      val sourceDF = Dataset.ofRows(spark, source)
-      val targetDF = Dataset.ofRows(spark, buildTargetPlanWithFiles(deltaTxn, dataSkippedFiles))
-        .withColumn(ROW_ID_COL, monotonically_increasing_id())
-        .withColumn(FILE_NAME_COL, input_file_name())
       sourceDF.join(targetDF, new Column(condition), "inner")
     }
 
     // Process the matches from the inner join to record touched files and find multiple matches
-    val collectTouchedFiles = joinToFindTouchedFiles
-      .select(col(ROW_ID_COL), recordTouchedFileName(col(FILE_NAME_COL)).as("one"))
+    val collectTouchedFiles = joinToFindTouchedFiles.select(
+      col(ROW_ID_COL), col(ROW_ID_COL2), recordTouchedFileName(col(FILE_NAME_COL)).as("one"))
 
     // Calculate frequency of matches per source row
-    val matchedRowCounts = collectTouchedFiles.groupBy(ROW_ID_COL).agg(sum("one").as("count"))
-    if (matchedRowCounts.filter("count > 1").count() != 0) {
-      throw DeltaErrors.multipleSourceRowMatchingTargetRowException(spark, "MERGE")
+    import spark.implicits._
+    val firstMultipleMatchedRowId = collectTouchedFiles.groupBy(ROW_ID_COL)
+      .agg(sum("one").as("count"), collect_list(ROW_ID_COL2).as("list"))
+      .filter("count > 1").select(ROW_ID_COL, "list").as[(Long, Array[Long])].head(1)
+    if (firstMultipleMatchedRowId.nonEmpty) {
+      val msg = getMultipleMatchedRows(firstMultipleMatchedRowId.head, targetDF, sourceDF)
+      throw DeltaErrors.multipleSourceRowMatchingTargetRowException(spark, "UPDATE", msg)
     }
 
     // Get the AddFiles using the touched file names.
@@ -425,6 +430,7 @@ case class MergeIntoCommand(
 
 object MergeIntoCommand {
   val ROW_ID_COL = "_row_id_"
+  val ROW_ID_COL2 = "_row_id_2_"
   val FILE_NAME_COL = "_file_name_"
   val SOURCE_ROW_PRESENT_COL = "_source_row_present_"
   val TARGET_ROW_PRESENT_COL = "_target_row_present_"

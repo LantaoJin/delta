@@ -51,7 +51,7 @@ class SQLQuerySuite extends QueryTest
       sql("CONVERT TO DELTA test1")
       Thread.sleep(5000)
       assert(numJobs > 0)
-      assert(numJobs < 5) // fail without patch CARMEL-2583
+      assert(numJobs < 6) // fail without patch CARMEL-2583
     }
   }
 
@@ -616,6 +616,45 @@ class SQLQuerySuite extends QueryTest
         sql("SELECT * FROM target"),
         Row(1, "B") :: Nil
       )
+    }
+  }
+
+  test("test multiple source rows match on the same target row") {
+    withTable("t1", "t2") {
+      sql("create table t1(a int, b string) using parquet")
+      sql("create table t2(a int, b string) using parquet")
+      sql("insert into table t1 select 1, 'abc'")
+      sql("insert into table t1 select 2, 'ccc'")
+      sql("insert into table t2 select 1, 'ab'")
+      sql("insert into table t2 select 1, 'aabb'")
+      sql("insert into table t2 select 1, 'aabbcc'")
+      sql("insert into table t2 select 2, 'aabb'")
+      sql("CONVERT TO DELTA t1")
+      sql("CONVERT TO DELTA t2")
+      val e = intercept[UnsupportedOperationException] {
+        sql(
+          """
+            |UPDATE t1
+            |FROM t1, t2
+            |SET t1.b = t2.b
+            |WHERE t1.a = t2.a
+            |""".stripMargin)
+      }.getMessage
+      assert(e.contains("Cannot perform UPDATE as multiple source rows matched"))
+      // scalastyle:off println
+      println(e)
+      // scalastyle:on println
+      sql("DELETE FROM t2 WHERE t2.b='ab' OR t2.b='aabbcc'")
+      sql(
+        """
+          |UPDATE t1
+          |FROM t1, t2
+          |SET t1.b = t2.b
+          |WHERE t1.a = t2.a
+          |""".stripMargin)
+      checkAnswer(
+        sql("select * from t1"),
+        Row(1, "aabb") :: Row(2, "aabb") :: Nil)
     }
   }
 }

@@ -201,18 +201,18 @@ abstract class ConvertToDeltaCommandBase(
     val conf = spark.sparkContext.broadcast(
       new SerializableConfiguration(spark.sessionState.newHadoopConf()))
 
-
     val fileListResultDf = DeltaFileOperations.recursiveListDirs(
         spark, Seq(qualifiedDir), conf).where("!isDir")
     fileListResultDf.cache()
+
     def fileListResult = fileListResultDf.toLocalIterator()
 
     var numFiles = 0L
     var dataSchema: StructType = StructType(Seq())
     try {
       if (convertProperties.catalogTable.isDefined) {
-        val tableSchema = convertProperties.catalogTable.get.dataSchema
-        dataSchema = SchemaUtils.mergeSchemas(dataSchema, tableSchema)
+        dataSchema = convertProperties.catalogTable.get.dataSchema
+        numFiles = fileListResultDf.count()
       } else {
         if (!fileListResult.hasNext) {
           throw DeltaErrors.emptyDirectoryException(qualifiedDir)
@@ -269,7 +269,7 @@ abstract class ConvertToDeltaCommandBase(
           collectStats = false,
           convertProperties))
     } finally {
-      fileListResultDf.unpersist()
+      fileListResultDf.unpersist(blocking = true)
     }
     Seq.empty[Row]
   }
