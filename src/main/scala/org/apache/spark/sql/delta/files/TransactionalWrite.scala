@@ -49,8 +49,8 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
 
   protected var hasWritten = false
 
-  protected def getCommitter(outputPath: Path): DelayedCommitProtocol =
-    new DelayedCommitProtocol("delta", outputPath.toString, None)
+  protected def getCommitter(jobId: String = "delta", outputPath: Path): DelayedCommitProtocol =
+    new DelayedCommitProtocol(jobId, outputPath.toString, None)
 
   /** Makes the output attributes nullable, so that we don't write unreadable parquet files. */
   protected def makeOutputNullable(output: Seq[Attribute]): Seq[Attribute] = {
@@ -129,7 +129,7 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
     val partitioningColumns =
       getPartitioningColumns(partitionSchema, output, output.length < data.schema.size)
 
-    val committer = getCommitter(outputPath)
+    val committer = getCommitter(data.rdd.id.toString, outputPath)
 
     val invariants = Invariants.getFromSchema(metadata.schema, spark)
 

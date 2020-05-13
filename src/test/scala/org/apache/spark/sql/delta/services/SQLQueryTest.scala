@@ -16,11 +16,15 @@
 
 package org.apache.spark.sql.delta.services
 
-import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
+import org.apache.spark.SparkException
+import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerJobStart}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
+import org.apache.spark.sql.execution.command.ExecutedCommandExec
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 
@@ -655,6 +659,179 @@ class SQLQuerySuite extends QueryTest
       checkAnswer(
         sql("select * from t1"),
         Row(1, "aabb") :: Row(2, "aabb") :: Nil)
+    }
+  }
+
+  def checkedMetrics(df: DataFrame): Map[String, SQLMetric] = {
+    val converted = df.queryExecution.executedPlan match {
+      case a: AdaptiveSparkPlanExec =>
+        a.executedPlan
+      case plan => plan
+    }
+    converted match {
+      case ExecutedCommandExec(cmd) => cmd.metrics
+      case _ => converted.metrics
+    }
+  }
+
+  test("test clean up staging file when job fail - partition table") {
+    Seq(true, false).foreach { ae =>
+      withTempDir { dir =>
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0") {
+          withTable("test1") {
+            withTempView("source") {
+              spark.range(0, 4).map(x => (x, (x % 2).toString)).toDF("id", "date")
+                .createOrReplaceTempView("source")
+              sql(
+                s"""
+                   |CREATE TABLE test1(id INT, date STRING) USING parquet
+                   |PARTITIONED BY (date)
+                   |LOCATION '$dir'
+                   |""".stripMargin)
+              sql(
+                """
+                  |INSERT INTO test1 SELECT * FROM source
+                  |""".stripMargin)
+              sql("CONVERT TO DELTA test1")
+
+              val failingUdf = org.apache.spark.sql.functions.udf {
+                (id: Long) => {
+                  throw new RuntimeException("testing error")
+                }
+              }
+              spark.udf.register("fail", failingUdf)
+              val e = intercept[SparkException] {
+                sql(
+                  """
+                    |UPDATE test1
+                    |SET id = fail(id)
+                    |""".stripMargin)
+              }.getMessage
+              assert(e.contains("Job aborted"))
+              // this maybe failed due to job aborted but still has new task submitting
+              dir.listFiles().foreach { f =>
+                if (f.isDirectory && f.getName.startsWith(".spark-staging")) {
+                  assert(f.list().isEmpty)
+                }
+              }
+              val df1 = sql(
+                """
+                  |UPDATE test1
+                  |SET date = "0"
+                  |WHERE id % 2 = 0
+                  |""".stripMargin)
+              checkAnswer(
+                sql("SELECT count(*) FROM test1 WHERE date = '0'"),
+                Row(2) :: Nil
+              )
+              assert(checkedMetrics(df1)("numRowsUpdated").value == 2)
+              dir.listFiles().foreach { f =>
+                if (f.isDirectory && f.getName.startsWith(".spark-staging")) {
+                  assert(f.list().isEmpty)
+                }
+              }
+              val df2 = sql(
+                """
+                  |DELETE FROM test1
+                  |WHERE id % 2 = 0
+                  |""".stripMargin)
+              checkAnswer(
+                sql("SELECT count(*) FROM test1 WHERE date != '0'"),
+                Row(2) :: Nil
+              )
+              assert(checkedMetrics(df2)("numRowsDeleted").value == 2)
+              dir.listFiles().foreach { f =>
+                if (f.isDirectory && f.getName.startsWith(".spark-staging")) {
+                  assert(f.list().isEmpty)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("test clean up staging file when job fail - bucket table") {
+    Seq(false).foreach { ae =>
+      withTempDir { dir =>
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0") {
+          withTable("test1") {
+            withTempView("source") {
+              spark.range(0, 4).map(x => (x, (x % 2).toString)).toDF("id", "date")
+                .createOrReplaceTempView("source")
+              sql(
+                s"""
+                   |CREATE TABLE test1(id INT, date STRING) USING parquet
+                   |CLUSTERED BY (date)
+                   |INTO 2 BUCKETS
+                   |LOCATION '$dir'
+                   |""".stripMargin)
+              sql(
+                """
+                  |INSERT INTO test1 SELECT * FROM source
+                  |""".stripMargin)
+              sql("CONVERT TO DELTA test1")
+
+              val failingUdf = org.apache.spark.sql.functions.udf {
+                (id: Long) => {
+                  throw new RuntimeException("testing error")
+                }
+              }
+              spark.udf.register("fail", failingUdf)
+              val e = intercept[SparkException] {
+                sql(
+                  """
+                    |UPDATE test1
+                    |SET id = fail(id)
+                    |""".stripMargin)
+              }.getMessage
+              assert(e.contains("Job aborted"))
+              // this maybe failed due to job aborted but still has new task submitting
+              dir.listFiles().foreach { f =>
+                if (f.isDirectory && f.getName.startsWith(".spark-staging")) {
+                  assert(f.list().isEmpty)
+                }
+              }
+              val df1 = sql(
+                """
+                  |UPDATE test1
+                  |SET date = "0"
+                  |WHERE id % 2 = 0
+                  |""".stripMargin)
+              checkAnswer(
+                sql("SELECT count(*) FROM test1 WHERE date = '0'"),
+                Row(2) :: Nil
+              )
+              assert(checkedMetrics(df1)("numRowsUpdated").value == 2)
+              dir.listFiles().foreach { f =>
+                if (f.isDirectory && f.getName.startsWith(".spark-staging")) {
+                  assert(f.list().isEmpty)
+                }
+              }
+              val df2 = sql(
+                """
+                  |DELETE FROM test1
+                  |WHERE id % 2 = 0
+                  |""".stripMargin)
+              checkAnswer(
+                sql("SELECT count(*) FROM test1 WHERE date != '0'"),
+                Row(2) :: Nil
+              )
+              assert(checkedMetrics(df2)("numRowsDeleted").value == 2)
+              dir.listFiles().foreach { f =>
+                if (f.isDirectory && f.getName.startsWith(".spark-staging")) {
+                  assert(f.list().isEmpty)
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }
