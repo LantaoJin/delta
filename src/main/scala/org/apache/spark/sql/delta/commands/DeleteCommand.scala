@@ -97,7 +97,7 @@ case class DeleteCommand(
 
         val data = Dataset.ofRows(sparkSession, target)
         metrics("numRowsDeleted").set(data.count())
-
+        metrics("numRemovedFiles").set(allFiles.size)
         val operationTimestamp = System.currentTimeMillis()
         allFiles.map(_.removeWithTimestamp(operationTimestamp))
       case Some(cond) =>
@@ -115,6 +115,7 @@ case class DeleteCommand(
           scanTimeMs = (System.nanoTime() - startTime) / 1000 / 1000
           numTouchedFiles = candidateFiles.size
 
+          metrics("numRemovedFiles").set(numTouchedFiles)
           candidateFiles.map(_.removeWithTimestamp(operationTimestamp))
         } else {
           // Case 3: Delete the rows based on the condition.
@@ -148,6 +149,7 @@ case class DeleteCommand(
               }
             }.filter(_.nonEmpty)
 
+          metrics("numRemovedFiles").set(filesToRewrite.size)
           scanTimeMs = (System.nanoTime() - startTime) / 1000 / 1000
           if (filesToRewrite.isEmpty) {
             // Case 3.1: no row matches and no delete will be triggered
@@ -181,7 +183,6 @@ case class DeleteCommand(
         }
     }
     if (deleteActions.nonEmpty) {
-      metrics("numRemovedFiles").set(numTouchedFiles)
       metrics("numAddedFiles").set(numRewrittenFiles)
       txn.registerSQLMetrics(sparkSession, metrics)
 

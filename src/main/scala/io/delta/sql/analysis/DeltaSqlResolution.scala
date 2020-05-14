@@ -45,7 +45,8 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
       val resolvedAssignments = resolveAssignments(assignments, u)
       val columns = resolvedAssignments.map(_.key.asInstanceOf[Attribute])
       val values = resolvedAssignments.map(_.value)
-      val resolvedUpdateCondition = condition.map(resolveExpressionTopDown(_, u))
+      val resolvedUpdateCondition =
+        condition.map(resolveExpressionTopDown(_, u)).flatMap(inferredConditions)
 
       if (resolvedUpdateCondition.isEmpty && values.forall(_.foldable)) {
         // If join condition is empty and SET expressions are all foldable,
@@ -81,7 +82,8 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
         if !d.resolved && target.resolved && source.resolved &&
           target.outputSet.intersect(source.outputSet).isEmpty => // no conflicting attributes
       checkTargetTable(target)
-      val resolvedDeleteCondition = condition.map(resolveExpressionTopDown(_, d))
+      val resolvedDeleteCondition =
+        condition.map(resolveExpressionTopDown(_, d)).flatMap(inferredConditions)
       val actions = DeltaMergeIntoDeleteClause(resolvedDeleteCondition)
       source match {
         case _: Join =>
@@ -245,12 +247,11 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
    */
   private def extractPredicatesOnlyInSource(
       source: LogicalPlan, predicates: Expression): Option[Expression] = {
-    val split = splitConjunctivePredicates(predicates)
-    val inferred = inferAdditionalConstraints(split.toSet)
-    val (predicatesInSourceOnly, predicatesContainsNonSource) = inferred.partition {
-      case expr: Expression => expr.references.subsetOf(source.outputSet)
-      case _ => false
-    }
+    val (predicatesInSourceOnly, predicatesContainsNonSource) =
+      splitConjunctivePredicates(predicates).partition {
+        case expr: Expression => expr.references.subsetOf(source.outputSet)
+        case _ => false
+      }
     predicatesInSourceOnly.reduceLeftOption(And)
   }
 
@@ -263,13 +264,13 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
   }
 
   /**
-   * Copied from [[QueryPlanConstraints]]
    * Infers an additional set of constraints from a given set of equality constraints.
    * For e.g., if an operator has constraints of the form (`a = 5`, `a = b`), this returns an
-   * additional constraint of the form `b = 5`.
+   * constraints (`a = 5`, `a = b`, `b = 5`)
    */
-  private def inferAdditionalConstraints(constraints: Set[Expression]): Set[Expression] = {
-    var inferredConstraints = Set.empty[Expression]
+  private def inferredConditions(condition: Expression): Option[Expression] = {
+    val constraints = splitConjunctivePredicates(condition).toSet
+    var inferredConstraints = constraints
     // IsNotNull should be constructed by `constructIsNotNullConstraints`.
     val predicates = constraints.filterNot(_.isInstanceOf[IsNotNull])
     predicates.foreach {
@@ -283,7 +284,7 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
         inferredConstraints ++= replaceConstraints(predicates - eq, l, r)
       case _ => // No inference
     }
-    inferredConstraints -- constraints
+    inferredConstraints.reduceLeftOption(And)
   }
 
   private def projectionForSource(

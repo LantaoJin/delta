@@ -27,7 +27,6 @@ import org.apache.spark.sql.delta.{DeltaLog, OptimisticTransaction}
 import org.apache.spark.sql.delta.actions.{AddFile, RemoveFile}
 import org.apache.spark.sql.delta.commands.MergeIntoCommand.FILE_NAME_COL
 import org.apache.spark.sql.delta.commands.MergeIntoCommand.ROW_ID_COL
-import org.apache.spark.sql.delta.commands.MergeIntoCommand.ROW_ID_COL2
 import org.apache.spark.sql.delta.files.TahoeBatchFileIndex
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.sources.DeltaSourceUtils
@@ -224,23 +223,15 @@ trait DeltaCommand extends DeltaLogging {
   }
 
   protected def getMultipleMatchedRows(
-      multipleMatchedRowId: (Long, Array[Long]),
-      target: DataFrame,
-      source: DataFrame): String = {
+      multipleMatchedRowId: Long,
+      target: DataFrame): String = {
     val colNamesInTarget = target.columns.filterNot(_.equals(ROW_ID_COL))
       .filterNot(_.equals(FILE_NAME_COL)).map(Column(_))
-    val colNamesInSource = source.columns.filterNot(_.equals(ROW_ID_COL2))
-      .map(Column(_))
     val rowInTarget =
-      target.where(s"$ROW_ID_COL = ${multipleMatchedRowId._1}").select(colNamesInTarget: _*).head
-    val list = multipleMatchedRowId._2.mkString("(", ",", ")")
-    val rowsInSource =
-      source.where(s"$ROW_ID_COL2 in $list").select(colNamesInSource: _*).head(2)
+      target.where(s"$ROW_ID_COL = $multipleMatchedRowId").select(colNamesInTarget: _*).head
     s"""
-       |Found a row in target:
+       |Found a row in target which matched multiple rows in source:
        |${rowInTarget.mkString("[", ",", "]")}
-       |which matched multiple rows in source (only displays two of them):
-       |${rowsInSource.mkString("\n")}
        |""".stripMargin
   }
 }

@@ -20,6 +20,8 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerJobStart}
 import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.delta.commands.{DeleteWithJoinCommand, UpdateWithJoinCommand}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
@@ -185,7 +187,7 @@ class SQLQuerySuite extends QueryTest
           Row(2, 2) :: Nil)
         checkKeywordsExist(
           sql("desc history target").filter("version = '2'").select("operationMetrics"),
-          "numRemovedFiles -> 3", "numRowsDeleted -> 2", "numAddedFiles -> 1")
+          "numRemovedFiles -> 2", "numRowsDeleted -> 2", "numAddedFiles -> 1")
         val df1 = sql(
           """
             |INSERT INTO TABLE target VALUES (1, 1)
@@ -242,7 +244,7 @@ class SQLQuerySuite extends QueryTest
           sql("select * from target"), Nil)
         checkKeywordsExist(
           sql("desc history target").filter("version = '7'").select("operationMetrics"),
-          "numRemovedFiles -> 3", "numRowsDeleted -> 1", "numAddedFiles -> 1")
+          "numRemovedFiles -> 1", "numRowsDeleted -> 1", "numAddedFiles -> 1")
       }
     }
   }
@@ -755,7 +757,7 @@ class SQLQuerySuite extends QueryTest
   }
 
   test("test clean up staging file when job fail - bucket table") {
-    Seq(false).foreach { ae =>
+    Seq(true, false).foreach { ae =>
       withTempDir { dir =>
         withSQLConf(
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
@@ -831,6 +833,107 @@ class SQLQuerySuite extends QueryTest
             }
           }
         }
+      }
+    }
+  }
+
+  test("test") {
+    withTable("delta_bucket", "test_table") {
+      withTempView("test") {
+        spark.range(50000).map(x => (x, x + 1, x.toString)).toDF("id", "num", "name")
+          .createOrReplaceTempView("test")
+        sql(
+          """
+            |CREATE TABLE test_table USING parquet
+            |AS SELECT * FROM test
+            |""".stripMargin)
+        sql(
+          s"""
+             |CREATE TABLE delta_bucket USING parquet
+             |AS SELECT * FROM test
+             |""".stripMargin)
+        sql(
+          """
+            |CONVERT TO DELTA delta_bucket
+            |""".stripMargin)
+        sql(
+          """
+            |UPDATE t
+            |FROM delta_bucket t, test_table s
+            |SET t.num = 0
+            |WHERE t.id = s.id AND s.id % 2 = 0
+            |""".stripMargin)
+        checkAnswer(
+          sql("SELECT count(*) FROM delta_bucket WHERE num = 0"),
+          Row(25000) :: Nil
+        )
+      }
+    }
+  }
+
+  def getConditions(df: DataFrame): Seq[Expression] = {
+    val conds = df.queryExecution.optimizedPlan match {
+      case u @ UpdateWithJoinCommand(_, _, _, Some(cond), _) =>
+        splitConjunctivePredicates(cond)
+      case d @ DeleteWithJoinCommand(_, _, _, Some(cond), _) =>
+        splitConjunctivePredicates(cond)
+      case _ => Nil
+    }
+    // scalastyle:off println
+    conds.map { c => println(c.simpleString); c }
+    // scalastyle:on println
+  }
+
+  test("test resolution") {
+    withTable("target", "source") {
+      withTempView("test") {
+        spark.range(5).map(x => (x, x + 1, x.toString)).toDF("id", "num", "name")
+          .createOrReplaceTempView("test")
+        sql(
+          """
+            |CREATE TABLE source USING parquet
+            |AS SELECT * FROM test
+            |""".stripMargin)
+        sql(
+          s"""
+             |CREATE TABLE target USING parquet
+             |AS SELECT * FROM test
+             |""".stripMargin)
+        sql(
+          """
+            |CONVERT TO DELTA target
+            |""".stripMargin)
+
+        val df = sql(
+          """
+            |UPDATE t
+            |FROM target t, source s
+            |SET t.num = 0
+            |WHERE t.id = s.id AND s.id % 2 = 0
+            |""".stripMargin)
+        assert(getConditions(df).map(_.canonicalizedIgnoreExprId.simpleString).sorted
+          === "((id#0L % 2) = 0)" :: "((id#0L % 2) = 0)" :: "(id#0L = id#0L)" :: Nil)
+
+        val df2 = sql(
+          """
+            |DELETE t
+            |FROM target t, source s
+            |WHERE t.id = s.id
+            |""".stripMargin)
+        assert(getConditions(df2).map(_.canonicalizedIgnoreExprId.simpleString).sorted
+          === "(id#0L = id#0L)" :: Nil)
+
+        val df3 = sql(
+          """
+            |UPDATE t
+            |FROM target t, source s
+            |SET t.num = 0
+            |WHERE t.id = s.id AND t.num = s.num
+            |AND t.id > 5 AND s.num = 10
+            |""".stripMargin)
+        assert(getConditions(df3).map(_.canonicalizedIgnoreExprId.simpleString).sorted
+          === "(id#0L = id#0L)" :: "(id#0L > 5)" :: "(id#0L > 5)" :: "(num#0L = 10)" ::
+          "(num#0L = 10)" :: "(num#0L = num#0L)" :: Nil)
       }
     }
   }
