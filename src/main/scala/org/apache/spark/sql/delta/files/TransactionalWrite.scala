@@ -18,18 +18,20 @@ package org.apache.spark.sql.delta.files
 
 import scala.collection.mutable.ListBuffer
 
+import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.Dataset
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions._
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.schema._
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
-import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.Dataset
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.execution._
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.datasources.{BasicWriteJobStatsTracker, FileFormatWriter, WriteJobStatsTracker}
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.types.{ArrayType, MapType, StructType}
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
 
 /**
@@ -122,6 +124,7 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
     hasWritten = true
 
     val spark = data.sparkSession
+    val conf = spark.sessionState.conf
     val partitionSchema = metadata.partitionSchema
     val outputPath = deltaLog.dataPath
 
@@ -129,7 +132,7 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
     val partitioningColumns =
       getPartitioningColumns(partitionSchema, output, output.length < data.schema.size)
 
-    val committer = getCommitter(data.rdd.id.toString, outputPath)
+    val committer = getCommitter(java.util.UUID.randomUUID().toString, outputPath)
 
     val invariants = Invariants.getFromSchema(metadata.schema, spark)
 
@@ -139,7 +142,16 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
         Map.empty,
         output)
 
-      val physicalPlan = DeltaInvariantCheckerExec(queryExecution.executedPlan, invariants)
+      val sparkPlan = queryExecution.executedPlan match {
+        case a: AdaptiveSparkPlanExec =>
+          val newPlan = ensureRepartition(conf, a.initialPlan, partitioningColumns)
+          newPlan.setLogicalLink(a.initialPlan.logicalLink.get)
+          a.copy(initialPlan = newPlan)
+        case plan =>
+          ensureRepartition(conf, plan, partitioningColumns)
+      }
+
+      val physicalPlan = DeltaInvariantCheckerExec(sparkPlan, invariants)
 
       val statsTrackers: ListBuffer[WriteJobStatsTracker] = ListBuffer()
       val basicWriteJobStatsTracker = new BasicWriteJobStatsTracker(
@@ -165,10 +177,17 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
 
       // after written, expose the metrics
       basicWriteJobStatsTracker.metrics.foreach { kv =>
-        metricsToExpose.get(kv._1).foreach(s => s.merge(kv._2))
+        metricsToExpose.get(kv._1).filter(_.isZero).foreach(s => s.merge(kv._2))
       }
     }
 
     committer.addedStatuses
+  }
+
+  private def ensureRepartition(
+      conf: SQLConf,
+      sparkPlan: SparkPlan,
+      partitionColumns: Seq[Attribute] = Nil): SparkPlan = {
+    EnsureRepartitionForDelta(conf).apply(sparkPlan, partitionColumns)
   }
 }

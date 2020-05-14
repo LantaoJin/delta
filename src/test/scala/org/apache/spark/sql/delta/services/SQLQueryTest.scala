@@ -802,11 +802,11 @@ class SQLQuerySuite extends QueryTest
               val df1 = sql(
                 """
                   |UPDATE test1
-                  |SET date = "0"
+                  |SET date = "t"
                   |WHERE id % 2 = 0
                   |""".stripMargin)
               checkAnswer(
-                sql("SELECT count(*) FROM test1 WHERE date = '0'"),
+                sql("SELECT count(*) FROM test1 WHERE date = 't'"),
                 Row(2) :: Nil
               )
               assert(checkedMetrics(df1)("numRowsUpdated").value == 2)
@@ -821,7 +821,7 @@ class SQLQuerySuite extends QueryTest
                   |WHERE id % 2 = 0
                   |""".stripMargin)
               checkAnswer(
-                sql("SELECT count(*) FROM test1 WHERE date != '0'"),
+                sql("SELECT count(*) FROM test1 WHERE date != 't'"),
                 Row(2) :: Nil
               )
               assert(checkedMetrics(df2)("numRowsDeleted").value == 2)
@@ -934,6 +934,185 @@ class SQLQuerySuite extends QueryTest
         assert(getConditions(df3).map(_.canonicalizedIgnoreExprId.simpleString).sorted
           === "(id#0L = id#0L)" :: "(id#0L > 5)" :: "(id#0L > 5)" :: "(num#0L = 10)" ::
           "(num#0L = 10)" :: "(num#0L = num#0L)" :: Nil)
+      }
+    }
+  }
+
+  test("repartition to merge small files on update/delete for partition delta table") {
+    Seq(true, false).foreach { ae =>
+      val shufflePartitionNum = 5
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
+        SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",
+        SQLConf.SHUFFLE_PARTITIONS.key -> s"$shufflePartitionNum",
+        DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
+        withTable("tt1", "tt2") {
+          spark.range(0, 50).map(x => (x.toString, x, x % 10)).toDF("a", "b", "c")
+            .write.saveAsTable("tt1")
+
+          sql(
+            s"""
+               |CREATE TABLE tt2(a int, b int, dt1 int) USING PARQUET
+               |PARTITIONED BY (dt1)
+               |""".stripMargin)
+
+          sql("convert to delta tt2")
+
+          val df = sql(s"INSERT INTO tt2 SELECT a, b, c from tt1")
+          assert(checkedMetrics(df)("numFiles").value == 10)
+
+          val df2 = sql(
+            """
+              |UPDATE t
+              |FROM tt2 t, tt1 s
+              |SET t.b = s.b
+              |WHERE t.a = s.a
+              |""".stripMargin)
+          assert(checkedMetrics(df2)("numAddedFiles").value == 10)
+
+          val df3 = sql(
+            """
+              |DELETE t
+              |FROM tt2 t, tt1 s
+              |WHERE t.a = s.a AND s.a % 3 = 0
+              |""".stripMargin)
+          sql("desc history tt2").show(false)
+          assert(checkedMetrics(df3)("numAddedFiles").value == 10)
+        }
+      }
+    }
+  }
+
+  test("repartition to merge small files on update/delete for non-partition delta table") {
+    Seq(false).foreach { ae =>
+      val shufflePartitionNum = 5
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
+        SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",
+        SQLConf.SHUFFLE_PARTITIONS.key -> s"$shufflePartitionNum",
+        DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
+        withTable("tt1", "tt2") {
+          spark.range(0, 50).map(x => (x.toString, x)).toDF("a", "b")
+            .write.saveAsTable("tt1")
+
+          sql(
+            s"""
+               |CREATE TABLE tt2(a int, b int) USING PARQUET
+               |""".stripMargin)
+
+          sql("convert to delta tt2")
+
+          val df = sql(s"INSERT INTO tt2 SELECT a, b from tt1")
+          assert(checkedMetrics(df)("numFiles").value == 5)
+
+          val df2 = sql(
+            """
+              |UPDATE t
+              |FROM tt2 t, tt1 s
+              |SET t.b = s.b
+              |WHERE t.a = s.a
+              |""".stripMargin)
+          assert(checkedMetrics(df2)("numAddedFiles").value == 5)
+
+          val df3 = sql(
+            """
+              |DELETE t
+              |FROM tt2 t, tt1 s
+              |WHERE t.a = s.a AND s.a % 3 = 0
+              |""".stripMargin)
+          sql("desc history tt2").show(false)
+          assert(checkedMetrics(df3)("numAddedFiles").value == 5)
+        }
+      }
+    }
+  }
+
+
+  test("repartition to merge small files on update/delete for partition-bucket delta table") {
+    Seq(true, false).foreach { ae =>
+      val shufflePartitionNum = 5
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
+        SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",
+        SQLConf.SHUFFLE_PARTITIONS.key -> s"$shufflePartitionNum",
+        DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
+        withTable("tt1", "tt2") {
+          spark.range(0, 50).map(x => (x.toString, x, x, x % 10)).toDF("a", "b", "c", "d")
+            .write.saveAsTable("tt1")
+
+          sql(
+            s"""
+               |CREATE TABLE tt2(a int, b int, c int, dt1 int) USING PARQUET
+               |CLUSTERED BY (c)
+               |INTO 2 BUCKETS
+               |PARTITIONED BY (dt1)
+               |""".stripMargin)
+
+          sql("convert to delta tt2")
+
+          val df = sql(s"INSERT INTO tt2 SELECT a, b, c, d from tt1")
+          assert(checkedMetrics(df)("numFiles").value == 20)
+
+          val df2 = sql(
+            """
+              |UPDATE t
+              |FROM tt2 t, tt1 s
+              |SET t.c = s.c + 100
+              |WHERE t.a = s.a
+              |""".stripMargin)
+          assert(checkedMetrics(df2)("numAddedFiles").value == 20)
+
+          val df3 = sql(
+            """
+              |DELETE t
+              |FROM tt2 t, tt1 s
+              |WHERE t.a = s.a AND s.a % 3 = 0
+              |""".stripMargin)
+          sql("desc history tt2").show(false)
+          assert(checkedMetrics(df3)("numAddedFiles").value == 13)
+        }
+      }
+    }
+  }
+
+  test("repartition to merge small files on update/delete for non-partition-bucket delta table") {
+    Seq(true, false).foreach { ae =>
+      val shufflePartitionNum = 5
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
+        SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",
+        SQLConf.SHUFFLE_PARTITIONS.key -> s"$shufflePartitionNum",
+        DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
+        withTable("tt1", "tt2") {
+          spark.range(0, 50).map(x => (x.toString, x, x)).toDF("a", "b", "c")
+            .write.saveAsTable("tt1")
+
+          sql(
+            s"""
+               |CREATE TABLE tt2(a int, b int, c int) USING PARQUET
+               |CLUSTERED BY (c)
+               |INTO 2 BUCKETS
+               |""".stripMargin)
+
+          sql("convert to delta tt2")
+
+          val df = sql(s"INSERT INTO tt2 SELECT a, b, c from tt1")
+          assert(checkedMetrics(df)("numFiles").value == 2)
+
+          val df2 = sql(
+            """
+              |UPDATE t
+              |FROM tt2 t, tt1 s
+              |SET t.c = s.c + 100
+              |WHERE t.a = s.a
+              |""".stripMargin)
+          assert(checkedMetrics(df2)("numAddedFiles").value == 2)
+
+          val df3 = sql(
+            """
+              |DELETE t
+              |FROM tt2 t, tt1 s
+              |WHERE t.a = s.a AND s.a % 3 = 0
+              |""".stripMargin)
+          sql("desc history tt2").show(false)
+          assert(checkedMetrics(df3)("numAddedFiles").value == 2)
+        }
       }
     }
   }
