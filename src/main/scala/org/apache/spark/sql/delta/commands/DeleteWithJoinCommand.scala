@@ -271,7 +271,7 @@ case class DeleteWithJoinCommand(
     val normalizedDF = Dataset.ofRows(spark, normalized)
 
     // Write to Delta
-    val newFiles = deltaTxn.writeFiles(normalizedDF)
+    val newFiles = deltaTxn.writeFiles(normalizedDF, metrics)
     metrics("numAddedFiles") += newFiles.size
     newFiles
   }

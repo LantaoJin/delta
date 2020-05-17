@@ -164,7 +164,7 @@ class SQLQuerySuite extends QueryTest
             |CONVERT TO DELTA target
             |""".stripMargin)
 
-        sql(
+        var df = sql(
           """
             |UPDATE target
             |SET target.col2 = 1
@@ -176,7 +176,8 @@ class SQLQuerySuite extends QueryTest
         checkKeywordsExist(
           sql("desc history target").filter("version = '1'").select("operationMetrics"),
           "numRemovedFiles -> 2", "numRowsUpdated -> 2", "numAddedFiles -> 2")
-        sql(
+        assert(checkedMetrics(df)("numRowsUpdated").value == 2)
+        df = sql(
           """
             |DELETE FROM target
             |WHERE target.col1 = 1
@@ -187,11 +188,12 @@ class SQLQuerySuite extends QueryTest
         checkKeywordsExist(
           sql("desc history target").filter("version = '2'").select("operationMetrics"),
           "numRemovedFiles -> 2", "numRowsDeleted -> 2", "numAddedFiles -> 1")
-        val df1 = sql(
+        assert(checkedMetrics(df)("numRowsDeleted").value == 2)
+        df = sql(
           """
             |INSERT INTO TABLE target VALUES (1, 1)
             |""".stripMargin)
-        assert(df1.queryExecution.sparkPlan.metrics("numOutputRows").value == 1)
+        assert(checkedMetrics(df)("numOutputRows").value == 1)
         sql(
           """
             |CREATE TABLE source (a INT, b STRING) USING parquet
@@ -204,7 +206,7 @@ class SQLQuerySuite extends QueryTest
           """
             |INSERT INTO TABLE source VALUES (3, "3000")
             |""".stripMargin)
-        sql(
+        df = sql(
           s"""
              |UPDATE t
              |FROM target t, source s
@@ -217,12 +219,13 @@ class SQLQuerySuite extends QueryTest
         checkKeywordsExist(
           sql("desc history target").filter("version = '4'").select("operationMetrics"),
           "numRemovedFiles -> 1", "numRowsUpdated -> 1", "numAddedFiles -> 1", "numSourceRows -> 2")
-        val df2 = sql(
+        assert(checkedMetrics(df)("numRowsUpdated").value == 1)
+        df = sql(
           """
             |INSERT INTO TABLE target VALUES (3, 3)
             |""".stripMargin)
-        assert(df2.queryExecution.sparkPlan.metrics("numOutputRows").value == 1)
-        sql(
+        assert(checkedMetrics(df)("numOutputRows").value == 1)
+        df = sql(
           """
             |DELETE t
             |FROM target t, source s
@@ -234,7 +237,8 @@ class SQLQuerySuite extends QueryTest
         checkKeywordsExist(
           sql("desc history target").filter("version = '6'").select("operationMetrics"),
           "numRemovedFiles -> 2", "numRowsDeleted -> 2", "numAddedFiles -> 1", "numSourceRows -> 2")
-        sql(
+        assert(checkedMetrics(df)("numRowsDeleted").value == 2)
+        df = sql(
           """
             |DELETE FROM target t
             |WHERE t.col1 = 1
@@ -244,6 +248,7 @@ class SQLQuerySuite extends QueryTest
         checkKeywordsExist(
           sql("desc history target").filter("version = '7'").select("operationMetrics"),
           "numRemovedFiles -> 1", "numRowsDeleted -> 1", "numAddedFiles -> 1")
+        assert(checkedMetrics(df)("numRowsDeleted").value == 1)
       }
     }
   }
@@ -252,14 +257,15 @@ class SQLQuerySuite extends QueryTest
     withSQLConf(DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
       withTable("target") {
         withTempView("test", "test2", "source") {
-          spark.range(5000).toDF("col").createOrReplaceTempView("test")
+          spark.range(5000).map(x => (x, x)).toDF("col", "num")
+            .createOrReplaceTempView("test")
           spark.range(1).toDF("col").createOrReplaceTempView("source")
           sql(
             """
               |CREATE TABLE target USING parquet AS SELECT * FROM test
               |""".stripMargin)
           sql("CONVERT TO DELTA target")
-          sql(
+          var df = sql(
             """
               |UPDATE target
               |SET col = 0
@@ -268,7 +274,8 @@ class SQLQuerySuite extends QueryTest
           checkKeywordsExist(
             sql("desc history target").filter("version = '1'").select("operationMetrics"),
             "numRemovedFiles -> 2", "numRowsUpdated -> 500", "numAddedFiles -> 2")
-          sql(
+          assert(checkedMetrics(df)("numRowsUpdated").value == 500)
+          df = sql(
             """
               |DELETE t
               |FROM target t, source s
@@ -278,16 +285,27 @@ class SQLQuerySuite extends QueryTest
             sql("desc history target").filter("version = '2'").select("operationMetrics"),
             "numRemovedFiles -> 2", "numRowsDeleted -> 500",
             "numAddedFiles -> 2", "numSourceRows -> 1")
-          spark.range(5000, 8000).toDF("col").createOrReplaceTempView("test2")
+          assert(checkedMetrics(df)("numRowsDeleted").value == 500)
+          spark.range(5000, 8000).map(x => (x, x)).toDF("col", "num")
+            .createOrReplaceTempView("test2")
           val insertDf = sql(
             """
               |INSERT INTO target SELECT * FROM test2
               |""".stripMargin)
-          assert(insertDf.queryExecution.sparkPlan.metrics("numOutputRows").value == 3000)
+          assert(checkedMetrics(insertDf)("numOutputRows").value == 3000)
           checkKeywordsExist(
             sql("desc history target").filter("version = '3'").select("operationMetrics"),
             "numFiles -> 2", "numOutputRows -> 3000")
-          sql(
+          df = sql(
+            """
+              |UPDATE target t
+              |SET t.num = t.col
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '4'").select("operationMetrics"),
+            "numRowsUpdated -> 7500", "numOutputRows -> 7500")
+          assert(checkedMetrics(df)("numRowsUpdated").value == 7500)
+          df = sql(
             """
               |UPDATE t
               |FROM target t, test2 s
@@ -295,24 +313,152 @@ class SQLQuerySuite extends QueryTest
               |WHERE t.col = s.col
               |""".stripMargin)
           checkKeywordsExist(
-            sql("desc history target").filter("version = '4'").select("operationMetrics"),
-            "numRemovedFiles -> 2", "numRowsUpdated -> 3000",
-            "numAddedFiles -> 2", "numSourceRows -> 3000")
-          sql(
+            sql("desc history target").filter("version = '5'").select("operationMetrics"),
+            "numRowsUpdated -> 3000", "numSourceRows -> 3000")
+          assert(checkedMetrics(df)("numRowsUpdated").value == 3000)
+          df = sql(
             """
               |UPDATE target
               |SET col = 0
               |""".stripMargin)
           checkKeywordsExist(
-            sql("desc history target").filter("version = '5'").select("operationMetrics"),
-            "numRemovedFiles -> 4", "numRowsUpdated -> 7500", "numAddedFiles -> 2")
-          sql(
+            sql("desc history target").filter("version = '6'").select("operationMetrics"),
+            "numRowsUpdated -> 7500", "numOutputRows -> 7500")
+          assert(checkedMetrics(df)("numRowsUpdated").value == 7500)
+          df = sql(
             """
               |DELETE FROM target
               |""".stripMargin)
           checkKeywordsExist(
+            sql("desc history target").filter("version = '7'").select("operationMetrics"),
+            "numRowsDeleted -> 7500")
+          assert(checkedMetrics(df)("numRowsDeleted").value == 7500)
+        }
+      }
+    }
+  }
+
+  test("test insert/update/delete metrics on partition table") {
+    withSQLConf(DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
+      withTable("target") {
+        withTempView("test") {
+          spark.range(5000).map(x => (x, x % 10)).toDF("col", "dt").createOrReplaceTempView("test")
+
+          sql(
+            """
+              |CREATE TABLE target (col int, dt string) USING parquet
+              |PARTITIONED BY (dt)
+              |""".stripMargin)
+          sql("CONVERT TO DELTA target")
+          var df = sql("INSERT INTO target SELECT * FROM test")
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '1'").select("operationMetrics"),
+            "numOutputRows -> 5000")
+          assert(checkedMetrics(df)("numOutputRows").value == 5000)
+          df = sql(
+            """
+              |UPDATE target
+              |SET col = 0
+              |WHERE dt = 3
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '2'").select("operationMetrics"),
+            "numRowsCopied -> 0", "numRowsUpdated -> 500")
+          assert(checkedMetrics(df)("numRowsUpdated").value == 500)
+          df = sql(
+            """
+              |UPDATE t
+              |FROM target t, test s
+              |SET t.col = 0
+              |WHERE t.col = s.col AND s.dt = 9
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '3'").select("operationMetrics"),
+            "numRowsUpdated -> 500", "numOutputRows -> 500", "numSourceRows -> 5000")
+          assert(checkedMetrics(df)("numRowsUpdated").value == 500)
+          df = sql(
+            """
+              |DELETE FROM target t
+              |WHERE t.dt = 3
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '4'").select("operationMetrics"),
+            "numRowsDeleted -> 500")
+          assert(checkedMetrics(df)("numRowsDeleted").value == 500)
+          df = sql(
+            """
+              |DELETE FROM target t
+              |WHERE t.dt = 2 OR t.dt = 4
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '5'").select("operationMetrics"),
+            "numRowsDeleted -> 1000")
+          assert(checkedMetrics(df)("numRowsDeleted").value == 1000)
+          df = sql(
+            """
+              |UPDATE target
+              |SET col = 0
+              |""".stripMargin)
+          checkKeywordsExist(
             sql("desc history target").filter("version = '6'").select("operationMetrics"),
-            "numRemovedFiles -> 2", "numRowsDeleted -> 7500", "numAddedFiles -> 0")
+            "numRowsUpdated -> 3500", "numOutputRows -> 3500")
+          assert(checkedMetrics(df)("numRowsUpdated").value == 3500)
+          df = sql(
+            """
+              |DELETE FROM target
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '7'").select("operationMetrics"),
+            "numRowsDeleted -> 3500")
+          assert(checkedMetrics(df)("numRowsDeleted").value == 3500)
+        }
+      }
+    }
+  }
+
+  test("test insert/update/delete metrics on bucket table") {
+    withSQLConf(DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
+      withTable("target") {
+        withTempView("test") {
+          spark.range(50).map(x => (x, x, x)).toDF("id", "num", "name")
+            .createOrReplaceTempView("test")
+          sql(
+            s"""
+               |CREATE TABLE target USING parquet
+               |CLUSTERED BY (id, num)
+               |INTO 10 BUCKETS
+               |AS SELECT * FROM test
+               |""".stripMargin)
+          sql(
+            """
+              |CONVERT TO DELTA target
+              |""".stripMargin)
+          var df = sql(
+            """
+              |UPDATE target t
+              |SET t.num = t.name
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '1'").select("operationMetrics"),
+            "numRowsUpdated -> 50", "numOutputRows -> 50")
+          assert(checkedMetrics(df)("numRowsUpdated").value == 50)
+          df = sql(
+            """
+              |DELETE FROM target t
+              |WHERE id % 2 = 0
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '2'").select("operationMetrics"),
+            "numRowsDeleted -> 25")
+          assert(checkedMetrics(df)("numRowsDeleted").value == 25)
+          df = sql(
+            """
+              |DELETE FROM target
+              |""".stripMargin)
+          checkKeywordsExist(
+            sql("desc history target").filter("version = '3'").select("operationMetrics"),
+            "numRowsDeleted -> 25")
+          assert(checkedMetrics(df)("numRowsDeleted").value == 25)
         }
       }
     }

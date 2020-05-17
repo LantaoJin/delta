@@ -25,16 +25,13 @@ import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Expression, If, Literal}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.delta.schema.SchemaUtils
 import org.apache.spark.sql.delta.util.AnalysisHelper
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
-import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.metric.SQLMetrics.createMetric
 import org.apache.spark.sql.functions.input_file_name
 import org.apache.spark.sql.functions.udf
-import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.BooleanType
 
 /**
@@ -63,7 +60,9 @@ case class UpdateCommand(
   override lazy val metrics = Map[String, SQLMetric](
     "numAddedFiles" -> createMetric(sc, "number of files added."),
     "numRemovedFiles" -> createMetric(sc, "number of files removed."),
-    "numRowsUpdated" -> createMetric(sc, "number of updated rows")
+    "numRowsUpdated" -> createMetric(sc, "number of updated rows"),
+    "numOutputRows" -> createMetric(sc, "number of output rows"),
+    "numRowsCopied" -> createMetric(sc, "number of copied rows")
   )
 
   final override def run(sparkSession: SparkSession): Seq[Row] = {
@@ -131,11 +130,18 @@ case class UpdateCommand(
       // that only involves the affected files instead of all files.
       val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex, catalogTable)
       val data = Dataset.ofRows(sparkSession, newTarget)
+      val updatedRowCount = metrics("numRowsUpdated")
+      val updatedRowUdf = udf { () =>
+        updatedRowCount += 1
+        true
+      }.asNondeterministic()
       val filesToRewrite =
         withStatusCode("DELTA",
           s"Finding $numTouchedFiles files to rewrite for UPDATE operation") {
           // InputFileName() has problem when spark.sql.files.scan.multiThread.enabled=true
-          data.filter(new Column(updateCondition)).select(input_file_name())
+          data.filter(new Column(updateCondition))
+            .filter(updatedRowUdf())
+            .select(input_file_name())
             .distinct().as[String].collect()
         }.filter(_.nonEmpty)
 
@@ -171,10 +177,12 @@ case class UpdateCommand(
       metrics("numRemovedFiles").set(numTouchedFiles)
       txn.registerSQLMetrics(sparkSession, metrics)
 
-      val catalogTable = target collectFirst  {
-        case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
-      }
-      txn.commit(actions, DeltaOperations.Update(condition.map(_.toString)), catalogTable)
+      val operation = DeltaOperations.Update(condition.map(_.toString))
+      txn.commit(actions, operation, catalogTable)
+
+      // fill missing metrics
+      txn.fillMissingMetrics(operation, metrics)
+
       // This is needed to make the SQL metrics visible in the Spark UI
       val executionId = sparkSession.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       SQLMetrics.postDriverMetricUpdates(
@@ -209,25 +217,17 @@ case class UpdateCommand(
       spark, txn, "update", rootPath, inputLeafFiles, nameToAddFileMap)
     val newTarget = DeltaTableUtils.replaceFileIndex(target, baseRelation.location, catalogTable)
 
-    val incrUpdatedCountExpr = makeMetricUpdateUDF("numRowsUpdated")
-    val updateMetrics = If(condition, incrUpdatedCountExpr, Literal.TrueLiteral)
-    val targetDf = Dataset.ofRows(spark, newTarget).withColumn(
-      SchemaUtils.METRICS_COLUMN, new Column(Alias(updateMetrics, SchemaUtils.METRICS_COLUMN)()))
+    val targetDf = Dataset.ofRows(spark, newTarget)
     val updatedDataFrame = {
-      val updatedColumns = buildUpdatedColumns(condition) :+ col(SchemaUtils.METRICS_COLUMN)
+      val updatedColumns = buildUpdatedColumns(condition)
       targetDf.select(updatedColumns: _*)
     }
+
     // Add a InsertIntoDataSource node to reuse the processing on node InsertIntoDataSource.
     val normalized = convertToInsertIntoDataSource(conf,
       target, updatedDataFrame.queryExecution.logical)
     val normalizedDF = Dataset.ofRows(spark, normalized)
-    txn.writeFiles(normalizedDF)
-  }
-
-  private def makeMetricUpdateUDF(name: String): Expression = {
-    // only capture the needed metric in a local variable
-    val metric = metrics(name)
-    udf { () => { metric += 1; true } }.asNondeterministic().apply().expr
+    txn.writeFiles(normalizedDF, metrics)
   }
 
   /**

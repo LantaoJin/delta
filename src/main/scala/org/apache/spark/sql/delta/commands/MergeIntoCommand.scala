@@ -289,7 +289,7 @@ case class MergeIntoCommand(
     val normalized = convertToInsertIntoDataSource(conf,
       target, insertDf.queryExecution.logical)
     val normalizedDF = Dataset.ofRows(spark, normalized)
-    val newFiles = deltaTxn.writeFiles(normalizedDF)
+    val newFiles = deltaTxn.writeFiles(normalizedDF, metrics)
     metrics("numTargetFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
     metrics("numTargetFilesAfterSkipping") += dataSkippedFiles.size
     metrics("numTargetFilesRemoved") += 0
@@ -392,7 +392,7 @@ case class MergeIntoCommand(
     val normalized = convertToInsertIntoDataSource(conf, target, outputDF.queryExecution.logical)
     val normalizedDF = Dataset.ofRows(spark, normalized)
     // Write to Delta
-    val newFiles = deltaTxn.writeFiles(normalizedDF)
+    val newFiles = deltaTxn.writeFiles(normalizedDF, metrics)
     metrics("numTargetFilesAdded") += newFiles.size
     newFiles
   }

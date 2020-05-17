@@ -273,7 +273,7 @@ case class UpdateWithJoinCommand(
     logInfo("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
 
     // Write to Delta
-    val newFiles = deltaTxn.writeFiles(normalizedDF)
+    val newFiles = deltaTxn.writeFiles(normalizedDF, metrics)
     metrics("numAddedFiles") += newFiles.size
     newFiles
   }

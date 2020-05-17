@@ -274,14 +274,14 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
     // IsNotNull should be constructed by `constructIsNotNullConstraints`.
     val predicates = constraints.filterNot(_.isInstanceOf[IsNotNull])
     predicates.foreach {
-      case eq @ EqualTo(l: Expression, r: Expression) =>
-        val candidateConstraints = predicates - eq
-        inferredConstraints ++= replaceConstraints(candidateConstraints, l, r)
-        inferredConstraints ++= replaceConstraints(candidateConstraints, r, l)
       case eq @ EqualTo(l @ Cast(_: Expression, _, _, _), r: Expression) =>
         inferredConstraints ++= replaceConstraints(predicates - eq, r, l)
       case eq @ EqualTo(l: Expression, r @ Cast(_: Expression, _, _, _)) =>
         inferredConstraints ++= replaceConstraints(predicates - eq, l, r)
+      case eq @ EqualTo(l: Expression, r: Expression) =>
+        val candidateConstraints = predicates - eq
+        inferredConstraints ++= replaceConstraints(candidateConstraints, l, r)
+        inferredConstraints ++= replaceConstraints(candidateConstraints, r, l)
       case _ => // No inference
     }
     inferredConstraints.reduceLeftOption(And)

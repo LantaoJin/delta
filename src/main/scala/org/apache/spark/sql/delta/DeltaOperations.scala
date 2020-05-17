@@ -21,6 +21,7 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.delta.actions.{Metadata, Protocol}
 import org.apache.spark.sql.delta.commands.ConvertProperties
 import org.apache.spark.sql.delta.util.JsonUtils
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.{StructField, StructType}
 
@@ -40,6 +41,12 @@ object DeltaOperations {
     lazy val jsonEncodedValues: Map[String, String] = parameters.mapValues(JsonUtils.toJson(_))
 
     val operationMetrics: Seq[String] = Seq()
+
+    def transformMetrics(metrics: Map[String, SQLMetric]): Map[String, String] = {
+      metrics.filterKeys( s =>
+        operationMetrics.contains(s)
+      ).transform((_, v) => v.value.toString)
+    }
   }
 
   /** Recorded during batch inserts. Predicates can be provided for overwrites. */
@@ -167,6 +174,23 @@ object DeltaOperations {
       "numRowsCopied",
       "numRowsUpdated"
     )
+
+    override def transformMetrics(metrics: Map[String, SQLMetric]): Map[String, String] = {
+      val numOutputRows = metrics("numOutputRows").value
+      val numUpdatedRows = metrics("numRowsUpdated").value
+      var strMetrics = super.transformMetrics(metrics)
+      // In the case where the numUpdatedRows is not captured in the UpdateCommand implementation
+      // we can siphon out the metrics from the BasicWriteStatsTracker for that command.
+      // This is for the case where the entire partition is re-written.
+      if (numUpdatedRows == 0 && numOutputRows != 0) {
+        strMetrics += "numRowsUpdated" -> numOutputRows.toString
+        strMetrics += "numRowsCopied" -> "0"
+      } else {
+        strMetrics += "numRowsCopied" -> (
+          numOutputRows - strMetrics("numRowsUpdated").toInt).toString
+      }
+      strMetrics
+    }
   }
   /** Recorded when the table is created. */
   case class CreateTable(metadata: Metadata, isManaged: Boolean, asSelect: Boolean = false)

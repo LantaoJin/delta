@@ -101,14 +101,11 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
     partitionColumns
   }
 
-  def writeFiles(data: Dataset[_]): Seq[AddFile] =
-    writeFiles(data, None, isOptimize = false, Map.empty)
+  def writeFiles(data: Dataset[_], metricsToExpose: Map[String, SQLMetric]): Seq[AddFile] =
+    writeFiles(data, None, isOptimize = false, metricsToExpose)
 
   def writeFiles(data: Dataset[_], writeOptions: Option[DeltaOptions]): Seq[AddFile] =
     writeFiles(data, writeOptions, isOptimize = false, Map.empty)
-
-  def writeFiles(data: Dataset[_], isOptimize: Boolean): Seq[AddFile] =
-    writeFiles(data, None, isOptimize = isOptimize, Map.empty)
 
   /**
    * Writes out the dataframe after performing schema validation. Returns a list of

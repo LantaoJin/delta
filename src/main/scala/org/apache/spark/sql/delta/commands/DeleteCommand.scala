@@ -96,10 +96,12 @@ case class DeleteCommand(
 
         numTouchedFiles = allFiles.size
         scanTimeMs = (System.nanoTime() - startTime) / 1000 / 1000
+        metrics("numRemovedFiles").set(allFiles.size)
 
+        // to get the number deleted rows for entire table
         val data = Dataset.ofRows(sparkSession, target)
         metrics("numRowsDeleted").set(data.count())
-        metrics("numRemovedFiles").set(allFiles.size)
+
         val operationTimestamp = System.currentTimeMillis()
         allFiles.map(_.removeWithTimestamp(operationTimestamp))
       case Some(cond) =>
@@ -116,8 +118,17 @@ case class DeleteCommand(
 
           scanTimeMs = (System.nanoTime() - startTime) / 1000 / 1000
           numTouchedFiles = candidateFiles.size
-
           metrics("numRemovedFiles").set(numTouchedFiles)
+
+          // to get the number deleted rows for partition
+          val fileIndex = new TahoeBatchFileIndex(
+            sparkSession, "delete", candidateFiles, deltaLog, tahoeFileIndex.path, txn.snapshot)
+          // Keep everything from the resolved target except a new TahoeFileIndex
+          // that only involves the affected files instead of all files.
+          val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex, catalogTable)
+          val partitioned = Dataset.ofRows(sparkSession, newTarget)
+          metrics("numRowsDeleted").set(partitioned.count())
+
           candidateFiles.map(_.removeWithTimestamp(operationTimestamp))
         } else {
           // Case 3: Delete the rows based on the condition.
@@ -176,7 +187,7 @@ case class DeleteCommand(
             val normalizedDF = Dataset.ofRows(sparkSession, normalized)
             val rewrittenFiles = withStatusCode(
               "DELTA", s"Rewriting ${filesToRewrite.size} files for DELETE operation") {
-              txn.writeFiles(normalizedDF) // no need to repartitionByBucketing(target, updatedDF))
+              txn.writeFiles(normalizedDF, metrics)
             }
 
             numRewrittenFiles = rewrittenFiles.size
