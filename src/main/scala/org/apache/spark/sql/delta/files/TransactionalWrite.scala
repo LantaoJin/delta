@@ -139,6 +139,9 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
 
       val physicalPlan = DeltaInvariantCheckerExec(queryExecution.executedPlan, invariants)
 
+      val executionId = spark.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
+      logInfo(s"Physical plan of $executionId before execution:\n ${physicalPlan.toString()}")
+
       val statsTrackers: ListBuffer[WriteJobStatsTracker] = ListBuffer()
       val basicWriteJobStatsTracker = new BasicWriteJobStatsTracker(
         new SerializableConfiguration(spark.sessionState.newHadoopConf()),
@@ -164,6 +167,11 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
       // after written, expose the metrics
       basicWriteJobStatsTracker.metrics.foreach { kv =>
         metricsToExpose.get(kv._1).filter(_.isZero).foreach(s => s.merge(kv._2))
+      }
+
+      if (conf.adaptiveExecutionEnabled) {
+        logInfo(s"Physical plan of $executionId after adaptive execution:\n " +
+          s"${physicalPlan.toString()}")
       }
     }
 
