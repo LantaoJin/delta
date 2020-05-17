@@ -53,6 +53,8 @@ case class DeleteCommand(
 
   @transient private lazy val sc: SparkContext = SparkContext.getOrCreate()
 
+  private val catalogTable = getCatalogTableFromTargetPlan(target)
+
   override lazy val metrics = Map[String, SQLMetric](
     "numRemovedFiles" -> createMetric(sc, "number of files removed."),
     "numAddedFiles" -> createMetric(sc, "number of files added."),
@@ -128,7 +130,7 @@ case class DeleteCommand(
             sparkSession, "delete", candidateFiles, deltaLog, tahoeFileIndex.path, txn.snapshot)
           // Keep everything from the resolved target except a new TahoeFileIndex
           // that only involves the affected files instead of all files.
-          val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex)
+          val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex, catalogTable)
           val data = Dataset.ofRows(sparkSession, newTarget)
           val deletedRowCount = metrics("numRowsDeleted")
           val deletedRowUdf = udf { () =>
@@ -162,7 +164,8 @@ case class DeleteCommand(
               sparkSession, txn, "delete", tahoeFileIndex.path, filesToRewrite, nameToAddFileMap)
             // Keep everything from the resolved target except a new TahoeFileIndex
             // that only involves the affected files instead of all files.
-            val newTarget = DeltaTableUtils.replaceFileIndex(target, baseRelation.location)
+            val newTarget =
+              DeltaTableUtils.replaceFileIndex(target, baseRelation.location, catalogTable)
 
             val targetDF = Dataset.ofRows(sparkSession, newTarget)
             val filterCond = Not(EqualNullSafe(cond, Literal(true, BooleanType)))

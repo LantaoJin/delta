@@ -20,6 +20,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{AnalysisException, Column, DataFrame, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.{Analyzer, EliminateSubqueryAliases, NoSuchTableException, UnresolvedRelation}
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{Expression, SubqueryExpression}
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
@@ -215,6 +216,12 @@ trait DeltaCommand extends DeltaLogging {
        |Found a row in target which matched multiple rows in source:
        |${rowInTarget.mkString("[", ",", "]")}
        |""".stripMargin
+  }
+
+  protected def getCatalogTableFromTargetPlan(target: LogicalPlan): Option[CatalogTable] = {
+    target.collectFirst {
+      case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
+    }
   }
 
   protected def convertToInsertIntoDataSource(

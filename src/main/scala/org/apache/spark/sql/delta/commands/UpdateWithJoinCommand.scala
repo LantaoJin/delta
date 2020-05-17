@@ -29,7 +29,6 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
-import org.apache.spark.sql.execution.datasources.{InsertIntoDataSource, LogicalRelation}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.BooleanType
@@ -71,9 +70,7 @@ case class UpdateWithJoinCommand(
   @transient private lazy val sc: SparkContext = SparkContext.getOrCreate()
   @transient private lazy val targetDeltaLog: DeltaLog = targetFileIndex.deltaLog
 
-  private val catalogTable = target.collectFirst {
-    case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
-  }
+  private val catalogTable = getCatalogTableFromTargetPlan(target)
 
   override lazy val metrics = Map[String, SQLMetric](
     "numSourceRows" -> createMetric(sc, "number of source rows"),

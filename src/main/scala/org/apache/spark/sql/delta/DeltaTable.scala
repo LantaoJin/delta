@@ -245,10 +245,12 @@ object DeltaTableUtils extends PredicateHelper
    */
   def replaceFileIndex(
       target: LogicalPlan,
-      fileIndex: FileIndex): LogicalPlan = {
+      fileIndex: FileIndex,
+      catalogTable: Option[CatalogTable]): LogicalPlan = {
     target transform {
       case l @ LogicalRelation(hfsr: HadoopFsRelation, _, _, _) =>
-        l.copy(relation = hfsr.copy(location = fileIndex)(hfsr.sparkSession))
+        l.copy(relation = hfsr.copy(location = fileIndex)(hfsr.sparkSession),
+          catalogTable = catalogTable)
     }
   }
 

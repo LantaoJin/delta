@@ -58,6 +58,8 @@ case class UpdateCommand(
 
   @transient private lazy val sc: SparkContext = SparkContext.getOrCreate()
 
+  private val catalogTable = getCatalogTableFromTargetPlan(target)
+
   override lazy val metrics = Map[String, SQLMetric](
     "numAddedFiles" -> createMetric(sc, "number of files added."),
     "numRemovedFiles" -> createMetric(sc, "number of files removed."),
@@ -127,7 +129,7 @@ case class UpdateCommand(
         sparkSession, "update", candidateFiles, deltaLog, tahoeFileIndex.path, txn.snapshot)
       // Keep everything from the resolved target except a new TahoeFileIndex
       // that only involves the affected files instead of all files.
-      val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex)
+      val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex, catalogTable)
       val data = Dataset.ofRows(sparkSession, newTarget)
       val filesToRewrite =
         withStatusCode("DELTA",
@@ -205,7 +207,7 @@ case class UpdateCommand(
     // Containing the map from the relative file path to AddFile
     val baseRelation = buildBaseRelation(
       spark, txn, "update", rootPath, inputLeafFiles, nameToAddFileMap)
-    val newTarget = DeltaTableUtils.replaceFileIndex(target, baseRelation.location)
+    val newTarget = DeltaTableUtils.replaceFileIndex(target, baseRelation.location, catalogTable)
 
     val incrUpdatedCountExpr = makeMetricUpdateUDF("numRowsUpdated")
     val updateMetrics = If(condition, incrUpdatedCountExpr, Literal.TrueLiteral)

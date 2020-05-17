@@ -985,7 +985,7 @@ class SQLQuerySuite extends QueryTest
   }
 
   test("repartition to merge small files on update/delete for non-partition delta table") {
-    Seq(true).foreach { ae =>
+    Seq(true, false).foreach { ae =>
       val shufflePartitionNum = 5
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
         SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",

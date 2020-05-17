@@ -29,7 +29,6 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
-import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.BooleanType
@@ -66,6 +65,8 @@ case class DeleteWithJoinCommand(
   @transient private lazy val sc: SparkContext = SparkContext.getOrCreate()
   @transient private lazy val targetDeltaLog: DeltaLog = targetFileIndex.deltaLog
 
+  private val catalogTable = getCatalogTableFromTargetPlan(target)
+
   override lazy val metrics = Map[String, SQLMetric](
     "numSourceRows" -> createMetric(sc, "number of source rows"),
     "numRowsDeleted" -> createMetric(sc, "number of deleted rows"),
@@ -73,10 +74,6 @@ case class DeleteWithJoinCommand(
     "numFilesAfterSkipping" -> createMetric(sc, "number of target files after skipping"),
     "numRemovedFiles" -> createMetric(sc, "number of files removed to target"),
     "numAddedFiles" -> createMetric(sc, "number of files added to target"))
-
-  private val catalogTable = target.collectFirst {
-    case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
-  }
 
   override def run(spark: SparkSession): Seq[Row] = {
     recordDeltaOperation(targetDeltaLog, "delta.dml.delete") {
@@ -214,7 +211,7 @@ case class DeleteWithJoinCommand(
 
     val fileIndex = new TahoeBatchFileIndex(
       spark, "delete", filesToRewrite, targetDeltaLog, targetFileIndex.path, deltaTxn.snapshot)
-    val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex)
+    val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex, catalogTable)
 
     // we also can use leftanti join to implement delete.
     // but it cannot get the metrics like 'numRowsDeleted'
