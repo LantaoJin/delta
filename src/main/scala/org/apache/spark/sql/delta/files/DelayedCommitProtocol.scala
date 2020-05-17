@@ -25,8 +25,9 @@ import scala.util.Random
 
 import org.apache.spark.sql.delta.actions.AddFile
 import org.apache.spark.sql.delta.util.{DateFormatter, PartitionUtils, TimestampFormatter}
-import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{JobContext, TaskAttemptContext}
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.internal.io.FileCommitProtocol.TaskCommitMessage
@@ -37,9 +38,9 @@ import org.apache.spark.sql.types.StringType
  * Writes out the files to `path` and returns a list of them in `addedStatuses`.
  */
 class DelayedCommitProtocol(
-      jobId: String,
-      path: String,
-      randomPrefixLength: Option[Int])
+    jobId: String,
+    path: String,
+    randomPrefixLength: Option[Int])
   extends FileCommitProtocol
     with Serializable with Logging {
 
@@ -47,44 +48,20 @@ class DelayedCommitProtocol(
   @transient private var addedFiles: ArrayBuffer[(Map[String, String], String)] = _
   @transient val addedStatuses = new ArrayBuffer[AddFile]
 
-  /**
-   * The staging directory of this write job. Spark uses it to deal with files with absolute output
-   * path, or writing data into partitioned directory with dynamicPartitionOverwrite=true.
-   */
-  private def stagingDir = new Path(path, ".spark-staging-" + jobId)
-
   val timestampPartitionPattern = "yyyy-MM-dd HH:mm:ss[.S]"
+
 
   override def setupJob(jobContext: JobContext): Unit = {
 
   }
 
   override def commitJob(jobContext: JobContext, taskCommits: Seq[TaskCommitMessage]): Unit = {
-    val fs = stagingDir.getFileSystem(jobContext.getConfiguration)
-    try {
-      val finalPath = new Path(path)
-      val fileStatuses = taskCommits.flatMap(_.obj.asInstanceOf[Seq[AddFile]]).map { addFile =>
-        fs.rename(new Path(stagingDir, addFile.path), new Path(finalPath, addFile.path))
-        logDebug(s"Committing job, move ${new Path(stagingDir, addFile.path)} to " +
-          s"${new Path(finalPath, addFile.path)}")
-        addFile
-      }.toArray
-
-      addedStatuses ++= fileStatuses
-    } finally {
-      if (!tryToDelete(fs, stagingDir, true)) {
-        logWarning(s"Failed to delete $stagingDir when commit job")
-      }
-    }
+    val fileStatuses = taskCommits.flatMap(_.obj.asInstanceOf[Seq[AddFile]]).toArray
+    addedStatuses ++= fileStatuses
   }
 
   override def abortJob(jobContext: JobContext): Unit = {
-    val fs = stagingDir.getFileSystem(jobContext.getConfiguration)
-    logDebug(s"Abort job, clean $stagingDir")
-    if (!tryToDelete(fs, stagingDir, true)) {
-      logWarning(s"Failed to delete $stagingDir when abort job")
-    }
-    addedStatuses.clear()
+    // TODO: Best effort cleanup
   }
 
   override def setupTask(taskContext: TaskAttemptContext): Unit = {
@@ -120,13 +97,13 @@ class DelayedCommitProtocol(
         ._1
         .get
     parsedPartition
-        .columnNames
-        .zip(
-          parsedPartition
-            .literals
-            .map(l => Cast(l, StringType).eval())
-            .map(Option(_).map(_.toString).orNull))
-        .toMap
+      .columnNames
+      .zip(
+        parsedPartition
+          .literals
+          .map(l => Cast(l, StringType).eval())
+          .map(Option(_).map(_.toString).orNull))
+      .toMap
   }
 
   /** Generates a string created of `randomPrefixLength` alphanumeric characters. */
@@ -147,7 +124,7 @@ class DelayedCommitProtocol(
     }.getOrElse(new Path(filename)) // or directly write out to the output path
 
     addedFiles.append((partitionValues, relativePath.toUri.toString))
-    new Path(stagingDir, relativePath).toString
+    new Path(path, relativePath).toString
   }
 
   override def newTaskTempFileAbsPath(
@@ -158,9 +135,9 @@ class DelayedCommitProtocol(
 
   override def commitTask(taskContext: TaskAttemptContext): TaskCommitMessage = {
     if (addedFiles.nonEmpty) {
-      val fs = new Path(stagingDir, addedFiles.head._2).getFileSystem(taskContext.getConfiguration)
+      val fs = new Path(path, addedFiles.head._2).getFileSystem(taskContext.getConfiguration)
       val statuses: Seq[AddFile] = addedFiles.map { f =>
-        val filePath = new Path(stagingDir, new Path(new URI(f._2)))
+        val filePath = new Path(path, new Path(new URI(f._2)))
         val stat = fs.getFileStatus(filePath)
         AddFile(f._2, f._1, stat.getLen, stat.getModificationTime, true)
       }
@@ -172,30 +149,6 @@ class DelayedCommitProtocol(
   }
 
   override def abortTask(taskContext: TaskAttemptContext): Unit = {
-    if (addedFiles.nonEmpty) {
-      val fs = new Path(stagingDir, addedFiles.head._2).getFileSystem(taskContext.getConfiguration)
-      addedFiles.foreach { f =>
-        val filePath = new Path(stagingDir, new Path(new URI(f._2)))
-        if (!tryToDelete(fs, filePath, true)) {
-          logDebug(s"Failed to delete $filePath when abort task")
-        }
-      }
-      addedFiles.clear()
-    }
-  }
-
-  def tryToDelete(fs: FileSystem, f: Path, recursive: Boolean): Boolean = {
-    var i = 0
-    var deleted = false
-    while (!deleted && i < 16) {
-      if (!fs.exists(f)) {
-        deleted = true
-      } else {
-        deleted = fs.delete(f, recursive)
-        i += 1
-        Thread.sleep(100 * i)
-      }
-    }
-    deleted
+    // TODO: we can also try delete the addedFiles as a best-effort cleanup.
   }
 }

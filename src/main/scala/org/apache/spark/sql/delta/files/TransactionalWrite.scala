@@ -27,10 +27,8 @@ import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.schema._
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.datasources.{BasicWriteJobStatsTracker, FileFormatWriter, WriteJobStatsTracker}
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
 
@@ -51,8 +49,8 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
 
   protected var hasWritten = false
 
-  protected def getCommitter(jobId: String = "delta", outputPath: Path): DelayedCommitProtocol =
-    new DelayedCommitProtocol(jobId, outputPath.toString, None)
+  protected def getCommitter(outputPath: Path): DelayedCommitProtocol =
+    new DelayedCommitProtocol("delta", outputPath.toString, None)
 
   /** Makes the output attributes nullable, so that we don't write unreadable parquet files. */
   protected def makeOutputNullable(output: Seq[Attribute]): Seq[Attribute] = {
@@ -132,7 +130,7 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
     val partitioningColumns =
       getPartitioningColumns(partitionSchema, output, output.length < data.schema.size)
 
-    val committer = getCommitter(java.util.UUID.randomUUID().toString, outputPath)
+    val committer = getCommitter(outputPath)
 
     val invariants = Invariants.getFromSchema(metadata.schema, spark)
 
