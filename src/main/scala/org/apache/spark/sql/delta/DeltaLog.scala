@@ -625,7 +625,8 @@ class DeltaLog private(
       snapshot: Snapshot,
       addFiles: Seq[AddFile],
       isStreaming: Boolean = false,
-      actionTypeOpt: Option[String] = None): DataFrame = {
+      actionTypeOpt: Option[String] = None,
+      table: Option[CatalogTable] = None): DataFrame = {
     val actionType = actionTypeOpt.getOrElse(if (isStreaming) "streaming" else "batch")
     val fileIndex = new TahoeBatchFileIndex(spark, actionType, addFiles, this, dataPath, snapshot)
 
@@ -637,7 +638,13 @@ class DeltaLog private(
       snapshot.fileFormat,
       snapshot.metadata.format.options)(spark)
 
-    Dataset.ofRows(spark, LogicalRelation(relation, isStreaming = isStreaming))
+    if (isStreaming) {
+      Dataset.ofRows(spark, LogicalRelation(relation, isStreaming = isStreaming))
+    } else if (table.isDefined) {
+      Dataset.ofRows(spark, LogicalRelation(relation, table.get))
+    } else {
+      Dataset.ofRows(spark, LogicalRelation(relation, isStreaming = isStreaming))
+    }
   }
 
   /**

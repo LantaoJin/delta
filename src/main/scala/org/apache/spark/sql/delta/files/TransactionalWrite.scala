@@ -142,16 +142,7 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
         Map.empty,
         output)
 
-      val sparkPlan = queryExecution.executedPlan match {
-        case a: AdaptiveSparkPlanExec =>
-          val newPlan = ensureRepartition(conf, a.initialPlan, partitioningColumns)
-          newPlan.setLogicalLink(a.initialPlan.logicalLink.get)
-          a.copy(initialPlan = newPlan)
-        case plan =>
-          ensureRepartition(conf, plan, partitioningColumns)
-      }
-
-      val physicalPlan = DeltaInvariantCheckerExec(sparkPlan, invariants)
+      val physicalPlan = DeltaInvariantCheckerExec(queryExecution.executedPlan, invariants)
 
       val statsTrackers: ListBuffer[WriteJobStatsTracker] = ListBuffer()
       val basicWriteJobStatsTracker = new BasicWriteJobStatsTracker(
@@ -182,12 +173,5 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
     }
 
     committer.addedStatuses
-  }
-
-  private def ensureRepartition(
-      conf: SQLConf,
-      sparkPlan: SparkPlan,
-      partitionColumns: Seq[Attribute] = Nil): SparkPlan = {
-    EnsureRepartitionForDelta(conf).apply(sparkPlan, partitionColumns)
   }
 }

@@ -943,6 +943,8 @@ class SQLQuerySuite extends QueryTest
       val shufflePartitionNum = 5
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
         SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0",
+        SQLConf.REDUCE_POST_SHUFFLE_PARTITIONS_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> s"$shufflePartitionNum",
         DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
         withTable("tt1", "tt2") {
@@ -983,10 +985,12 @@ class SQLQuerySuite extends QueryTest
   }
 
   test("repartition to merge small files on update/delete for non-partition delta table") {
-    Seq(false).foreach { ae =>
+    Seq(true).foreach { ae =>
       val shufflePartitionNum = 5
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
         SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0",
+        SQLConf.REDUCE_POST_SHUFFLE_PARTITIONS_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> s"$shufflePartitionNum",
         DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
         withTable("tt1", "tt2") {
@@ -1010,6 +1014,7 @@ class SQLQuerySuite extends QueryTest
               |SET t.b = s.b
               |WHERE t.a = s.a
               |""".stripMargin)
+          assert(checkedMetrics(df2)("numRowsUpdated").value == 50)
           assert(checkedMetrics(df2)("numAddedFiles").value == 5)
 
           val df3 = sql(
@@ -1031,6 +1036,8 @@ class SQLQuerySuite extends QueryTest
       val shufflePartitionNum = 5
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
         SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0",
+        SQLConf.REDUCE_POST_SHUFFLE_PARTITIONS_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> s"$shufflePartitionNum",
         DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
         withTable("tt1", "tt2") {
@@ -1077,6 +1084,8 @@ class SQLQuerySuite extends QueryTest
       val shufflePartitionNum = 5
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
         SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0",
+        SQLConf.REDUCE_POST_SHUFFLE_PARTITIONS_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> s"$shufflePartitionNum",
         DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
         withTable("tt1", "tt2") {
@@ -1112,6 +1121,56 @@ class SQLQuerySuite extends QueryTest
               |""".stripMargin)
           sql("desc history tt2").show(false)
           assert(checkedMetrics(df3)("numAddedFiles").value == 2)
+        }
+      }
+    }
+  }
+
+  test("repartition to merge small files on update/delete" +
+    " on partition delta table join with bucket table") {
+    Seq(true, false).foreach { ae =>
+      val shufflePartitionNum = 5
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
+        SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0",
+        SQLConf.SHUFFLE_PARTITIONS.key -> s"$shufflePartitionNum",
+        DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
+        withTable("t1", "t2", "tt1", "tt2") {
+          spark.range(0, 50).map(x => (x, x, x)).toDF("a", "b", "c")
+            .write.saveAsTable("t1")
+          spark.range(0, 50).map(x => (x, x, (x % 10))).toDF("a", "b", "c")
+            .write.saveAsTable("t2")
+
+          sql(
+            s"""
+               |CREATE TABLE tt1(id int, col int, dt int) USING PARQUET
+               |CLUSTERED BY (id)
+               |INTO 10 BUCKETS
+               |""".stripMargin)
+
+          sql(
+            s"""
+               |CREATE TABLE tt2(id int, col int, dt int) USING PARQUET
+               |PARTITIONED BY (dt)
+               |""".stripMargin)
+
+          sql("convert to delta tt1")
+          sql("convert to delta tt2")
+
+          val df1 = sql(s"INSERT INTO tt1 SELECT a, b, c from t1")
+          assert(checkedMetrics(df1)("numFiles").value == 10)
+
+          val df2 = sql(s"INSERT INTO tt2 SELECT a, b, c from t2")
+          assert(checkedMetrics(df2)("numFiles").value == 10)
+
+          val df3 = sql(
+            """
+              |UPDATE t
+              |FROM tt2 t, tt1 s
+              |SET t.dt = s.dt, t.col = s.col
+              |WHERE t.id = s.id AND t.dt > 5
+              |""".stripMargin)
+          assert(checkedMetrics(df3)("numAddedFiles").value == 20)
         }
       }
     }

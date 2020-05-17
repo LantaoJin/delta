@@ -215,7 +215,11 @@ case class UpdateCommand(
       val updatedColumns = buildUpdatedColumns(condition) :+ col(SchemaUtils.METRICS_COLUMN)
       targetDf.select(updatedColumns: _*)
     }
-    txn.writeFiles(repartitionByBucketing(target, updatedDataFrame))
+    // Add a InsertIntoDataSource node to reuse the processing on node InsertIntoDataSource.
+    val normalized = convertToInsertIntoDataSource(conf,
+      target, updatedDataFrame.queryExecution.logical)
+    val normalizedDF = Dataset.ofRows(spark, normalized)
+    txn.writeFiles(normalizedDF)
   }
 
   private def makeMetricUpdateUDF(name: String): Expression = {

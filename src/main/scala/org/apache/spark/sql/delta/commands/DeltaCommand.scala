@@ -31,7 +31,8 @@ import org.apache.spark.sql.delta.files.TahoeBatchFileIndex
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.sources.DeltaSourceUtils
 import org.apache.spark.sql.delta.util.DeltaFileOperations
-import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, LogicalRelation}
+import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InsertIntoDataSource, LogicalRelation}
+import org.apache.spark.sql.internal.SQLConf
 
 /**
  * Helper trait for all delta commands.
@@ -203,25 +204,6 @@ trait DeltaCommand extends DeltaLogging {
     DeltaSourceUtils.isDeltaDataSourceName(provider) && new Path(tableIdent.table).isAbsolute
   }
 
-  protected def repartitionByBucketing(
-      target: LogicalPlan, outputDF: Dataset[Row]): Dataset[Row] = {
-    val catalogTable = target.collectFirst {
-      case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
-    }
-    catalogTable match {
-      case Some(table) =>
-        table.bucketSpec match {
-          case Some(spec) =>
-            outputDF.repartition(spec.numBuckets, spec.bucketColumnNames.map(new Column(_)): _*)
-              .sortWithinPartitions(spec.sortColumnNames.map(new Column(_)): _*)
-          case None =>
-            outputDF
-        }
-      case None =>
-        outputDF
-    }
-  }
-
   protected def getMultipleMatchedRows(
       multipleMatchedRowId: Long,
       target: DataFrame): String = {
@@ -233,5 +215,23 @@ trait DeltaCommand extends DeltaLogging {
        |Found a row in target which matched multiple rows in source:
        |${rowInTarget.mkString("[", ",", "]")}
        |""".stripMargin
+  }
+
+  protected def convertToInsertIntoDataSource(
+      conf: SQLConf, target: LogicalPlan, origin: LogicalPlan): LogicalPlan = {
+    val targetRelation = target.collectFirst {
+      case r: LogicalRelation => r
+    }
+    assert(targetRelation.size == 1)
+    val table = targetRelation.head.catalogTable.
+      getOrElse(throw new IllegalStateException("Table not exist!"))
+    val partitionAttrs = table.partitionColumnNames.map { col =>
+      origin.output.resolve(col :: Nil, conf.resolver).
+        getOrElse(throw new AnalysisException(s"Cannot resolve column $col " +
+          s"in attributes ${target.output.map(_.name).mkString(",")}"))
+    }.map(_.toAttribute)
+
+    InsertIntoDataSource(targetRelation.head, origin,
+      overwrite = false, Map.empty, partitionAttrs, table.bucketSpec)
   }
 }

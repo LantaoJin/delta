@@ -284,10 +284,12 @@ case class MergeIntoCommand(
     val targetDF = Dataset.ofRows(
       spark, buildTargetPlanWithFiles(deltaTxn, dataSkippedFiles))
 
-    val insertDf = repartitionByBucketing(target,
-      sourceDF.join(targetDF, new Column(condition), "leftanti").select(outputCols: _*))
-
-    val newFiles = deltaTxn.writeFiles(insertDf)
+    val insertDf = sourceDF.join(targetDF, new Column(condition), "leftanti").
+      select(outputCols: _*)
+    val normalized = convertToInsertIntoDataSource(conf,
+      target, insertDf.queryExecution.logical)
+    val normalizedDF = Dataset.ofRows(spark, normalized)
+    val newFiles = deltaTxn.writeFiles(normalizedDF)
     metrics("numTargetFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
     metrics("numTargetFilesAfterSkipping") += dataSkippedFiles.size
     metrics("numTargetFilesRemoved") += 0
@@ -383,12 +385,14 @@ case class MergeIntoCommand(
       joinedRowEncoder = joinedRowEncoder,
       outputRowEncoder = outputRowEncoder)
 
-    val outputDF = repartitionByBucketing(target,
-      Dataset.ofRows(spark, joinedPlan).mapPartitions(processor.processPartition)(outputRowEncoder))
+    val outputDF = Dataset.ofRows(spark, joinedPlan).
+      mapPartitions(processor.processPartition)(outputRowEncoder)
     logInfo("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
 
+    val normalized = convertToInsertIntoDataSource(conf, target, outputDF.queryExecution.logical)
+    val normalizedDF = Dataset.ofRows(spark, normalized)
     // Write to Delta
-    val newFiles = deltaTxn.writeFiles(outputDF)
+    val newFiles = deltaTxn.writeFiles(normalizedDF)
     metrics("numTargetFilesAdded") += newFiles.size
     newFiles
   }

@@ -74,6 +74,10 @@ case class DeleteWithJoinCommand(
     "numRemovedFiles" -> createMetric(sc, "number of files removed to target"),
     "numAddedFiles" -> createMetric(sc, "number of files added to target"))
 
+  private val catalogTable = target.collectFirst {
+    case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
+  }
+
   override def run(spark: SparkSession): Seq[Row] = {
     recordDeltaOperation(targetDeltaLog, "delta.dml.delete") {
       targetDeltaLog.assertRemovable()
@@ -90,9 +94,6 @@ case class DeleteWithJoinCommand(
         if (deltaActions.nonEmpty) {
           deltaTxn.registerSQLMetrics(spark, metrics)
 
-          val catalogTable = target.collectFirst {
-            case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
-          }
           deltaTxn.commit(
             deltaActions,
             DeltaOperations.Delete(condition.map(_.sql).toSeq),
@@ -266,12 +267,14 @@ case class DeleteWithJoinCommand(
       joinedRowEncoder = joinedRowEncoder,
       outputRowEncoder = outputRowEncoder)
 
-    val outputDF = repartitionByBucketing(target,
-      Dataset.ofRows(spark, joinedPlan).mapPartitions(processor.processPartition)(outputRowEncoder))
-    logInfo("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
+    val outputDF = Dataset.ofRows(spark, joinedPlan)
+      .mapPartitions(processor.processPartition)(outputRowEncoder)
+    // Add a InsertIntoDataSource node to reuse the processing on node InsertIntoDataSource.
+    val normalized = convertToInsertIntoDataSource(conf, target, outputDF.queryExecution.logical)
+    val normalizedDF = Dataset.ofRows(spark, normalized)
 
     // Write to Delta
-    val newFiles = deltaTxn.writeFiles(outputDF)
+    val newFiles = deltaTxn.writeFiles(normalizedDF)
     metrics("numAddedFiles") += newFiles.size
     newFiles
   }
@@ -285,7 +288,8 @@ case class DeleteWithJoinCommand(
   private def buildTargetPlanWithFiles(
     deltaTxn: OptimisticTransaction,
     files: Seq[AddFile]): LogicalPlan = {
-    val plan = deltaTxn.deltaLog.createDataFrame(deltaTxn.snapshot, files).queryExecution.analyzed
+    val plan = deltaTxn.deltaLog.createDataFrame(deltaTxn.snapshot, files, table = catalogTable)
+      .queryExecution.analyzed
 
     // For each plan output column, find the corresponding target output column (by name) and
     // create an alias

@@ -168,9 +168,12 @@ case class DeleteCommand(
             val filterCond = Not(EqualNullSafe(cond, Literal(true, BooleanType)))
             val updatedDF = targetDF.filter(new Column(filterCond))
 
+            val normalized = convertToInsertIntoDataSource(conf,
+              target, updatedDF.queryExecution.logical)
+            val normalizedDF = Dataset.ofRows(sparkSession, normalized)
             val rewrittenFiles = withStatusCode(
               "DELTA", s"Rewriting ${filesToRewrite.size} files for DELETE operation") {
-              txn.writeFiles(updatedDF) // no need to repartitionByBucketing(target, updatedDF))
+              txn.writeFiles(normalizedDF) // no need to repartitionByBucketing(target, updatedDF))
             }
 
             numRewrittenFiles = rewrittenFiles.size

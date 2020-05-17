@@ -29,7 +29,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
-import org.apache.spark.sql.execution.datasources.LogicalRelation
+import org.apache.spark.sql.execution.datasources.{InsertIntoDataSource, LogicalRelation}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.BooleanType
@@ -71,6 +71,10 @@ case class UpdateWithJoinCommand(
   @transient private lazy val sc: SparkContext = SparkContext.getOrCreate()
   @transient private lazy val targetDeltaLog: DeltaLog = targetFileIndex.deltaLog
 
+  private val catalogTable = target.collectFirst {
+    case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
+  }
+
   override lazy val metrics = Map[String, SQLMetric](
     "numSourceRows" -> createMetric(sc, "number of source rows"),
     "numRowsUpdated" -> createMetric(sc, "number of updated rows"),
@@ -91,9 +95,7 @@ case class UpdateWithJoinCommand(
           val newWrittenFiles = writeAllChanges(spark, deltaTxn, filesToRewrite)
           filesToRewrite.map(_.remove) ++ newWrittenFiles
         }
-        val catalogTable = target.collectFirst {
-          case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
-        }
+
         deltaTxn.registerSQLMetrics(spark, metrics)
         deltaTxn.commit(
           deltaActions,
@@ -265,12 +267,16 @@ case class UpdateWithJoinCommand(
       joinedRowEncoder = joinedRowEncoder,
       outputRowEncoder = outputRowEncoder)
 
-    val outputDF = repartitionByBucketing(target,
-      Dataset.ofRows(spark, joinedPlan).mapPartitions(processor.processPartition)(outputRowEncoder))
+    val outputDF = Dataset.ofRows(spark, joinedPlan).
+      mapPartitions(processor.processPartition)(outputRowEncoder)
+
+    // Add a InsertIntoDataSource node to reuse the processing on node InsertIntoDataSource.
+    val normalized = convertToInsertIntoDataSource(conf, target, outputDF.queryExecution.logical)
+    val normalizedDF = Dataset.ofRows(spark, normalized)
     logInfo("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
 
     // Write to Delta
-    val newFiles = deltaTxn.writeFiles(outputDF)
+    val newFiles = deltaTxn.writeFiles(normalizedDF)
     metrics("numAddedFiles") += newFiles.size
     newFiles
   }
@@ -284,7 +290,8 @@ case class UpdateWithJoinCommand(
   private def buildTargetPlanWithFiles(
     deltaTxn: OptimisticTransaction,
     files: Seq[AddFile]): LogicalPlan = {
-    val plan = deltaTxn.deltaLog.createDataFrame(deltaTxn.snapshot, files).queryExecution.analyzed
+    val plan = deltaTxn.deltaLog.createDataFrame(deltaTxn.snapshot, files, table = catalogTable)
+      .queryExecution.analyzed
 
     // For each plan output column, find the corresponding target output column (by name) and
     // create an alias
