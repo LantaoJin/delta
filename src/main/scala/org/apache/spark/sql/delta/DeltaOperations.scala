@@ -187,7 +187,7 @@ object DeltaOperations {
         strMetrics += "numRowsCopied" -> "0"
       } else {
         strMetrics += "numRowsCopied" -> (
-          numOutputRows - strMetrics("numRowsUpdated").toInt).toString
+          numOutputRows - strMetrics("numRowsUpdated").toLong).toString
       }
       strMetrics
     }
