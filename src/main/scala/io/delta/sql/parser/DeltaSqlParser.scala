@@ -142,16 +142,29 @@ class DeltaSqlAstBuilder extends DeltaSqlBaseBaseVisitor[AnyRef] {
   /**
    * Create a [[VacuumTableCommand]] logical plan. Example SQL:
    * {{{
-   *   VACUUM ('/path/to/dir' | delta.`/path/to/dir`) [RETAIN number HOURS] [DRY RUN];
+   *   VACUUM ('/path/to/dir' | delta.`/path/to/dir`) [SET] [RETAIN number HOURS] [[DRY|AUTO] RUN];
    * }}}
    */
   override def visitVacuumTable(ctx: VacuumTableContext): AnyRef = withOrigin(ctx) {
+    // AUTO and SET should set together
+    if ((ctx.number == null) ||
+        (ctx.AUTO != null && ctx.SET == null) ||
+        (ctx.AUTO == null && ctx.SET != null)) {
+      if (ctx.SET == null) {
+        throw new ParseException(
+          s"""
+            |Use 'VACUUM tableName SET RETAIN number HOURS AUTO RUN' to change the retain threshold
+            |Use 'VACUUM tableName RETAIN number HOURS DRY RUN' to get the clean file list
+            |Use 'VACUUM tableName RETAIN number HOURS' to vacuum once manually
+            |""".stripMargin, ctx)
+      }
+    }
     VacuumTableCommand(
       Option(ctx.path).map(string),
       Option(ctx.table).map(visitTableIdentifier),
-      Option(ctx.number).map(_.getText.toDouble),
+      Some(ctx.number.getText.toDouble),
       ctx.DRY != null,
-      ctx.AUTO != null)
+      ctx.AUTO != null && ctx.SET != null)
   }
 
   override def visitDescribeDeltaDetail(
@@ -176,15 +189,10 @@ class DeltaSqlAstBuilder extends DeltaSqlBaseBaseVisitor[AnyRef] {
   }
 
   override def visitConvert(ctx: ConvertContext): LogicalPlan = withOrigin(ctx) {
-    val properties =
-      Map("vacuum" -> s"${ctx.VACUUM != null}") ++
-        Option(ctx.number).map(x => ("horizonHours", x.getText))
-
     ConvertToDeltaCommand(
       visitTableIdentifier(ctx.table),
       Option(ctx.colTypeList).map(colTypeList => StructType(visitColTypeList(colTypeList))),
-      None,
-      properties)
+      None)
   }
 
   override def visitShowDeltas(ctx: ShowDeltasContext): AnyRef = withOrigin(ctx) {

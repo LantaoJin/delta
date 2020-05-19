@@ -73,14 +73,13 @@ singleStatement
 // If you add keywords here that should not be reserved, add them to 'nonReserved' list.
 statement
     : VACUUM (path=STRING | table=qualifiedName)
-        (RETAIN number HOURS)? ((DRY | AUTO) RUN)?                      #vacuumTable
+       SET? RETAIN number HOURS ((DRY | AUTO) RUN)?                     #vacuumTable
     | (DESC | DESCRIBE) DETAIL (path=STRING | table=qualifiedName)      #describeDeltaDetail
     | GENERATE modeName=identifier FOR TABLE table=qualifiedName        #generate
     | (DESC | DESCRIBE) HISTORY (path=STRING | table=qualifiedName)
         (LIMIT limit=INTEGER_VALUE)?                                    #describeDeltaHistory
     | CONVERT TO DELTA table=qualifiedName
-        (PARTITIONED BY '(' colTypeList ')')?
-        (VACUUM (RETAIN number HOURS)?)?                                #convert
+        (PARTITIONED BY '(' colTypeList ')')?                           #convert
     | SHOW DELTAS                                                       #showDeltas
     | ROLLBACK table=qualifiedName AT
         (VERSION EQ version=INTEGER_VALUE |
@@ -127,7 +126,7 @@ number
 // Add keywords here so that people's queries don't break if they have a column name as one of
 // these tokens
 nonReserved
-    : VACUUM | RETAIN | HOURS | DRY | AUTO | RUN
+    : VACUUM | RETAIN | HOURS | DRY | AUTO | RUN | SET
     | CONVERT | TO | DELTA | PARTITIONED | BY
     | DESC | DESCRIBE | LIMIT | DETAIL
     | GENERATE | FOR | TABLE
@@ -146,6 +145,7 @@ DETAIL: 'DETAIL';
 GENERATE: 'GENERATE';
 DRY: 'DRY';
 AUTO: 'AUTO';
+SET: 'SET';
 HISTORY: 'HISTORY';
 HOURS: 'HOURS';
 LIMIT: 'LIMIT';
@@ -165,7 +165,7 @@ ROLLBACK: 'ROLLBACK';
 VERSION: 'VERSION';
 TIMESTAMP: 'TIMESTAMP';
 AT: 'AT';
-EQ  : '=' | '==';
+EQ: '=' | '==';
 
 STRING
     : '\'' ( ~('\''|'\\') | ('\\' .) )* '\''

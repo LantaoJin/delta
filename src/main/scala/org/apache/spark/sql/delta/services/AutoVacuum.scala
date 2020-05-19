@@ -20,14 +20,16 @@ import java.util.concurrent.{ConcurrentHashMap, ScheduledFuture, TimeUnit}
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
+import scala.util.Random
 
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.delta.DeltaTableUtils
+import org.apache.spark.sql.delta.{DeltaLog, DeltaTableUtils}
+import org.apache.spark.sql.delta.commands.VacuumCommand
 import org.apache.spark.sql.delta.services.DeltaTableMetadata._
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
-import org.apache.spark.sql.execution.QueryExecution
+import org.apache.spark.sql.execution.command.CommandUtils
 import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.util.{ThreadUtils, Utils}
 
@@ -79,14 +81,17 @@ class AutoVacuum(ctx: SparkContext) extends Logging {
 /**
  * Vacuum a delta table periodically.
  */
-class VacuumTask(table: DeltaTableMetadata) extends Runnable {
+class VacuumTask(table: DeltaTableMetadata) extends Runnable with Logging {
   private val spark = SparkSession.getDefaultSession.get
 
   override def run(): Unit = {
-    val sqlText = s"VACUUM ${table.identifier} RETAIN ${table.retention} HOURS"
-    val plan = spark.sessionState.sqlParser.parsePlan(sqlText)
-    val qe = new QueryExecution(spark, plan, withAuth = false)
-    qe.assertAnalyzed()
+    val catalogTable = spark.sessionState.catalog.getTableMetadata(table.identifier)
+    val deltaLog = DeltaLog.forTable(spark, catalogTable)
+    logInfo(s"Start vacuum ${table.identifier.unquotedString} retain ${table.retention} hours")
+    VacuumCommand.gc(spark, deltaLog, dryRun = false, Some(table.retention.toDouble),
+      safetyCheckEnabled = false)
+    CommandUtils.updateTableStats(spark, catalogTable)
+    logInfo(s"End vacuum ${table.identifier.unquotedString} retain ${table.retention} hours")
   }
 }
 
@@ -113,19 +118,20 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
         if (vacuuming.contains(meta)) {
           if (meta.vacuum) {
             // just logging
-            logDebug(s"Found ${meta.toString}, vacuuming in progressing")
+            logInfo(s"Found ${meta.toString} in vacuum backend thread")
           } else {
             invalidate(meta)
           }
         } else {
-          if (meta.vacuum && meta.retention > 0L) {
+          if (meta.vacuum && meta.retention >= 0L) {
             if (conf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
               val interval = conf.get(DeltaSQLConf.AUTO_VACUUM_INTERVAL)
               val vacuumTask = new VacuumTask(meta)
+              val initialDelay = interval / 2 + Random.nextInt(600) // 12 hours + 10 minutes
               val schedule = vacuumPool.scheduleWithFixedDelay(
-                vacuumTask, interval, interval, TimeUnit.SECONDS)
+                vacuumTask, initialDelay, interval, TimeUnit.SECONDS)
               vacuuming(meta) = schedule
-              logInfo(s"Found ${meta.toString}, vacuum it in $interval seconds")
+              logInfo(s"Found ${meta.toString}, will vacuum it in $initialDelay seconds")
             } else { // just logging
               logDebug(s"Found ${meta.toString}, " +
                 s"but ${DeltaSQLConf.AUTO_VACUUM_INTERVAL.key} is false")

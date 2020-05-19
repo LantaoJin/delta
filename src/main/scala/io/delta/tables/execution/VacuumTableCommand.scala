@@ -30,7 +30,7 @@ import org.apache.spark.sql.types.StringType
 /**
  * The `vacuum` command implementation for Spark SQL. Example SQL:
  * {{{
- *    VACUUM ('/path/to/dir' | delta.`/path/to/dir`) [RETAIN number HOURS] [DRY RUN];
+ *    VACUUM ('/path/to/dir' | delta.`/path/to/dir`) [SET] RETAIN number HOURS [[DRY|AUTO] RUN];
  * }}}
  */
 case class VacuumTableCommand(
@@ -68,7 +68,7 @@ case class VacuumTableCommand(
     }
     if (autoRun) {
       if (table.isDefined) {
-        logInfo(s"VACUUM ${table.get.unquotedString} AUTO RUN command won't execute immediately")
+        logInfo(s"VACUUM ${table.get.unquotedString} SET RETAIN ${horizonHours.get} HOURS AUTO RUN")
         updateMetaTable(sparkSession, table.get, pathToVacuum.toString)
         Seq.empty[Row]
       } else {
@@ -94,7 +94,7 @@ case class VacuumTableCommand(
       catalog.getCurrentUser,
       pathToVacuum,
       vacuum = true,
-      horizonHours.getOrElse(7 * 24D).toLong)
+      horizonHours.getOrElse(0D).toLong)
     if (spark.sessionState.conf.getConf(DeltaSQLConf.META_TABLE_CRUD_ASYNC)) {
       spark.sharedState.externalCatalog.postToAll(UpdateDeltaEvent(metadata))
     } else {
@@ -107,7 +107,7 @@ case class VacuumTableCommand(
              |${DeltaSQLConf.META_TABLE_IDENTIFIER.key} may not be created.
              |Skip to store delta metadata to ${DeltaTableMetadata.deltaMetaTableIdentifier(spark)}.
              |This is triggered by command:\n
-             |VACUUM ${table.identifier} (RETAIN number HOURS)? AUTO RUN;
+             |VACUUM ${table.identifier} SET RETAIN number HOURS AUTO RUN;
              |""".stripMargin)
       }
     }

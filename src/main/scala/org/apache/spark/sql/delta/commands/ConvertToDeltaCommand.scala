@@ -67,8 +67,7 @@ import org.apache.spark.util.{SerializableConfiguration, Utils}
 abstract class ConvertToDeltaCommandBase(
     tableIdentifier: TableIdentifier,
     partitionSchema: Option[StructType],
-    deltaPath: Option[String],
-    properties: Map[String, String] = Map.empty) extends RunnableCommand with DeltaCommand {
+    deltaPath: Option[String]) extends RunnableCommand with DeltaCommand {
 
   var partitionColNames: Seq[String] = Nil
   var partitionFields: Seq[StructField] = Nil
@@ -76,7 +75,7 @@ abstract class ConvertToDeltaCommandBase(
   val timestampPartitionPattern = "yyyy-MM-dd HH:mm:ss[.S]"
 
   override def run(spark: SparkSession): Seq[Row] = {
-    val convertProperties = getConvertProperties(spark, tableIdentifier, properties)
+    val convertProperties = getConvertProperties(spark, tableIdentifier)
 
     convertProperties.provider match {
       case Some(providerName) => providerName.toLowerCase(Locale.ROOT) match {
@@ -105,15 +104,14 @@ abstract class ConvertToDeltaCommandBase(
 
   protected def getConvertProperties(
       spark: SparkSession,
-      tableIdentifier: TableIdentifier,
-      properties: Map[String, String]): ConvertProperties = {
+      tableIdentifier: TableIdentifier): ConvertProperties = {
     def convertForPath(tableIdentifier: TableIdentifier): ConvertProperties = {
       // convert to delta format.`path`
       ConvertProperties(
         None,
         tableIdentifier.database,
         tableIdentifier.table,
-        properties)
+        Map.empty[String, String])
     }
 
     def convertForTable(tableIdentifier: TableIdentifier): ConvertProperties = {
@@ -542,15 +540,12 @@ abstract class ConvertToDeltaCommandBase(
 
   private def saveToMetaTable(spark: SparkSession, convertProperties: ConvertProperties): Unit = {
     convertProperties.catalogTable.foreach { table =>
-      val vacuum = convertProperties.properties.getOrElse("vacuum", "false").toBoolean
-      val horizonHours = convertProperties.properties.get("horizonHours").map(_.toLong)
       val metadata = DeltaTableMetadata(
         table.identifier.database.getOrElse(""),
         table.identifier.table,
         spark.sessionState.catalog.getCurrentUser,
         convertProperties.targetDir,
-        vacuum,
-        horizonHours.getOrElse(7 * 24))
+        vacuum = true)
       if (spark.sessionState.conf.getConf(DeltaSQLConf.META_TABLE_CRUD_ASYNC)) {
         spark.sharedState.externalCatalog.postToAll(ConvertToDeltaEvent(metadata))
       } else {
@@ -564,8 +559,7 @@ abstract class ConvertToDeltaCommandBase(
                | Skip to store delta metadata to
                | ${DeltaTableMetadata.deltaMetaTableIdentifier(spark)}.
                | This is triggered by command:\n
-               |CONVERT TO DELTA ${table.identifier} ${if (vacuum) "VACUUM" else ""}
-               |${if (horizonHours.isDefined) s" RETAIN ${horizonHours.get} HOURS" else ""}
+               |CONVERT TO DELTA ${table.identifier}
                |""".stripMargin)
         }
       }
@@ -582,7 +576,6 @@ case class ConvertProperties(
 case class ConvertToDeltaCommand(
     tableIdentifier: TableIdentifier,
     partitionSchema: Option[StructType],
-    deltaPath: Option[String],
-    properties: Map[String, String] = Map.empty)
-  extends ConvertToDeltaCommandBase(tableIdentifier, partitionSchema, deltaPath, properties) {
+    deltaPath: Option[String])
+  extends ConvertToDeltaCommandBase(tableIdentifier, partitionSchema, deltaPath) {
 }

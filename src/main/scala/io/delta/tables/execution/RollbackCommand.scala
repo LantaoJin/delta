@@ -136,14 +136,7 @@ case class RollbackCommand(
 
   private def vacuum(sparkSession: SparkSession, deltaLog: DeltaLog, table: CatalogTable): Unit = {
     // vacuum related untracked files
-    val oldCheckEnabledValue =
-      sparkSession.sessionState.conf.getConf(DeltaSQLConf.DELTA_VACUUM_RETENTION_CHECK_ENABLED)
-    // disable retention check
-    sparkSession.sessionState.conf.setConf(
-      DeltaSQLConf.DELTA_VACUUM_RETENTION_CHECK_ENABLED, false)
-    VacuumCommand.gc(sparkSession, deltaLog, dryRun = false, Some(0))
+    VacuumCommand.gc(sparkSession, deltaLog, dryRun = false, Some(0), safetyCheckEnabled = false)
     CommandUtils.updateTableStats(sparkSession, table)
-    sparkSession.sessionState.conf.setConf(
-      DeltaSQLConf.DELTA_VACUUM_RETENTION_CHECK_ENABLED, oldCheckEnabledValue)
   }
 }

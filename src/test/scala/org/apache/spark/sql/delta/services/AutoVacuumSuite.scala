@@ -16,10 +16,11 @@
 
 package org.apache.spark.sql.delta.services
 
+import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.catalog.CatalogUtils
 import org.apache.spark.sql.{QueryTest, Row}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
-import org.apache.spark.sql.execution.datasources.IndexUtils
 import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 
@@ -45,6 +46,11 @@ class AutoVacuumSuite extends QueryTest
        | and files will be deleted.')
        | USING parquet
        |""".stripMargin
+
+  def getTableLocation(tableName: String, db: Option[String] = None): String = {
+    CatalogUtils.URIToString(
+      spark.sessionState.catalog.getTableMetadata(TableIdentifier(tableName, db)).location)
+  }
 
   test("test auto vacuum and show deltas") {
     sys.props("spark.testing") = "true"
@@ -88,10 +94,10 @@ class AutoVacuumSuite extends QueryTest
             Row("db1", "tbl1", "user1", "path1", false, 168L),
             Row("default", "tbl", "user", "path", true, 24L),
             Row("default", "test_carmel_delta_tables", "",
-              s"${IndexUtils.removeEndPathSep(dir.toURI.toString)}", false, 168L))
+              s"${getTableLocation("test_carmel_delta_tables")}", true, 0L))
         )
 
-        sql(s"VACUUM $DELTA_META_TABLE_NAME RETAIN 200 HOURS AUTO RUN")
+        sql(s"VACUUM $DELTA_META_TABLE_NAME SET RETAIN 200 HOURS AUTO RUN")
         sql("SHOW DELTAS").show()
         checkAnswer(
           sql("SHOW DELTAS"),
@@ -99,7 +105,7 @@ class AutoVacuumSuite extends QueryTest
             Row("db1", "tbl1", "user1", "path1", false, 168L),
             Row("default", "tbl", "user", "path", true, 24L),
             Row("default", "test_carmel_delta_tables", "",
-              s"${IndexUtils.removeEndPathSep(dir.toURI.toString)}", true, 200L))
+              s"${getTableLocation("test_carmel_delta_tables")}", true, 200L))
         )
       }
     }
@@ -149,10 +155,10 @@ class AutoVacuumSuite extends QueryTest
             Row("db1", "tbl1", "user1", "path1", false, 168L),
             Row("default", "tbl", "user", "path", true, 24L),
             Row("default", "test_carmel_delta_tables", "",
-              s"${IndexUtils.removeEndPathSep(dir.toURI.toString)}", false, 168L))
+              s"${getTableLocation("test_carmel_delta_tables")}", true, 0L))
         )
 
-        sql(s"VACUUM $DELTA_META_TABLE_NAME RETAIN 200 HOURS AUTO RUN")
+        sql(s"VACUUM $DELTA_META_TABLE_NAME SET RETAIN 200 HOURS AUTO RUN")
         Thread.sleep(1000) // wait updating META_TABLE async
         sql("SHOW DELTAS").show()
         checkAnswer(
@@ -161,7 +167,7 @@ class AutoVacuumSuite extends QueryTest
             Row("db1", "tbl1", "user1", "path1", false, 168L),
             Row("default", "tbl", "user", "path", true, 24L),
             Row("default", "test_carmel_delta_tables", "",
-              s"${IndexUtils.removeEndPathSep(dir.toURI.toString)}", true, 200L))
+              s"${getTableLocation("test_carmel_delta_tables")}", true, 200L))
         )
       }
     }
@@ -198,9 +204,9 @@ class AutoVacuumSuite extends QueryTest
         checkAnswer(
           sql("SHOW DELTAS"),
           Row("default", "delta1", "",
-            s"${IndexUtils.removeEndPathSep(dir1.toURI.toString)}", false, 168L) ::
+            s"${getTableLocation("delta1")}", true, 0L) ::
           Row("default", "test_carmel_delta_tables", "",
-            s"${IndexUtils.removeEndPathSep(dir.toURI.toString)}", false, 168L) :: Nil)
+            s"${getTableLocation("test_carmel_delta_tables")}", true, 0L) :: Nil)
         sql(
           """
             |ALTER TABLE delta1 RENAME TO delta2
@@ -209,9 +215,9 @@ class AutoVacuumSuite extends QueryTest
         checkAnswer(
           sql("SHOW DELTAS"),
           Row("default", "delta2", "",
-            s"${IndexUtils.removeEndPathSep(dir1.toURI.toString)}", false, 168L) ::
+            s"${getTableLocation("delta2")}", true, 0L) ::
           Row("default", "test_carmel_delta_tables", "",
-            s"${IndexUtils.removeEndPathSep(dir.toURI.toString)}", false, 168L) :: Nil)
+            s"${getTableLocation("test_carmel_delta_tables")}", true, 0L) :: Nil)
       }
     }
   }

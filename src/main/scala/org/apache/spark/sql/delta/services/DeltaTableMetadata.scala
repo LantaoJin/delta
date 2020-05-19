@@ -27,7 +27,7 @@ import org.apache.spark.sql.delta.sources.DeltaSQLConf
  */
 case class DeltaTableMetadata(
     db: String, tbl: String, maker: String, path: String,
-    vacuum: Boolean, retention: Long = 7 * 24L) extends Ordered [DeltaTableMetadata] {
+    vacuum: Boolean, retention: Long = 0L) extends Ordered [DeltaTableMetadata] {
 
   def this(db: String, tbl: String) {
     this(db, tbl, "", "", false)

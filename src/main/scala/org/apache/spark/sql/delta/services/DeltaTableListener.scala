@@ -19,7 +19,8 @@ package org.apache.spark.sql.delta.services
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent}
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.catalog.{DropTableEvent, RenameTableEvent, TableEvent}
+import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.catalog.{CatalogUtils, DropTableEvent, RenameTableEvent, TableEvent}
 
 class DeltaTableListener extends SparkListener with Logging {
   private val spark = SparkSession.getDefaultSession.get
@@ -35,8 +36,10 @@ class DeltaTableListener extends SparkListener with Logging {
       case e: RenameTableEvent =>
         val searchCondition = new DeltaTableMetadata(e.database, e.name)
         DeltaTableMetadata.selectFromMetadataTable(spark, searchCondition).foreach { old =>
+          val newTableIdent = TableIdentifier(e.newName, Some(e.database))
+          val newTable = spark.sessionState.catalog.getTableMetadata(newTableIdent)
           val newMetadata = DeltaTableMetadata(e.database, e.newName,
-            old.maker, old.path, old.vacuum, old.retention)
+            old.maker, CatalogUtils.URIToString(newTable.location), old.vacuum, old.retention)
           DeltaTableMetadata.updateMetadataTable(spark, newMetadata, searchCondition)
         }
       case e: DropTableEvent =>
