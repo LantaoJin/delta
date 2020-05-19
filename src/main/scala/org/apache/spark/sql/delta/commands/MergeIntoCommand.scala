@@ -215,10 +215,11 @@ case class MergeIntoCommand(
     // - the target file name the row is from to later identify the files touched by matched rows
     val sourceDF = Dataset.ofRows(spark, source)
     val targetDF = Dataset.ofRows(spark, buildTargetPlanWithFiles(deltaTxn, dataSkippedFiles))
+    val targetDFWithFilterPushdown = addFilterPushdown(targetDF, targetOnlyPredicates)
       .withColumn(ROW_ID_COL, monotonically_increasing_id())
       .withColumn(FILE_NAME_COL, input_file_name())
     val joinToFindTouchedFiles = {
-      sourceDF.join(targetDF, new Column(condition), "inner")
+      sourceDF.join(targetDFWithFilterPushdown, new Column(condition), "inner")
     }
 
     // Process the matches from the inner join to record touched files and find multiple matches
@@ -231,7 +232,7 @@ case class MergeIntoCommand(
       .agg(sum("one").as("count"))
       .filter("count > 1").select(ROW_ID_COL).as[Long].head(1)
     if (firstMultipleMatchedRowId.nonEmpty) {
-      val msg = getMultipleMatchedRows(firstMultipleMatchedRowId.head, targetDF)
+      val msg = getMultipleMatchedRows(firstMultipleMatchedRowId.head, targetDFWithFilterPushdown)
       throw DeltaErrors.multipleSourceRowMatchingTargetRowException(spark, "UPDATE", msg)
     }
 

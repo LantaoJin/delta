@@ -158,10 +158,11 @@ case class DeleteWithJoinCommand(
     // - the target file name the row is from to later identify the files touched by matched rows
     val sourceDF = Dataset.ofRows(spark, source)
     val targetDF = Dataset.ofRows(spark, buildTargetPlanWithFiles(deltaTxn, dataSkippedFiles))
+    val targetDFWithFilterPushdown = addFilterPushdown(targetDF, targetOnlyPredicates)
       .withColumn(ROW_ID_COL, monotonically_increasing_id())
       .withColumn(FILE_NAME_COL, input_file_name())
     val joinToFindTouchedFiles = {
-      sourceDF.join(targetDF, new Column(joinCondition), "inner")
+      sourceDF.join(targetDFWithFilterPushdown, new Column(joinCondition), "inner")
     }
 
     // Process the matches from the inner join to record touched files and find multiple matches
@@ -169,13 +170,9 @@ case class DeleteWithJoinCommand(
       col(ROW_ID_COL), recordTouchedFileName(col(FILE_NAME_COL)).as("one"))
 
     // Calculate frequency of matches per source row
-    import spark.implicits._
-    val firstMultipleMatchedRowId = collectTouchedFiles.groupBy(ROW_ID_COL)
-      .agg(sum("one").as("count"))
-      .filter("count > 1").select(ROW_ID_COL).as[Long].head(1)
-    if (firstMultipleMatchedRowId.nonEmpty) {
-      val msg = getMultipleMatchedRows(firstMultipleMatchedRowId.head, targetDF)
-      throw DeltaErrors.multipleSourceRowMatchingTargetRowException(spark, "UPDATE", msg)
+    val matchedRowCounts = collectTouchedFiles.groupBy(ROW_ID_COL).agg(sum("one").as("count"))
+    if (matchedRowCounts.filter("count > 1").count() != 0) {
+      throw DeltaErrors.multipleSourceRowMatchingTargetRowException(spark, "DELETE")
     }
 
     // Get the AddFiles using the touched file names.
