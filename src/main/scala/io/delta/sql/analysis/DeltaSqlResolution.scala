@@ -284,7 +284,8 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
         inferredConstraints ++= replaceConstraints(candidateConstraints, r, l)
       case _ => // No inference
     }
-    inferredConstraints.reduceLeftOption(And)
+    // For easy writing unit test, we sort by simpleString
+    inferredConstraints.toSeq.sortBy(_.simpleString).reduceLeftOption(And)
   }
 
   private def projectionForSource(
@@ -304,7 +305,13 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
   private def replaceConstraints(
       constraints: Set[Expression],
       source: Expression,
-      destination: Expression): Set[Expression] = constraints.map(_ transform {
-    case e: Expression if e.semanticEquals(source) => destination
-  })
+      destination: Expression): Set[Expression] = {
+    if (source.foldable || destination.foldable) {
+      constraints
+    } else {
+      constraints.map(_ transform {
+        case e: Expression if e.semanticEquals(source) => destination
+      })
+    }
+  }
 }

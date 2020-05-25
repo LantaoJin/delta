@@ -895,7 +895,8 @@ class SQLQuerySuite extends QueryTest
             |SET t.num = 0
             |WHERE t.id = s.id AND s.id % 2 = 0
             |""".stripMargin)
-        assert(getConditions(df).map(_.canonicalizedIgnoreExprId.simpleString).sorted
+        assert(getConditions(df).map(_ transform { case e => e.canonicalizedIgnoreExprId })
+          .map(_.canonicalizedIgnoreExprId.simpleString).sorted
           === "((id#0L % 2) = 0)" :: "((id#0L % 2) = 0)" :: "(id#0L = id#0L)" :: Nil)
 
         val df2 = sql(
@@ -904,7 +905,8 @@ class SQLQuerySuite extends QueryTest
             |FROM target t, source s
             |WHERE t.id = s.id
             |""".stripMargin)
-        assert(getConditions(df2).map(_.canonicalizedIgnoreExprId.simpleString).sorted
+        assert(getConditions(df2).map(_ transform { case e => e.canonicalizedIgnoreExprId })
+          .map(_.canonicalizedIgnoreExprId.simpleString).sorted
           === "(id#0L = id#0L)" :: Nil)
 
         val df3 = sql(
@@ -915,9 +917,55 @@ class SQLQuerySuite extends QueryTest
             |WHERE t.id = s.id AND t.num = s.num
             |AND t.id > 5 AND s.num = 10
             |""".stripMargin)
-        assert(getConditions(df3).map(_.canonicalizedIgnoreExprId.simpleString).sorted
+        assert(getConditions(df3).map(_ transform { case e => e.canonicalizedIgnoreExprId })
+          .map(_.canonicalizedIgnoreExprId.simpleString).sorted
           === "(id#0L = id#0L)" :: "(id#0L > 5)" :: "(id#0L > 5)" :: "(num#0L = 10)" ::
           "(num#0L = 10)" :: "(num#0L = num#0L)" :: Nil)
+
+        // df4, df5, df6 are test replaceConstraints stackOverflow
+        val df4 = sql(
+          """
+            |UPDATE t
+            |FROM target t, source s
+            |SET t.num = 0
+            |WHERE t.id = s.id
+            |AND t.id = 0
+            |AND t.num IN (0, 10)
+            |""".stripMargin)
+        assert(getConditions(df4).map(_ transform { case e => e.canonicalizedIgnoreExprId })
+          .map(_.canonicalizedIgnoreExprId.simpleString).sorted
+          === "(id#0L = 0)" :: "(id#0L = 0)" :: "(id#0L = id#0L)" :: "num#0L IN (0,10)" :: Nil)
+
+        // replaceConstraints stackOverflow
+        val df5 = sql(
+          """
+            |UPDATE t
+            |FROM target t, source s
+            |SET t.num = 0
+            |WHERE t.id = s.id
+            |AND CASE WHEN t.id & 1 >= 1 THEN 1 ELSE 0 END = 0
+            |AND t.num IN (0, 10)
+            |""".stripMargin)
+        assert(getConditions(df5).map(_ transform { case e => e.canonicalizedIgnoreExprId })
+          .map(_.canonicalizedIgnoreExprId.simpleString).sorted
+          === "(0 = CASE WHEN ((id#0L & 1) >= 1) THEN 1 ELSE 0 END)" ::
+          "(0 = CASE WHEN ((id#0L & 1) >= 1) THEN 1 ELSE 0 END)" :: "(id#0L = id#0L)" ::
+          "num#0L IN (0,10)" :: Nil)
+
+        val df6 = sql(
+          """
+            |UPDATE t
+            |FROM target t, source s
+            |SET t.num = 0
+            |WHERE t.id = s.id
+            |AND 0 = CASE WHEN t.id & 1 >= 1 THEN 1 ELSE 0 END
+            |AND t.num IN (0, 10)
+            |""".stripMargin)
+        assert(getConditions(df6).map(_ transform { case e => e.canonicalizedIgnoreExprId })
+          .map(_.canonicalizedIgnoreExprId.simpleString).sorted
+          === "(0 = CASE WHEN ((id#0L & 1) >= 1) THEN 1 ELSE 0 END)" ::
+          "(0 = CASE WHEN ((id#0L & 1) >= 1) THEN 1 ELSE 0 END)" :: "(id#0L = id#0L)" ::
+          "num#0L IN (0,10)" :: Nil)
       }
     }
   }
