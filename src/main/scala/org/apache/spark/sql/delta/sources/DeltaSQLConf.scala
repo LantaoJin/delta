@@ -226,6 +226,15 @@ object DeltaSQLConf {
       .booleanConf
       .createWithDefault(true)
 
+  val REWRITE_LEFT_JOIN =
+    buildConf("rewrite.leftJoin.enabled")
+      .doc(
+        """
+          |If enabled, merge/delete/update will rewrite left join plan by union operation.
+        """.stripMargin)
+      .booleanConf
+      .createWithDefault(true)
+
   // ---------------------------------------------------- //
   //                    delta manager                     //
   // ---------------------------------------------------- //

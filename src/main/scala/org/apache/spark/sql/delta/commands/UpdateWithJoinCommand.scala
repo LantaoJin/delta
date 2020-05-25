@@ -27,6 +27,7 @@ import org.apache.spark.sql.delta.util.{AnalysisHelper, SetAccumulator}
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical._
+import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -135,8 +136,7 @@ case class UpdateWithJoinCommand(
    */
   private def findTouchedFiles(
     spark: SparkSession,
-    deltaTxn: OptimisticTransaction
-  ): Seq[AddFile] = {
+    deltaTxn: OptimisticTransaction): Seq[AddFile] = {
 
     // Accumulator to collect all the distinct touched files
     val touchedFilesAccum = new SetAccumulator[String]()
@@ -217,16 +217,27 @@ case class UpdateWithJoinCommand(
     val incrSourceRowCountExpr = makeMetricUpdateUDF("numSourceRows")
     val incrUpdatedCountExpr = makeMetricUpdateUDF("numRowsUpdated")
 
+    val joinCondition = condition.getOrElse(Literal(true, BooleanType))
+    val (targetOnlyPredicates, otherPredicates) =
+      splitConjunctivePredicates(joinCondition).partition(_.references.subsetOf(target.outputSet))
+
+    val leftJoinRewriteEnabled = spark.sessionState.conf.getConf(DeltaSQLConf.REWRITE_LEFT_JOIN)
     // Apply left outer join to find matches . We are adding two boolean fields
     // with value `true`, one to each side of the join. Whether this field is null or not after
     // the full outer join, will allow us to identify whether the resultanet joined row was a
     // matched inner result or an unmatched result with null on one side.
-    val joinedDF = {
-      val sourceDF = Dataset.ofRows(spark, source)
-        .withColumn(SOURCE_ROW_PRESENT_COL, new Column(incrSourceRowCountExpr))
-      val targetDF = Dataset.ofRows(spark, newTarget)
-        .withColumn(TARGET_ROW_PRESENT_COL, lit(true))
-      targetDF.join(sourceDF, new Column(condition.getOrElse(Literal(true, BooleanType))), "left")
+    val sourceDF = Dataset.ofRows(spark, source)
+      .withColumn(SOURCE_ROW_PRESENT_COL, new Column(incrSourceRowCountExpr))
+    val targetDF = Dataset.ofRows(spark, newTarget)
+      .withColumn(TARGET_ROW_PRESENT_COL, lit(true))
+
+    val joinedDF = if (leftJoinRewriteEnabled && targetOnlyPredicates.nonEmpty) {
+      targetDF.join(sourceDF, new Column(otherPredicates.reduceLeftOption(And)
+        .getOrElse(Literal(true, BooleanType))), "left")
+        .filter(new Column(targetOnlyPredicates.reduceLeftOption(And)
+          .getOrElse(Literal(true, BooleanType))))
+    } else {
+      targetDF.join(sourceDF, new Column(joinCondition), "left")
     }
 
     val joinedPlan = joinedDF.queryExecution.analyzed
@@ -267,10 +278,17 @@ case class UpdateWithJoinCommand(
     val outputDF = Dataset.ofRows(spark, joinedPlan).
       mapPartitions(processor.processPartition)(outputRowEncoder)
 
+    val unionDF = if (leftJoinRewriteEnabled && targetOnlyPredicates.nonEmpty) {
+      val targetDF = Dataset.ofRows(spark, newTarget)
+      outputDF.union(targetDF.filter(new Column(Not(targetOnlyPredicates.reduceLeft(And)))))
+    } else {
+      outputDF
+    }
+
     // Add a InsertIntoDataSource node to reuse the processing on node InsertIntoDataSource.
-    val normalized = convertToInsertIntoDataSource(conf, target, outputDF.queryExecution.logical)
+    val normalized = convertToInsertIntoDataSource(conf, target, unionDF.queryExecution.logical)
     val normalizedDF = Dataset.ofRows(spark, normalized)
-    logInfo("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
+    logInfo("writeAllChanges: join output plan:\n" + normalizedDF.queryExecution)
 
     // Write to Delta
     val newFiles = deltaTxn.writeFiles(normalizedDF, metrics)
