@@ -67,7 +67,7 @@ case class DeleteWithJoinCommand(
   private val catalogTable = getCatalogTableFromTargetPlan(target)
 
   override lazy val metrics = Map[String, SQLMetric](
-    "numSourceRows" -> createMetric(sc, "number of source rows"),
+    "numSourceRows" -> createMetric(sc, "number of source rows participated in delete"),
     "numRowsDeleted" -> createMetric(sc, "number of deleted rows"),
     "numFilesBeforeSkipping" -> createMetric(sc, "number of target files before skipping"),
     "numFilesAfterSkipping" -> createMetric(sc, "number of target files after skipping"),
@@ -202,8 +202,11 @@ case class DeleteWithJoinCommand(
     val (targetOnlyPredicates, otherPredicates) =
       splitConjunctivePredicates(joinCondition).partition(_.references.subsetOf(target.outputSet))
 
+    val sourceOnlyPredicates =
+      splitConjunctivePredicates(joinCondition).filter(_.references.subsetOf(source.outputSet))
+
     val leftJoinRewriteEnabled = spark.sessionState.conf.getConf(DeltaSQLConf.REWRITE_LEFT_JOIN)
-    val sourceDF = Dataset.ofRows(spark, source)
+    val sourceDF = addFilterPushdown(Dataset.ofRows(spark, source), sourceOnlyPredicates)
       .withColumn(SOURCE_ROW_PRESENT_COL, new Column(incrSourceRowCountExpr))
     val targetDF = Dataset.ofRows(spark, newTarget)
       .withColumn(TARGET_ROW_PRESENT_COL, lit(true))

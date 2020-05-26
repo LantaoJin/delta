@@ -74,7 +74,7 @@ case class UpdateWithJoinCommand(
   private val catalogTable = getCatalogTableFromTargetPlan(target)
 
   override lazy val metrics = Map[String, SQLMetric](
-    "numSourceRows" -> createMetric(sc, "number of source rows"),
+    "numSourceRows" -> createMetric(sc, "number of source rows participated in update"),
     "numRowsUpdated" -> createMetric(sc, "number of updated rows"),
     "numFilesBeforeSkipping" -> createMetric(sc, "number of target files before skipping"),
     "numFilesAfterSkipping" -> createMetric(sc, "number of target files after skipping"),
@@ -221,12 +221,15 @@ case class UpdateWithJoinCommand(
     val (targetOnlyPredicates, otherPredicates) =
       splitConjunctivePredicates(joinCondition).partition(_.references.subsetOf(target.outputSet))
 
+    val sourceOnlyPredicates =
+      splitConjunctivePredicates(joinCondition).filter(_.references.subsetOf(source.outputSet))
+
     val leftJoinRewriteEnabled = spark.sessionState.conf.getConf(DeltaSQLConf.REWRITE_LEFT_JOIN)
     // Apply left outer join to find matches . We are adding two boolean fields
     // with value `true`, one to each side of the join. Whether this field is null or not after
     // the full outer join, will allow us to identify whether the resultanet joined row was a
     // matched inner result or an unmatched result with null on one side.
-    val sourceDF = Dataset.ofRows(spark, source)
+    val sourceDF = addFilterPushdown(Dataset.ofRows(spark, source), sourceOnlyPredicates)
       .withColumn(SOURCE_ROW_PRESENT_COL, new Column(incrSourceRowCountExpr))
     val targetDF = Dataset.ofRows(spark, newTarget)
       .withColumn(TARGET_ROW_PRESENT_COL, lit(true))

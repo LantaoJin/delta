@@ -374,7 +374,7 @@ class SQLQuerySuite extends QueryTest
               |""".stripMargin)
           checkKeywordsExist(
             sql("desc history target").filter("version = '3'").select("operationMetrics"),
-            "numRowsUpdated -> 500", "numOutputRows -> 500", "numSourceRows -> 5000")
+            "numRowsUpdated -> 500", "numOutputRows -> 500", "numSourceRows -> 500")
           assert(checkedMetrics(df)("numRowsUpdated").value == 500)
           df = sql(
             """

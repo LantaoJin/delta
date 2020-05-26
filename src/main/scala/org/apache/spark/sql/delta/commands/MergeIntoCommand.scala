@@ -110,7 +110,7 @@ case class MergeIntoCommand(
     matchedClauses.collectFirst { case d: DeltaMergeIntoDeleteClause => d }
 
   override lazy val metrics = Map[String, SQLMetric](
-    "numSourceRows" -> createMetric(sc, "number of source rows"),
+    "numSourceRows" -> createMetric(sc, "number of source rows participated in merge"),
     "numTargetRowsCopied" -> createMetric(sc, "number of target rows rewritten unmodified"),
     "numTargetRowsInserted" -> createMetric(sc, "number of inserted rows"),
     "numTargetRowsUpdated" -> createMetric(sc, "number of updated rows"),
@@ -208,12 +208,15 @@ case class MergeIntoCommand(
       splitConjunctivePredicates(condition).filter(_.references.subsetOf(target.outputSet))
     val dataSkippedFiles = deltaTxn.filterFiles(targetOnlyPredicates)
 
+    val sourceOnlyPredicates =
+      splitConjunctivePredicates(condition).filter(_.references.subsetOf(source.outputSet))
+
     // Apply inner join to between source and target using the merge condition to find matches
     // In addition, we attach two columns
     // - a monotonically increasing row id for target rows to later identify whether the same
     //     target row is modified by multiple user or not
     // - the target file name the row is from to later identify the files touched by matched rows
-    val sourceDF = Dataset.ofRows(spark, source)
+    val sourceDF = addFilterPushdown(Dataset.ofRows(spark, source), sourceOnlyPredicates)
     val targetDF = Dataset.ofRows(spark, buildTargetPlanWithFiles(deltaTxn, dataSkippedFiles))
     val targetDFWithFilterPushdown = addFilterPushdown(targetDF, targetOnlyPredicates)
       .withColumn(ROW_ID_COL, monotonically_increasing_id())
