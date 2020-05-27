@@ -41,7 +41,7 @@ class AutoVacuum(ctx: SparkContext) extends Logging {
     // add delta listener only delta enabled
     if (ctx.getConf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS)
         .contains("io.delta.sql.DeltaSparkSessionExtension")) {
-      ctx.addSparkListener(new DeltaTableListener)
+      ctx.addSparkListener(new DeltaTableListener, DeltaTableListener.DELTA_MANAGEMENT_QUEUE)
     }
     // DELTA_AUTO_VACUUM_ENABLED is true only in reserved queue
     if (ctx.getConf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {

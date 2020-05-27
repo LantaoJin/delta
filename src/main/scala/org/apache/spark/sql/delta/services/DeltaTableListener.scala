@@ -52,6 +52,10 @@ class DeltaTableListener extends SparkListener with Logging {
   }
 }
 
+object DeltaTableListener {
+  val DELTA_MANAGEMENT_QUEUE = "deltaManagement"
+}
+
 trait DeltaMetaEvent extends TableEvent
 
 case class ConvertToDeltaEvent(metadata: DeltaTableMetadata) extends DeltaMetaEvent {
