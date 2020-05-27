@@ -966,6 +966,22 @@ class SQLQuerySuite extends QueryTest
           === "(0 = CASE WHEN ((id#0L & 1) >= 1) THEN 1 ELSE 0 END)" ::
           "(0 = CASE WHEN ((id#0L & 1) >= 1) THEN 1 ELSE 0 END)" :: "(id#0L = id#0L)" ::
           "num#0L IN (0,10)" :: Nil)
+
+        // no exception show for udf in conditions
+        val df7 = sql(
+          """
+            |UPDATE t
+            |FROM target t, source s
+            |SET t.num = 0
+            |WHERE COALESCE(t.id, 0) = COALESCE(s.id, 0)
+            |AND COALESCE(t.num, 0) = COALESCE(s.num, 0)
+            |AND t.id > 5 AND s.num = 10
+            |""".stripMargin)
+        assert(getConditions(df7).map(_ transform { case e => e.canonicalizedIgnoreExprId })
+          .map(_.canonicalizedIgnoreExprId.simpleString).sorted
+          === "(coalesce(id#0L, 0) = coalesce(id#0L, 0))" ::
+          "(coalesce(num#0L, 0) = coalesce(num#0L, 0))" ::
+          "(id#0L > 5)" :: "(num#0L = 10)" :: Nil)
       }
     }
   }

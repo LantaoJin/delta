@@ -306,7 +306,7 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
       constraints: Set[Expression],
       source: Expression,
       destination: Expression): Set[Expression] = {
-    if (source.foldable || destination.foldable) {
+    if ((source.resolved && source.foldable) || (source.resolved && destination.foldable)) {
       constraints
     } else {
       constraints.map(_ transform {
