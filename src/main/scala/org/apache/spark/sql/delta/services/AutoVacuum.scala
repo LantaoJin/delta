@@ -35,13 +35,14 @@ import org.apache.spark.util.{ThreadUtils, Utils}
 
 class AutoVacuum(ctx: SparkContext) extends Logging {
 
-  private lazy val validate = new ValidateTask(ctx.getConf)
+  private val validate = new ValidateTask(ctx.getConf)
 
   val started: Boolean = {
     // add delta listener only delta enabled
     if (ctx.getConf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS)
         .contains("io.delta.sql.DeltaSparkSessionExtension")) {
-      ctx.addSparkListener(new DeltaTableListener, DeltaTableListener.DELTA_MANAGEMENT_QUEUE)
+      ctx.addSparkListener(
+        new DeltaTableListener(validate), DeltaTableListener.DELTA_MANAGEMENT_QUEUE)
     }
     // DELTA_AUTO_VACUUM_ENABLED is true only in reserved queue
     if (ctx.getConf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
@@ -59,7 +60,7 @@ class AutoVacuum(ctx: SparkContext) extends Logging {
        * delete it from [DELTA_META_TABLE].
        */
       val validatorInterval = ctx.getConf.get(DeltaSQLConf.VALIDATOR_INTERVAL)
-      val initialDelay = if (Utils.isTesting) 0 else 300 // 5 min
+      val initialDelay = if (Utils.isTesting) 5 else 300 // 5 min
       val validator = ThreadUtils.newDaemonSingleThreadScheduledExecutor("delta-table-validator")
       validator.scheduleWithFixedDelay(validate, initialDelay, validatorInterval, TimeUnit.SECONDS)
       true
@@ -68,13 +69,14 @@ class AutoVacuum(ctx: SparkContext) extends Logging {
     }
   }
 
-  private[sql] def vacuuming: mutable.Map[DeltaTableMetadata, ScheduledFuture[_]] = {
-    validate.vacuuming
+  private[sql] def deltaTableToVacuumTask
+      : mutable.Map[DeltaTableMetadata, Option[ScheduledFuture[_]]] = {
+    validate.deltaTableToVacuumTask
   }
 
   def stopAll(): Unit = {
-    vacuuming.values.foreach(_.cancel(true))
-    vacuuming.clear()
+    deltaTableToVacuumTask.values.foreach(_.foreach(_.cancel(true)))
+    deltaTableToVacuumTask.clear()
   }
 }
 
@@ -103,59 +105,78 @@ class VacuumTask(table: DeltaTableMetadata) extends Runnable with Logging {
  */
 class ValidateTask(conf: SparkConf) extends Runnable with Logging {
 
-  private val spark = SparkSession.getDefaultSession.get
-
-  // visible for testing, vacuum entity -> future
-  private[sql] lazy val vacuuming =
-    new ConcurrentHashMap[DeltaTableMetadata, ScheduledFuture[_]]().asScala
+  // visible for testing, delta entity -> vacuum task future
+  private[sql] lazy val deltaTableToVacuumTask =
+    new ConcurrentHashMap[DeltaTableMetadata, Option[ScheduledFuture[_]]]().asScala
 
   private lazy val vacuumPool =
-    ThreadUtils.newDaemonFixedThreadScheduledExecutor(16, "delta-auto-vacuum-pool")
+    ThreadUtils.newDaemonFixedThreadScheduledExecutor(32, "delta-auto-vacuum-pool")
 
   override def run(): Unit = {
+    val spark = SparkSession.active
     listMetadataTables(spark).foreach { meta =>
       if (DeltaTableUtils.isDeltaTable(spark, meta.identifier) || Utils.isTesting) {
-        if (vacuuming.contains(meta)) {
-          if (meta.vacuum) {
-            // just logging
-            logInfo(s"Found ${meta.toString} in vacuum backend thread")
-          } else {
-            invalidate(meta)
-          }
-        } else {
-          if (meta.vacuum && meta.retention >= 0L) {
-            if (conf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
-              val interval = conf.get(DeltaSQLConf.AUTO_VACUUM_INTERVAL)
-              val vacuumTask = new VacuumTask(meta)
-              val initialDelay = interval / 2 + Random.nextInt(600) // 12 hours + 10 minutes
-              val schedule = vacuumPool.scheduleWithFixedDelay(
-                vacuumTask, initialDelay, interval, TimeUnit.SECONDS)
-              vacuuming(meta) = schedule
-              logInfo(s"Found ${meta.toString}, will vacuum it in $initialDelay seconds")
-            } else { // just logging
-              logDebug(s"Found ${meta.toString}, " +
-                s"but ${DeltaSQLConf.AUTO_VACUUM_INTERVAL.key} is false")
+        if (deltaTableToVacuumTask.contains(meta)) { // delta table in our management
+          if (deltaTableToVacuumTask(meta).isDefined) { // delta in vacuuming
+            if (meta.vacuum && meta.retention >= 0L) {
+              // just logging
+              logInfo(s"Found ${meta.toString} in vacuum backend thread")
+            } else {
+              disableVacuum(meta)
             }
-          } else { // just logging
+          } else {
+            if (meta.vacuum && meta.retention >= 0L) {
+              enableVacuum(meta)
+            } else {
+              logInfo(s"Found ${meta.toString}, no need to vacuum")
+            }
+          }
+        } else { // delta is not in management - new delta table
+          if (meta.vacuum && meta.retention >= 0L) {
+            enableVacuum(meta)
+          } else {
+            deltaTableToVacuumTask(meta) = None
             logInfo(s"Found ${meta.toString}, no need to vacuum")
           }
         }
       } else {
-        invalidate(meta)
+        invalidate(spark, meta)
       }
     }
   }
 
-  private def invalidate(meta: DeltaTableMetadata): Unit = {
-    // try to remove from vacuuming list
-    vacuuming.remove(meta).foreach(_.cancel(true))
-    // It has been dropped or is not a delta table any more,
-    // we should delete it from DELTA_META_TABLE
-    val deltaMetaTable = deltaMetaTableIdentifier(conf)
-    if (deleteFromMetadataTable(spark, meta)) {
-      logInfo(s"Deleted expired ${meta.toString} from $deltaMetaTable")
-    } else {
-      logWarning(s"Failed to delete expired ${meta.toString} from $deltaMetaTable")
+  def invalidate(spark: SparkSession, meta: DeltaTableMetadata): Unit = {
+    if (conf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
+      // It has been dropped or is not a delta table any more,
+      // we should delete it from DELTA_META_TABLE
+      deltaTableToVacuumTask.remove(meta).foreach(_.foreach(_.cancel(true)))
+      val deltaMetaTable = deltaMetaTableIdentifier(conf)
+      if (deleteFromMetadataTable(spark, meta)) {
+        logInfo(s"Deleted expired ${meta.toString} from $deltaMetaTable")
+      } else {
+        logWarning(s"Failed to delete expired ${meta.toString} from $deltaMetaTable")
+      }
+    }
+  }
+
+  def disableVacuum(meta: DeltaTableMetadata): Unit = {
+    if (conf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
+      deltaTableToVacuumTask.get(meta).foreach(_.foreach(_.cancel(true)))
+      deltaTableToVacuumTask(meta) = None
+      logInfo(s"Found ${meta.toString}, disable vacuum")
+    }
+  }
+
+  def enableVacuum(meta: DeltaTableMetadata): Unit = {
+    if (conf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
+      val interval = conf.get(DeltaSQLConf.AUTO_VACUUM_INTERVAL)
+      val vacuumTask = new VacuumTask(meta)
+      // 1 hour + random in 12 hours by default
+      val initialDelay = 3600 + Random.nextInt((interval / 2).toInt)
+      val schedule = vacuumPool.scheduleWithFixedDelay(
+        vacuumTask, initialDelay, interval, TimeUnit.SECONDS)
+      deltaTableToVacuumTask(meta) = Some(schedule)
+      logInfo(s"Found ${meta.toString}, enable vacuum in $initialDelay seconds")
     }
   }
 }

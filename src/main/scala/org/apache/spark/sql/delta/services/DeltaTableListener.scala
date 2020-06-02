@@ -21,31 +21,91 @@ import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent}
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{CatalogUtils, DropTableEvent, RenameTableEvent, TableEvent}
+import org.apache.spark.sql.delta.DeltaTableUtils
+import org.apache.spark.util.ThreadUtils
 
-class DeltaTableListener extends SparkListener with Logging {
-  private val spark = SparkSession.getDefaultSession.get
+class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logging {
+  private lazy val spark = SparkSession.active
+
+  private lazy val metaHandlers =
+    ThreadUtils.newDaemonFixedThreadPool(16, "delta-meta-table-handler-pool")
 
   override def onOtherEvent(event: SparkListenerEvent): Unit = {
     event match {
       case e: ConvertToDeltaEvent =>
-        DeltaTableMetadata.insertIntoMetadataTable(spark, e.metadata)
+        validate.enableVacuum(e.metadata)
+        metaHandlers.execute(new Runnable {
+          override def run(): Unit = {
+            DeltaTableMetadata.insertIntoMetadataTable(spark, e.metadata)
+          }
+        })
       case e: UpdateDeltaEvent =>
-        DeltaTableMetadata.updateMetadataTable(spark, e.metadata)
+        if (validate.deltaTableToVacuumTask.contains(e.metadata)) {
+          validate.deltaTableToVacuumTask(e.metadata).foreach(_.cancel(true))
+          validate.deltaTableToVacuumTask.remove(e.metadata)
+        }
+        metaHandlers.execute(new Runnable {
+          override def run(): Unit = {
+            DeltaTableMetadata.updateMetadataTable(spark, e.metadata)
+          }
+        })
       case e: DeleteDeltaEvent =>
-        DeltaTableMetadata.deleteFromMetadataTable(spark, e.metadata)
+        if (validate.deltaTableToVacuumTask.contains(e.metadata)) {
+          validate.deltaTableToVacuumTask(e.metadata).foreach(_.cancel(true))
+          validate.deltaTableToVacuumTask.remove(e.metadata)
+        }
+        metaHandlers.execute(new Runnable {
+          override def run(): Unit = {
+            DeltaTableMetadata.deleteFromMetadataTable(spark, e.metadata)
+          }
+        })
       case e: RenameTableEvent =>
         val searchCondition = new DeltaTableMetadata(e.database, e.name)
-        DeltaTableMetadata.selectFromMetadataTable(spark, searchCondition).foreach { old =>
+        if (validate.deltaTableToVacuumTask.contains(searchCondition)) {
+          val old = validate.deltaTableToVacuumTask.keySet.find(_.equals(searchCondition)).get
+          validate.deltaTableToVacuumTask(searchCondition).foreach(_.cancel(true))
+          validate.deltaTableToVacuumTask.remove(searchCondition)
           val newTableIdent = TableIdentifier(e.newName, Some(e.database))
           val newTable = spark.sessionState.catalog.getTableMetadata(newTableIdent)
           val newMetadata = DeltaTableMetadata(e.database, e.newName,
             old.maker, CatalogUtils.URIToString(newTable.location), old.vacuum, old.retention)
-          DeltaTableMetadata.updateMetadataTable(spark, newMetadata, searchCondition)
+          validate.enableVacuum(newMetadata)
+          metaHandlers.execute(new Runnable {
+            override def run(): Unit = {
+              DeltaTableMetadata.updateMetadataTable(spark, newMetadata, searchCondition)
+            }
+          })
+        } else {
+          val catalog = spark.sessionState.catalog
+          val table = catalog.getTableMetadata(TableIdentifier(e.name, Some(e.database)))
+          if (DeltaTableUtils.isDeltaTable(table)) {
+            DeltaTableMetadata.selectFromMetadataTable(spark, searchCondition).foreach { oldMeta =>
+              val newTableIdent = TableIdentifier(e.newName, Some(e.database))
+              val newTable = catalog.getTableMetadata(newTableIdent)
+              val newMetadata = DeltaTableMetadata(e.database, e.newName, oldMeta.maker,
+                CatalogUtils.URIToString(newTable.location), oldMeta.vacuum, oldMeta.retention)
+              metaHandlers.execute(new Runnable {
+                override def run(): Unit = {
+                  DeltaTableMetadata.updateMetadataTable(spark, newMetadata, searchCondition)
+                }
+              })
+            }
+          }
         }
       case e: DropTableEvent =>
         val searchCondition = new DeltaTableMetadata(e.database, e.name)
-        if (DeltaTableMetadata.metadataTableExists(spark, searchCondition)) {
-          DeltaTableMetadata.deleteFromMetadataTable(spark, searchCondition)
+        if (validate.deltaTableToVacuumTask.contains(searchCondition)) {
+          validate.deltaTableToVacuumTask(searchCondition).foreach(_.cancel(true))
+          validate.deltaTableToVacuumTask.remove(searchCondition)
+        }
+        val table =
+          spark.sessionState.catalog.getTableMetadata(TableIdentifier(e.name, Some(e.database)))
+        if (DeltaTableUtils.isDeltaTable(table)) {
+          metaHandlers.execute(new Runnable {
+            override def run(): Unit = {
+              DeltaTableMetadata.deleteFromMetadataTable(spark, searchCondition)
+            }
+          })
         }
       case _ =>
     }

@@ -31,7 +31,6 @@ class AutoVacuumSuite extends QueryTest
     super.afterEach()
     sys.props("spark.testing") = "false"
     spark.sparkContext.conf.set(DeltaSQLConf.AUTO_VACUUM_ENABLED, false)
-    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_CRUD_ASYNC, false)
   }
 
   val DELTA_META_TABLE_NAME = "default.test_carmel_delta_tables"
@@ -54,7 +53,8 @@ class AutoVacuumSuite extends QueryTest
 
   test("test auto vacuum and show deltas") {
     sys.props("spark.testing") = "true"
-    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_CRUD_ASYNC, false)
+    spark.sparkContext.conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS,
+      "io.delta.sql.DeltaSparkSessionExtension")
     spark.sparkContext.conf.set(DeltaSQLConf.AUTO_VACUUM_ENABLED, true)
     spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_IDENTIFIER, DELTA_META_TABLE_NAME)
     withTempDir{ dir =>
@@ -74,19 +74,16 @@ class AutoVacuumSuite extends QueryTest
              |INSERT INTO TABLE $DELTA_META_TABLE_NAME
              |VALUES ('default', 'tbl', 'user', 'path', true, 24)
              |""".stripMargin)
-        val mgr = new AutoVacuum(spark.sparkContext)
         sql(
           s"""
              |CONVERT TO DELTA $DELTA_META_TABLE_NAME
              |""".stripMargin)
-        Thread.sleep(2000) // wait vacuum threads completed
-        val all = mgr.vacuuming.keys.toSeq
-        // only store the records which field vacuum is true
-        assert(
-          !all.contains(DeltaTableMetadata("db1", "tbl1", "user1", "path1", false, 168L)))
-        assert(
-          all.contains(DeltaTableMetadata("default", "tbl", "user", "path", true, 24L)))
-        mgr.stopAll()
+        Thread.sleep(3000) // wait vacuum threads completed
+        val vmMgr = spark.sharedState.vacuumManager
+        val all = vmMgr.deltaTableToVacuumTask
+        assert(all.contains(DeltaTableMetadata("db1", "tbl1", "user1", "path1", false, 168L)))
+        assert(all(DeltaTableMetadata("db1", "tbl1", "user1", "path1", false, 168L)).isEmpty)
+        assert(all.contains(DeltaTableMetadata("default", "tbl", "user", "path", true, 24L)))
 
         checkAnswer(
           sql("SHOW DELTAS"),
@@ -98,7 +95,7 @@ class AutoVacuumSuite extends QueryTest
         )
 
         sql(s"VACUUM $DELTA_META_TABLE_NAME SET RETAIN 200 HOURS AUTO RUN")
-        sql("SHOW DELTAS").show()
+        Thread.sleep(3000)
         checkAnswer(
           sql("SHOW DELTAS"),
           Seq(
@@ -107,68 +104,7 @@ class AutoVacuumSuite extends QueryTest
             Row("default", "test_carmel_delta_tables", "",
               s"${getTableLocation("test_carmel_delta_tables")}", true, 200L))
         )
-      }
-    }
-  }
-
-  test("test auto vacuum and show deltas async") {
-    sys.props("spark.testing") = "true"
-    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_CRUD_ASYNC, true)
-    spark.sparkContext.conf.set(DeltaSQLConf.AUTO_VACUUM_ENABLED, true)
-    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_IDENTIFIER, DELTA_META_TABLE_NAME)
-    withTempDir{ dir =>
-      withTable(s"$DELTA_META_TABLE_NAME") {
-        sql(
-          s"""
-             |${DELTA_META_TABLE_CREATION_SQL}
-             |LOCATION '$dir'
-             |""".stripMargin)
-        sql(
-          s"""
-             |INSERT INTO TABLE $DELTA_META_TABLE_NAME
-             |VALUES ('db1', 'tbl1', 'user1', 'path1', false, 7 * 24)
-             |""".stripMargin)
-        sql(
-          s"""
-             |INSERT INTO TABLE $DELTA_META_TABLE_NAME
-             |VALUES ('default', 'tbl', 'user', 'path', true, 24)
-             |""".stripMargin)
-        spark.sparkContext.conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS,
-          "io.delta.sql.DeltaSparkSessionExtension")
-        val mgr = new AutoVacuum(spark.sparkContext)
-        sql(
-          s"""
-             |CONVERT TO DELTA $DELTA_META_TABLE_NAME
-             |""".stripMargin)
-        Thread.sleep(2000) // wait vacuuming threads completed
-        val all = mgr.vacuuming.keys.toSeq
-        // only store the records which field vacuum is true
-        assert(
-          !all.contains(DeltaTableMetadata("db1", "tbl1", "user1", "path1", false, 168L)))
-        assert(
-          all.contains(DeltaTableMetadata("default", "tbl", "user", "path", true, 24L)))
-        mgr.stopAll()
-
-        checkAnswer(
-          sql("SHOW DELTAS"),
-          Seq(
-            Row("db1", "tbl1", "user1", "path1", false, 168L),
-            Row("default", "tbl", "user", "path", true, 24L),
-            Row("default", "test_carmel_delta_tables", "",
-              s"${getTableLocation("test_carmel_delta_tables")}", true, 0L))
-        )
-
-        sql(s"VACUUM $DELTA_META_TABLE_NAME SET RETAIN 200 HOURS AUTO RUN")
-        Thread.sleep(1000) // wait updating META_TABLE async
-        sql("SHOW DELTAS").show()
-        checkAnswer(
-          sql("SHOW DELTAS"),
-          Seq(
-            Row("db1", "tbl1", "user1", "path1", false, 168L),
-            Row("default", "tbl", "user", "path", true, 24L),
-            Row("default", "test_carmel_delta_tables", "",
-              s"${getTableLocation("test_carmel_delta_tables")}", true, 200L))
-        )
+        vmMgr.stopAll()
       }
     }
   }
@@ -177,8 +113,7 @@ class AutoVacuumSuite extends QueryTest
     sys.props("spark.testing") = "true"
     spark.sparkContext.conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS,
       "io.delta.sql.DeltaSparkSessionExtension")
-    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_CRUD_ASYNC, true)
-    spark.sparkContext.conf.set(DeltaSQLConf.AUTO_VACUUM_ENABLED, false)
+    spark.sparkContext.conf.set(DeltaSQLConf.AUTO_VACUUM_ENABLED, true)
     spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_IDENTIFIER, DELTA_META_TABLE_NAME)
     withTempPaths(numPaths = 2) { case Seq(dir, dir1) =>
       withTable(s"$DELTA_META_TABLE_NAME") {

@@ -32,7 +32,7 @@ import org.apache.spark.sql.delta.util.SerializableFileStatus
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
-import org.apache.spark.sql.catalyst.{QualifiedTableName, TableIdentifier}
+import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogUtils}
 import org.apache.spark.sql.catalyst.analysis.Analyzer
 import org.apache.spark.sql.catalyst.expressions.Cast
@@ -546,23 +546,7 @@ abstract class ConvertToDeltaCommandBase(
         spark.sessionState.catalog.getCurrentUser,
         convertProperties.targetDir,
         vacuum = true)
-      if (spark.sessionState.conf.getConf(DeltaSQLConf.META_TABLE_CRUD_ASYNC)) {
-        spark.sharedState.externalCatalog.postToAll(ConvertToDeltaEvent(metadata))
-      } else {
-        val res = DeltaTableMetadata.insertIntoMetadataTable(spark, metadata)
-        if (res) {
-          logInfo(s"Insert ${table.identifier} into delta metadata table")
-        } else {
-          logWarning(
-            s"""
-               |${DeltaSQLConf.META_TABLE_IDENTIFIER.key} may not be created.
-               | Skip to store delta metadata to
-               | ${DeltaTableMetadata.deltaMetaTableIdentifier(spark)}.
-               | This is triggered by command:\n
-               |CONVERT TO DELTA ${table.identifier}
-               |""".stripMargin)
-        }
-      }
+      spark.sharedState.externalCatalog.postToAll(ConvertToDeltaEvent(metadata))
     }
   }
 }
