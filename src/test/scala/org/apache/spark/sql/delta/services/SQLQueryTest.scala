@@ -1225,7 +1225,7 @@ class SQLQuerySuite extends QueryTest
   }
 
   test("Not NullIntolerant predicates should be handled correct in outer join rewrite") {
-    Seq(true, falsed).foreach { rewrite =>
+    Seq(true, false).foreach { rewrite =>
       withSQLConf(
         DeltaSQLConf.REWRITE_LEFT_JOIN.key -> rewrite.toString,
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0") {
