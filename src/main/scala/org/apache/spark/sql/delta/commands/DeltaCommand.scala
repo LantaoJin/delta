@@ -21,7 +21,7 @@ import org.apache.spark.sql.{AnalysisException, Column, DataFrame, Dataset, Row,
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.{Analyzer, EliminateSubqueryAliases, NoSuchTableException, UnresolvedRelation}
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
-import org.apache.spark.sql.catalyst.expressions.{And, Expression, SubqueryExpression}
+import org.apache.spark.sql.catalyst.expressions.{And, Expression, Literal, NullIntolerant, SubqueryExpression}
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.delta.{DeltaLog, OptimisticTransaction}
@@ -244,5 +244,13 @@ trait DeltaCommand extends DeltaLogging {
 
   protected def addFilterPushdown(df: DataFrame, predicates: Seq[Expression]): DataFrame = {
     predicates.reduceLeftOption(And).map(f => df.filter(Column(f))).getOrElse(df)
+  }
+
+  // If one expression and its children are null intolerant, it is null intolerant.
+  protected def isNullIntolerant(expr: Expression): Boolean = expr match {
+    case e: NullIntolerant => e.children.forall(isNullIntolerant)
+    case _: Literal => true
+    case _ =>
+      false
   }
 }

@@ -1223,4 +1223,134 @@ class SQLQuerySuite extends QueryTest
       }
     }
   }
+
+  test("Not NullIntolerant predicates should be handled correct in outer join rewrite") {
+    Seq(true, falsed).foreach { rewrite =>
+      withSQLConf(
+        DeltaSQLConf.REWRITE_LEFT_JOIN.key -> rewrite.toString,
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0") {
+        withTable("target", "source", "target2", "source2") {
+          sql("CREATE TABLE target(a int, b tinyint, c int) USING parquet")
+          sql("CREATE TABLE source(a int, b int) USING parquet")
+          sql("INSERT INTO target values (1, 1, 1), (2, 2, 2), (3, NULL, 3)")
+          sql("INSERT INTO source values (1, 10), (2, 20), (3, 30)")
+          sql("CONVERT TO DELTA target")
+          sql(
+            """
+              |UPDATE t
+              |FROM target t, source s
+              |SET t.a = s.a, t.b = s.b
+              |WHERE t.a = s.a AND t.b = 2
+              |""".stripMargin)
+          checkAnswer(
+            sql("SELECT * FROM target"),
+            Row(1, 1, 1) :: Row(2, 20, 2) :: Row(3, null, 3) :: Nil
+          )
+
+          sql(
+            """
+              |UPDATE t
+              |FROM target t, source s
+              |SET t.b = t.b + 1
+              |WHERE t.a = s.a AND t.b = 20 AND t.c IN (1, 2)
+              |""".stripMargin)
+          checkAnswer(
+            sql("SELECT * FROM target"),
+            Row(1, 1, 1) :: Row(2, 21, 2) :: Row(3, null, 3) :: Nil
+          )
+
+          // The results of below two queries are same with PostgreSQL
+          sql(
+            """
+              |UPDATE t
+              |FROM target t, source s
+              |SET t.b = 0
+              |WHERE t.a = s.a AND t.b != 1
+              |""".stripMargin)
+          checkAnswer(
+            sql("SELECT * FROM target"),
+            Row(1, 1, 1) :: Row(2, 0, 2) :: Row(3, null, 3) :: Nil
+          )
+
+          sql(
+            """
+              |UPDATE t
+              |FROM target t, source s
+              |SET t.b = 10
+              |WHERE t.a = s.a AND t.b <> 1
+              |""".stripMargin)
+          checkAnswer(
+            sql("SELECT * FROM target"),
+            Row(1, 1, 1) :: Row(2, 10, 2) :: Row(3, null, 3) :: Nil
+          )
+
+          sql(
+            """
+              |UPDATE t
+              |FROM target t, source s
+              |SET t.b = 20
+              |WHERE t.a = s.a AND t.b <=> 10
+              |""".stripMargin)
+          checkAnswer(
+            sql("SELECT * FROM target"),
+            Row(1, 1, 1) :: Row(2, 20, 2) :: Row(3, null, 3) :: Nil
+          )
+
+          sql(
+            """
+              |UPDATE t
+              |FROM target t, source s
+              |SET t.b = 10
+              |WHERE t.a = s.a AND round(t.b) = 20
+              |""".stripMargin)
+          checkAnswer(
+            sql("SELECT * FROM target"),
+            Row(1, 1, 1) :: Row(2, 10, 2) :: Row(3, null, 3) :: Nil
+          )
+
+          sql(
+            """
+              |UPDATE t
+              |FROM target t, source s
+              |SET t.b = 20
+              |WHERE t.a = s.a AND coalesce(t.b, 1) = 10
+              |""".stripMargin)
+          checkAnswer(
+            sql("SELECT * FROM target"),
+            Row(1, 1, 1) :: Row(2, 20, 2) :: Row(3, null, 3) :: Nil
+          )
+
+          sql("CREATE TABLE target2(a int, b string, c int) USING parquet")
+          sql("INSERT INTO target2 values (1, '1', 1), (2, '2', 2), (3, NULL, 3)")
+          sql("CREATE TABLE source2(a int, b string) USING parquet")
+          sql("INSERT INTO source2 values (1, '10'), (2, '20'), (3, '30')")
+          sql("CONVERT TO DELTA target2")
+
+          sql(
+            """
+              |UPDATE t
+              |FROM target2 t, source2 s
+              |SET t.b = "10"
+              |WHERE t.a = s.a AND round(t.b) = 2
+              |""".stripMargin)
+          checkAnswer(
+            sql("SELECT * FROM target2"),
+            Row(1, "1", 1) :: Row(2, "10", 2) :: Row(3, null, 3) :: Nil
+          )
+
+          sql(
+            """
+              |UPDATE t
+              |FROM target2 t, source2 s
+              |SET  t.b = "20"
+              |WHERE t.a = s.a AND lower(t.b) = 10
+              |""".stripMargin)
+          checkAnswer(
+            sql("SELECT * FROM target2"),
+            Row(1, "1", 1) :: Row(2, "20", 2) :: Row(3, null, 3) :: Nil
+          )
+        }
+      }
+    }
+  }
 }
