@@ -67,7 +67,7 @@ class AutoVacuumSuite extends QueryTest
         sql(
           s"""
              |INSERT INTO TABLE $DELTA_META_TABLE_NAME
-             |VALUES ('db1', 'tbl1', 'user1', 'path1', false, 7 * 24)
+             |VALUES ('db1', 'tbl1', 'user1', 'path1', false, 14 * 24)
              |""".stripMargin)
         sql(
           s"""
@@ -88,7 +88,7 @@ class AutoVacuumSuite extends QueryTest
         checkAnswer(
           sql("SHOW DELTAS"),
           Seq(
-            Row("db1", "tbl1", "user1", "path1", false, 168L),
+            Row("db1", "tbl1", "user1", "path1", false, 336L),
             Row("default", "tbl", "user", "path", true, 24L),
             Row("default", "test_carmel_delta_tables", "",
               s"${getTableLocation("test_carmel_delta_tables")}", true, 0L))
@@ -99,7 +99,7 @@ class AutoVacuumSuite extends QueryTest
         checkAnswer(
           sql("SHOW DELTAS"),
           Seq(
-            Row("db1", "tbl1", "user1", "path1", false, 168L),
+            Row("db1", "tbl1", "user1", "path1", false, 336L),
             Row("default", "tbl", "user", "path", true, 24L),
             Row("default", "test_carmel_delta_tables", "",
               s"${getTableLocation("test_carmel_delta_tables")}", true, 200L))

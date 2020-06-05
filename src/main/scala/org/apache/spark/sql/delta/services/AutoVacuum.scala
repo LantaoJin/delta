@@ -25,9 +25,11 @@ import scala.util.Random
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.delta.{DeltaLog, DeltaTableUtils}
 import org.apache.spark.sql.delta.commands.VacuumCommand
 import org.apache.spark.sql.delta.services.DeltaTableMetadata._
+import org.apache.spark.sql.delta.services.ui.DeltaTab
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.execution.command.CommandUtils
 import org.apache.spark.sql.internal.StaticSQLConf
@@ -47,10 +49,14 @@ class AutoVacuum(ctx: SparkContext) extends Logging {
     // DELTA_AUTO_VACUUM_ENABLED is true only in reserved queue
     if (ctx.getConf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
       val currentQueue = ctx.getConf.get("spark.yarn.queue", "")
-      if (!currentQueue.contains("test") || !currentQueue.contains("reserved")) {
+      if (!currentQueue.contains("test") && !currentQueue.contains("reserved")) {
         logWarning(s"WARNING!!! Delta auto vacuum function should only enable in reserved queue," +
           s" current queue is $currentQueue. " +
           s"Please set ${DeltaSQLConf.AUTO_VACUUM_ENABLED.key} to false.")
+      }
+
+      if (ctx.getConf.get(DeltaSQLConf.AUTO_VACUUM_UI_ENABLED)) {
+        ctx.ui.foreach(new DeltaTab(validate, _))
       }
 
       /**
@@ -109,6 +115,8 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
   private[sql] lazy val deltaTableToVacuumTask =
     new ConcurrentHashMap[DeltaTableMetadata, Option[ScheduledFuture[_]]]().asScala
 
+  private[sql] var lastUpdatedTime = "Waiting for update"
+
   private lazy val vacuumPool =
     ThreadUtils.newDaemonFixedThreadScheduledExecutor(32, "delta-auto-vacuum-pool")
 
@@ -143,6 +151,7 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
         invalidate(spark, meta)
       }
     }
+    lastUpdatedTime = getCurrentTimestampString
   }
 
   def invalidate(spark: SparkSession, meta: DeltaTableMetadata): Unit = {
@@ -178,5 +187,11 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
       deltaTableToVacuumTask(meta) = Some(schedule)
       logInfo(s"Found ${meta.toString}, enable vacuum in $initialDelay seconds")
     }
+  }
+
+  def getCurrentTimestampString: String = {
+    DateTimeUtils.timestampToString(
+      DateTimeUtils.fromJavaTimestamp(new java.sql.Timestamp(System.currentTimeMillis()))) + " " +
+      DateTimeUtils.defaultTimeZone().getID
   }
 }
