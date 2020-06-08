@@ -83,6 +83,7 @@ abstract class ConvertToDeltaCommandBase(
         // Make convert to delta idempotent
         case delta if DeltaSourceUtils.isDeltaDataSourceName(delta) =>
           logConsole("The table you are trying to convert is already a delta table")
+          logWarning("The table you are trying to convert is already a delta table")
           return Seq.empty[Row]
         case checkProvider if checkProvider != "parquet" =>
           throw DeltaErrors.convertNonParquetTablesException(tableIdentifier, checkProvider)
@@ -179,6 +180,7 @@ abstract class ConvertToDeltaCommandBase(
       txn: OptimisticTransaction,
       convertProperties: ConvertProperties): Unit = {
     logConsole("The table you are trying to convert is already a delta table")
+    logWarning("The table you are trying to convert is already a delta table")
   }
 
   protected def performConvert(

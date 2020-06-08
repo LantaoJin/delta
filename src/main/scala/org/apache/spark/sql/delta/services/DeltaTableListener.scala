@@ -98,15 +98,12 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
           validate.deltaTableToVacuumTask(searchCondition).foreach(_.cancel(true))
           validate.deltaTableToVacuumTask.remove(searchCondition)
         }
-        val table =
-          spark.sessionState.catalog.getTableMetadata(TableIdentifier(e.name, Some(e.database)))
-        if (DeltaTableUtils.isDeltaTable(table)) {
-          metaHandlers.execute(new Runnable {
-            override def run(): Unit = {
-              DeltaTableMetadata.deleteFromMetadataTable(spark, searchCondition)
-            }
-          })
-        }
+        metaHandlers.execute(new Runnable {
+          override def run(): Unit = {
+            // todo this has performance problem till we changed the underlay storage
+            DeltaTableMetadata.deleteFromMetadataTable(spark, searchCondition)
+          }
+        })
       case _ =>
     }
   }
