@@ -174,8 +174,14 @@ case class UpdateWithJoinCommand(
 
     // Calculate frequency of matches per source row
     val matchedRowCounts = collectTouchedFiles.groupBy(ROW_ID_COL).agg(sum("one").as("count"))
-    if (matchedRowCounts.filter("count > 1").count() != 0) {
-      throw DeltaErrors.multipleSourceRowMatchingTargetRowException(spark, "UPDATE")
+    import spark.implicits._
+    val matched = matchedRowCounts.filter("count > 1").as[(Long, Long)].take(1)
+    if (matched.nonEmpty) {
+      val rowId = matched.head._1
+      val count = Math.min(matched.head._2, 20)
+      val matchedRows = joinToFindTouchedFiles.filter(s"$ROW_ID_COL = $rowId")
+        .showString(count.toInt, 0, false)
+      throw DeltaErrors.multipleSourceRowMatchingTargetRowException(spark, "UPDATE", matchedRows)
     }
 
     // Get the AddFiles using the touched file names.

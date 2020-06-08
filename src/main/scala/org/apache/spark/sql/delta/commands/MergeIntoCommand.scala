@@ -230,13 +230,15 @@ case class MergeIntoCommand(
       col(ROW_ID_COL), recordTouchedFileName(col(FILE_NAME_COL)).as("one"))
 
     // Calculate frequency of matches per source row
+    val matchedRowCounts = collectTouchedFiles.groupBy(ROW_ID_COL).agg(sum("one").as("count"))
     import spark.implicits._
-    val firstMultipleMatchedRowId = collectTouchedFiles.groupBy(ROW_ID_COL)
-      .agg(sum("one").as("count"))
-      .filter("count > 1").select(ROW_ID_COL).as[Long].head(1)
-    if (firstMultipleMatchedRowId.nonEmpty) {
-      val msg = getMultipleMatchedRows(firstMultipleMatchedRowId.head, targetDFWithFilterPushdown)
-      throw DeltaErrors.multipleSourceRowMatchingTargetRowException(spark, "UPDATE", msg)
+    val matched = matchedRowCounts.filter("count > 1").as[(Long, Long)].take(1)
+    if (matched.nonEmpty) {
+      val rowId = matched.head._1
+      val count = Math.min(matched.head._2, 20)
+      val matchedRows = joinToFindTouchedFiles.filter(s"$ROW_ID_COL = $rowId")
+        .showString(count.toInt, 0, false)
+      throw DeltaErrors.multipleSourceRowMatchingTargetRowException(spark, "MERGE", matchedRows)
     }
 
     // Get the AddFiles using the touched file names.
