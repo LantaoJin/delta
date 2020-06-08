@@ -122,25 +122,36 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
 
   override def run(): Unit = {
     val spark = SparkSession.active
+    val existInDb = mutable.Set.empty[DeltaTableMetadata]
     listMetadataTables(spark).foreach { meta =>
+      existInDb.add(meta)
       if (DeltaTableUtils.isDeltaTable(spark, meta.identifier) || Utils.isTesting) {
         if (deltaTableToVacuumTask.contains(meta)) { // delta table in our management
           if (deltaTableToVacuumTask(meta).isDefined) { // delta in vacuuming
-            if (meta.vacuum && meta.retention >= 0L) {
-              // just logging
-              logInfo(s"Found ${meta.toString} in vacuum backend thread")
+            if (meta.vacuum && meta.retention > 0L) {
+              getOldTableMeta(meta) match {
+                case Some(old) =>
+                  if (old.retention != meta.retention) { // re-vacuum if retention changed
+                    disableVacuum(old)
+                    enableVacuum(meta)
+                  } else {
+                    // just logging
+                    logInfo(s"Found ${old.toString} in vacuum backend thread")
+                  }
+                case None =>
+              }
             } else {
               disableVacuum(meta)
             }
           } else {
-            if (meta.vacuum && meta.retention >= 0L) {
+            if (meta.vacuum && meta.retention > 0L) {
               enableVacuum(meta)
             } else {
               logInfo(s"Found ${meta.toString}, no need to vacuum")
             }
           }
         } else { // delta is not in management - new delta table
-          if (meta.vacuum && meta.retention >= 0L) {
+          if (meta.vacuum && meta.retention > 0L) {
             enableVacuum(meta)
           } else {
             deltaTableToVacuumTask(meta) = None
@@ -151,19 +162,31 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
         invalidate(spark, meta)
       }
     }
+
+    // remove metas which only exist in memory
+    val existInMemory = deltaTableToVacuumTask.keySet
+    val shouldToRemove = existInMemory.diff(existInDb)
+    shouldToRemove.foreach(invalidate(spark, _, deleteDb = false))
+
     lastUpdatedTime = getCurrentTimestampString
   }
 
-  def invalidate(spark: SparkSession, meta: DeltaTableMetadata): Unit = {
+  def getOldTableMeta(search: DeltaTableMetadata): Option[DeltaTableMetadata] = {
+    deltaTableToVacuumTask.keySet.find(_.equals(search))
+  }
+
+  def invalidate(spark: SparkSession, meta: DeltaTableMetadata, deleteDb: Boolean = true): Unit = {
     if (conf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
       // It has been dropped or is not a delta table any more,
       // we should delete it from DELTA_META_TABLE
       deltaTableToVacuumTask.remove(meta).foreach(_.foreach(_.cancel(true)))
-      val deltaMetaTable = deltaMetaTableIdentifier(conf)
-      if (deleteFromMetadataTable(spark, meta)) {
-        logInfo(s"Deleted expired ${meta.toString} from $deltaMetaTable")
-      } else {
-        logWarning(s"Failed to delete expired ${meta.toString} from $deltaMetaTable")
+      if (deleteDb) {
+        val deltaMetaTable = deltaMetaTableIdentifier(conf)
+        if (deleteFromMetadataTable(spark, meta)) {
+          logInfo(s"Deleted expired ${meta.toString} from $deltaMetaTable")
+        } else {
+          logWarning(s"Failed to delete expired ${meta.toString} from $deltaMetaTable")
+        }
       }
     }
   }
@@ -171,8 +194,10 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
   def disableVacuum(meta: DeltaTableMetadata): Unit = {
     if (conf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
       deltaTableToVacuumTask.get(meta).foreach(_.foreach(_.cancel(true)))
-      deltaTableToVacuumTask(meta) = None
-      logInfo(s"Found ${meta.toString}, disable vacuum")
+      if (deltaTableToVacuumTask.contains(meta)) {
+        deltaTableToVacuumTask(meta) = None
+        logInfo(s"Found ${meta.toString}, disable vacuum")
+      }
     }
   }
 

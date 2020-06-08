@@ -104,6 +104,12 @@ object VacuumCommand extends VacuumCommandImpl with Serializable {
 
       val snapshot = deltaLog.update()
 
+      if (snapshot.version == 0) { // just convert to delta. skip GC.
+        val basePath = fs.makeQualified(path).toString
+        logWarning(s"No need to vacuum $basePath since the SNAPSHOT version now is 0")
+        return spark.createDataset(Seq(basePath)).toDF("path")
+      }
+
       require(snapshot.version >= 0, "No state defined for this table. Is this really " +
         "a Delta table? Refusing to garbage collect.")
 

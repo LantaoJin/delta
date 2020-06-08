@@ -316,7 +316,7 @@ class Snapshot(
       spec1: TablePartitionSpec,
       spec2: TablePartitionSpec): Boolean = {
     spec1.forall {
-      case (partitionColumn, value) => spec2.get(partitionColumn).contains(value)
+      case (partitionColumn, value) => spec2(partitionColumn) == value
     }
   }
 

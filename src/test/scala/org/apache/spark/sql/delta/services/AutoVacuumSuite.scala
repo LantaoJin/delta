@@ -78,7 +78,7 @@ class AutoVacuumSuite extends QueryTest
           s"""
              |CONVERT TO DELTA $DELTA_META_TABLE_NAME
              |""".stripMargin)
-        Thread.sleep(3000) // wait vacuum threads completed
+        Thread.sleep(5000) // wait vacuum threads completed
         val vmMgr = spark.sharedState.vacuumManager
         val all = vmMgr.deltaTableToVacuumTask
         assert(all.contains(DeltaTableMetadata("db1", "tbl1", "user1", "path1", false, 168L)))
@@ -91,7 +91,7 @@ class AutoVacuumSuite extends QueryTest
             Row("db1", "tbl1", "user1", "path1", false, 336L),
             Row("default", "tbl", "user", "path", true, 24L),
             Row("default", "test_carmel_delta_tables", "",
-              s"${getTableLocation("test_carmel_delta_tables")}", true, 0L))
+              s"${getTableLocation("test_carmel_delta_tables")}", true, 2L))
         )
 
         sql(s"VACUUM $DELTA_META_TABLE_NAME SET RETAIN 200 HOURS AUTO RUN")
@@ -139,9 +139,9 @@ class AutoVacuumSuite extends QueryTest
         checkAnswer(
           sql("SHOW DELTAS"),
           Row("default", "delta1", "",
-            s"${getTableLocation("delta1")}", true, 0L) ::
+            s"${getTableLocation("delta1")}", true, 2L) ::
           Row("default", "test_carmel_delta_tables", "",
-            s"${getTableLocation("test_carmel_delta_tables")}", true, 0L) :: Nil)
+            s"${getTableLocation("test_carmel_delta_tables")}", true, 2L) :: Nil)
         sql(
           """
             |ALTER TABLE delta1 RENAME TO delta2
@@ -150,9 +150,9 @@ class AutoVacuumSuite extends QueryTest
         checkAnswer(
           sql("SHOW DELTAS"),
           Row("default", "delta2", "",
-            s"${getTableLocation("delta2")}", true, 0L) ::
+            s"${getTableLocation("delta2")}", true, 2L) ::
           Row("default", "test_carmel_delta_tables", "",
-            s"${getTableLocation("test_carmel_delta_tables")}", true, 0L) :: Nil)
+            s"${getTableLocation("test_carmel_delta_tables")}", true, 2L) :: Nil)
       }
     }
   }
