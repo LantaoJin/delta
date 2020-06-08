@@ -18,6 +18,7 @@ package org.apache.spark.sql.delta.commands
 
 // scalastyle:off import.ordering.noEmptyLine
 import java.util.Locale
+import java.util.concurrent.TimeoutException
 
 import scala.collection.JavaConverters._
 import scala.util.control.NonFatal
@@ -267,7 +268,15 @@ abstract class ConvertToDeltaCommandBase(
           collectStats = false,
           convertProperties))
     } finally {
-      fileListResultDf.unpersist(blocking = true)
+      try {
+        fileListResultDf.unpersist(blocking = true)
+      } catch {
+        case t: TimeoutException =>
+          if (convertProperties.catalogTable.isDefined) {
+            val tbl = convertProperties.catalogTable.get.identifier
+            logWarning(s"Unpersist fileListResultDf for $tbl timeout, no need to retry", t)
+          }
+      }
     }
     Seq.empty[Row]
   }
