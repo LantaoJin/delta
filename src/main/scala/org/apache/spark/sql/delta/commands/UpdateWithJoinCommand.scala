@@ -299,7 +299,7 @@ case class UpdateWithJoinCommand(
           c.references.nonEmpty && c.references.subsetOf(target.outputSet) && c.deterministic
         }.reduceLeft(And)
 
-      outputDF.union(targetDF.filter(new Column(Not(targetOnlyPredicatesIsNotNull))))
+      outputDF.union(targetDF.filter(new Column(NotNullSafe(targetOnlyPredicatesIsNotNull))))
     } else {
       outputDF
     }

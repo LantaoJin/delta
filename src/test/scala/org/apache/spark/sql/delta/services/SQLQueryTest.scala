@@ -1229,11 +1229,11 @@ class SQLQuerySuite extends QueryTest
       withSQLConf(
         DeltaSQLConf.REWRITE_LEFT_JOIN.key -> rewrite.toString,
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0") {
-        withTable("target", "source", "target2", "source2") {
-          sql("CREATE TABLE target(a int, b tinyint, c int) USING parquet")
+        withTable("source", "target", "target2", "target3", "target4") {
           sql("CREATE TABLE source(a int, b int) USING parquet")
-          sql("INSERT INTO target values (1, 1, 1), (2, 2, 2), (3, NULL, 3)")
           sql("INSERT INTO source values (1, 10), (2, 20), (3, 30)")
+          sql("CREATE TABLE target(a int, b tinyint, c int) USING parquet")
+          sql("INSERT INTO target values (1, 1, 1), (2, 2, 2), (3, NULL, 3)")
           sql("CONVERT TO DELTA target")
           sql(
             """
@@ -1320,16 +1320,16 @@ class SQLQuerySuite extends QueryTest
             Row(1, 1, 1) :: Row(2, 20, 2) :: Row(3, null, 3) :: Nil
           )
 
+          Seq((1, "1", 1), (2, "2", 2), (3, null, 3)).toDF("a", "b", "c")
+            .repartition(1).createOrReplaceTempView("test")
           sql("CREATE TABLE target2(a int, b string, c int) USING parquet")
-          sql("INSERT INTO target2 values (1, '1', 1), (2, '2', 2), (3, NULL, 3)")
-          sql("CREATE TABLE source2(a int, b string) USING parquet")
-          sql("INSERT INTO source2 values (1, '10'), (2, '20'), (3, '30')")
+          sql("INSERT INTO target2 SELECT * FROM test")
           sql("CONVERT TO DELTA target2")
 
           sql(
             """
               |UPDATE t
-              |FROM target2 t, source2 s
+              |FROM target2 t, source s
               |SET t.b = "10"
               |WHERE t.a = s.a AND round(t.b) = 2
               |""".stripMargin)
@@ -1341,13 +1341,49 @@ class SQLQuerySuite extends QueryTest
           sql(
             """
               |UPDATE t
-              |FROM target2 t, source2 s
+              |FROM target2 t, source s
               |SET  t.b = "20"
               |WHERE t.a = s.a AND lower(t.b) = 10
               |""".stripMargin)
           checkAnswer(
             sql("SELECT * FROM target2"),
             Row(1, "1", 1) :: Row(2, "20", 2) :: Row(3, null, 3) :: Nil
+          )
+
+          // cast overflow, but won't get null
+          Seq((1, 9223372036854775807L, 1), (2, 2L, 2), (3, 3L, 3)).toDF("a", "b", "c")
+            .repartition(1).createOrReplaceTempView("test")
+          sql("CREATE TABLE target3(a int, b bigint, c int) USING parquet")
+          sql("INSERT INTO target3 SELECT * FROM test")
+          sql("CONVERT TO DELTA target3")
+          sql(
+            """
+              |UPDATE t
+              |FROM target3 t, source s
+              |SET  t.b = 10
+              |WHERE t.a = s.a AND cast(t.b as int) = 2
+              |""".stripMargin)
+          checkAnswer(
+            sql("SELECT * FROM target3"),
+            Row(1, 9223372036854775807L, 1) :: Row(2, 10L, 2) :: Row(3, 3L, 3) :: Nil
+          )
+
+          // cast failed, get null
+          Seq((1, "abc", 1), (2, "2019-10-21", 2), (3, null, 3)).toDF("a", "b", "c")
+              .repartition(1).createOrReplaceTempView("test")
+          sql("CREATE TABLE target4(a int, b string, c int) USING parquet")
+          sql("INSERT INTO target4 SELECT * FROM test")
+          sql("CONVERT TO DELTA target4")
+          sql(
+            """
+              |UPDATE t
+              |FROM target4 t, source s
+              |SET  t.b = '2020-06-01'
+              |WHERE t.a = s.a AND cast(t.b as date) = '2019-10-21'
+              |""".stripMargin)
+          checkAnswer(
+            sql("SELECT * FROM target4"),
+            Row(1, "abc", 1) :: Row(2, "2020-06-01", 2) :: Row(3, null, 3) :: Nil
           )
         }
       }
