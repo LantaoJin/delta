@@ -77,7 +77,7 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
           })
         } else {
           val catalog = spark.sessionState.catalog
-          val table = catalog.getTableMetadata(TableIdentifier(e.name, Some(e.database)))
+          val table = catalog.getTableMetadata(TableIdentifier(e.newName, Some(e.database)))
           if (DeltaTableUtils.isDeltaTable(table)) {
             DeltaTableMetadata.selectFromMetadataTable(spark, searchCondition).foreach { oldMeta =>
               val newTableIdent = TableIdentifier(e.newName, Some(e.database))
