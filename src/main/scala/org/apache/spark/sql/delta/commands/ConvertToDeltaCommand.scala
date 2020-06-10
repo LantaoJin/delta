@@ -38,7 +38,7 @@ import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogUtils}
 import org.apache.spark.sql.catalyst.analysis.Analyzer
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.delta.services.{ConvertToDeltaEvent, DeltaTableMetadata}
-import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.execution.command.{DDLUtils, RunnableCommand}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetToSparkSchemaConverter}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
@@ -91,6 +91,12 @@ abstract class ConvertToDeltaCommandBase(
       }
       case None =>
         throw DeltaErrors.missingProviderForConvertException(convertProperties.targetDir)
+    }
+
+    convertProperties.catalogTable match {
+      case Some(table) if DDLUtils.isTemporaryTable(table) =>
+        throw DeltaErrors.convertTemporaryTablesException(tableIdentifier)
+      case None =>
     }
 
     val deltaLog = DeltaLog.forTable(spark, deltaPath.getOrElse(convertProperties.targetDir))
