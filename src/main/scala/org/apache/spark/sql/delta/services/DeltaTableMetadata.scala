@@ -86,28 +86,25 @@ object DeltaTableMetadata extends Logging {
   /**
    * SELECT * FROM DELTA_META_TABLE
    */
-  def listMetadataTables(spark: SparkSession): Iterable[DeltaTableMetadata] = iterableCatch {
-    import spark.implicits._
+  def listMetadataTables(spark: SparkSession): Seq[DeltaTableMetadata] = seqCatch {
     val sqlText =
       s"""
          |SELECT * FROM ${deltaMetaTableIdentifier(spark)}
          |""".stripMargin
     logDebug(s"DeltaTableMetadata API execute: \n $sqlText")
-    val df = spark.sql(sqlText)
-    df.as[DeltaTableMetadata].collect()
+    executeQuery(spark, sqlText).map(rowToObject)
   }
 
   /**
    * Get rows from DELTA_META_TABLE
    */
-  def getRowsFromMetadataTable(spark: SparkSession): Iterable[Row] = iterableCatch {
+  def getRowsFromMetadataTable(spark: SparkSession): Seq[Row] = seqCatch {
     val sqlText =
       s"""
          |SELECT * FROM ${deltaMetaTableIdentifier(spark)}
          |""".stripMargin
     logDebug(s"DeltaTableMetadata API execute: \n $sqlText")
-    val df = spark.sql(sqlText)
-    df.collect()
+    executeQuery(spark, sqlText)
   }
 
   /**
@@ -115,7 +112,6 @@ object DeltaTableMetadata extends Logging {
    */
   def selectFromMetadataTable(
       spark: SparkSession, metadata: DeltaTableMetadata): Option[DeltaTableMetadata] = {
-    import spark.implicits._
     val sqlText =
       s"""
          |SELECT * FROM ${deltaMetaTableIdentifier(spark)}
@@ -123,8 +119,7 @@ object DeltaTableMetadata extends Logging {
          |${toWheres(metadata)}
          |""".stripMargin
     logDebug(s"DeltaTableMetadata API execute: \n $sqlText")
-    val df = spark.sql(sqlText)
-    df.as[DeltaTableMetadata].collect().headOption
+    executeQuery(spark, sqlText).map(rowToObject).headOption
   }
 
   /**
@@ -146,7 +141,7 @@ object DeltaTableMetadata extends Logging {
         |VALUES (${toValues(metadata)})
         |""".stripMargin
     logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
-    spark.sql(sqlText)
+    executeUpdate(spark, sqlText)
     true
   }
 
@@ -164,7 +159,7 @@ object DeltaTableMetadata extends Logging {
          |${toWheres(metadata)}
          |""".stripMargin
     logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
-    spark.sql(sqlText)
+    executeUpdate(spark, sqlText)
     true
   }
 
@@ -184,7 +179,7 @@ object DeltaTableMetadata extends Logging {
          |${toWheres(search)}
          |""".stripMargin
     logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
-    spark.sql(sqlText)
+    executeUpdate(spark, sqlText)
     true
   }
 
@@ -200,7 +195,7 @@ object DeltaTableMetadata extends Logging {
          |${toWheres(metadata)}
          |""".stripMargin
     logInfo(s"DeltaTableMetadata API execute: \n $sqlText")
-    spark.sql(sqlText)
+    executeUpdate(spark, sqlText)
     true
   }
 
@@ -218,13 +213,13 @@ object DeltaTableMetadata extends Logging {
     }
   }
 
-  private def iterableCatch[T](f: => Iterable[T]): Iterable[T] = {
+  private def seqCatch[T](f: => Seq[T]): Seq[T] = {
     try {
       f
     } catch {
       case e: Throwable =>
         logWarning("", e)
-        Iterable.empty[T]
+        Seq.empty[T]
     }
   }
 
@@ -243,5 +238,35 @@ object DeltaTableMetadata extends Logging {
 
   def toWheres(m: DeltaTableMetadata): String = {
     s"  db='${m.db}' and tbl='${m.tbl}'"
+  }
+
+  def rowToObject(row: Row): DeltaTableMetadata = {
+    val db = row.getString(0)
+    val tbl = row.getString(1)
+    val maker = row.getString(2)
+    val path = row.getString(3)
+    val vacuum = row.getBoolean(4)
+    val retention = row.getLong(5)
+    DeltaTableMetadata(db, tbl, maker, path, vacuum, retention)
+  }
+
+  private def executeUpdate(spark: SparkSession, sqlText: String): Unit = {
+    val conf = spark.sessionState.conf
+    val storage = conf.getConf(DeltaSQLConf.META_TABLE_STORAGE)
+    if (storage.equalsIgnoreCase("jdbc")) {
+      JdbcHelper.updateOrDelete(spark, sqlText)
+    } else {
+      spark.sql(sqlText)
+    }
+  }
+
+  private def executeQuery(spark: SparkSession, sqlText: String): Seq[Row] = {
+    val conf = spark.sessionState.conf
+    val storage = conf.getConf(DeltaSQLConf.META_TABLE_STORAGE)
+    if (storage.equalsIgnoreCase("jdbc")) {
+      JdbcHelper.select(spark, sqlText)
+    } else {
+      spark.sql(sqlText).collect().toSeq
+    }
   }
 }

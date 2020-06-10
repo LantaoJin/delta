@@ -32,14 +32,18 @@ libraryDependencies ++= Seq(
   "org.apache.spark" %% "spark-sql" % sparkVersion.value % "provided",
   "org.apache.spark" %% "spark-core" % sparkVersion.value % "provided",
   "org.apache.spark" %% "spark-catalyst" % sparkVersion.value % "provided",
+  "org.apache.spark" %% "spark-viewpoint" % sparkVersion.value % "provided",
 
   // deps
   "org.eclipse.jetty" % "jetty-servlet" % "9.3.20.v20170531" % "provided",
+  "mysql" % "mysql-connector-java" % "5.1.38" % "provided",
 
   // Test deps
   "org.scalatest" %% "scalatest" % "3.0.5" % "test",
   "junit" % "junit" % "4.12" % "test",
   "com.novocode" % "junit-interface" % "0.11" % "test",
+  "mysql" % "mysql-connector-java" % "5.1.38" % "test",
+  "ch.vorburger.mariaDB4j" % "mariaDB4j" % "2.4.0" % "test",
   "org.apache.spark" %% "spark-catalyst" % sparkVersion.value % "test" classifier "tests",
   "org.apache.spark" %% "spark-core" % sparkVersion.value % "test" classifier "tests",
   "org.apache.spark" %% "spark-sql" % sparkVersion.value % "test" classifier "tests"

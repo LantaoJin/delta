@@ -62,7 +62,7 @@ class AllTables(
 
   def toNodeSeq: Seq[Node] = {
     <div>
-      <h4>Delta Tables (Last Updated: {lastUpdatedTime})</h4>
+      <h4>{deltaTables.size} Delta Tables (Last Updated: {lastUpdatedTime})</h4>
       {UIUtils.listingTable[DeltaTableMetadata](
       header, row, deltaTables, id = Some("delta-table"))}
     </div>

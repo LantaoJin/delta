@@ -27,14 +27,14 @@ import org.apache.spark.util.ThreadUtils
 class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logging {
   private lazy val spark = SparkSession.active
 
-  private lazy val metaHandlers =
-    ThreadUtils.newDaemonFixedThreadPool(16, "delta-meta-table-handler-pool")
+  private lazy val metaHandlerThread =
+    ThreadUtils.newDaemonSingleThreadExecutor("delta-meta-table-handler-thread")
 
   override def onOtherEvent(event: SparkListenerEvent): Unit = {
     event match {
       case e: ConvertToDeltaEvent =>
         validate.enableVacuum(e.metadata)
-        metaHandlers.execute(new Runnable {
+        metaHandlerThread.execute(new Runnable {
           override def run(): Unit = {
             DeltaTableMetadata.insertIntoMetadataTable(spark, e.metadata)
           }
@@ -44,7 +44,7 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
           validate.deltaTableToVacuumTask(e.metadata).foreach(_.cancel(true))
           validate.deltaTableToVacuumTask.remove(e.metadata)
         }
-        metaHandlers.execute(new Runnable {
+        metaHandlerThread.execute(new Runnable {
           override def run(): Unit = {
             DeltaTableMetadata.updateMetadataTable(spark, e.metadata)
           }
@@ -54,7 +54,7 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
           validate.deltaTableToVacuumTask(e.metadata).foreach(_.cancel(true))
           validate.deltaTableToVacuumTask.remove(e.metadata)
         }
-        metaHandlers.execute(new Runnable {
+        metaHandlerThread.execute(new Runnable {
           override def run(): Unit = {
             DeltaTableMetadata.deleteFromMetadataTable(spark, e.metadata)
           }
@@ -70,7 +70,7 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
           val newMetadata = DeltaTableMetadata(e.database, e.newName,
             old.maker, CatalogUtils.URIToString(newTable.location), old.vacuum, old.retention)
           validate.enableVacuum(newMetadata)
-          metaHandlers.execute(new Runnable {
+          metaHandlerThread.execute(new Runnable {
             override def run(): Unit = {
               DeltaTableMetadata.updateMetadataTable(spark, newMetadata, searchCondition)
             }
@@ -84,7 +84,7 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
               val newTable = catalog.getTableMetadata(newTableIdent)
               val newMetadata = DeltaTableMetadata(e.database, e.newName, oldMeta.maker,
                 CatalogUtils.URIToString(newTable.location), oldMeta.vacuum, oldMeta.retention)
-              metaHandlers.execute(new Runnable {
+              metaHandlerThread.execute(new Runnable {
                 override def run(): Unit = {
                   DeltaTableMetadata.updateMetadataTable(spark, newMetadata, searchCondition)
                 }
@@ -98,7 +98,7 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
           validate.deltaTableToVacuumTask(searchCondition).foreach(_.cancel(true))
           validate.deltaTableToVacuumTask.remove(searchCondition)
         }
-        metaHandlers.execute(new Runnable {
+        metaHandlerThread.execute(new Runnable {
           override def run(): Unit = {
             // todo this has performance problem till we changed the underlay storage
             DeltaTableMetadata.deleteFromMetadataTable(spark, searchCondition)

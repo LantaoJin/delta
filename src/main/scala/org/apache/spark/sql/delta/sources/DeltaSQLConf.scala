@@ -246,6 +246,12 @@ object DeltaSQLConf {
     .stringConf
     .createWithDefault("carmel_system.carmel_delta_tables")
 
+  val META_TABLE_STORAGE = buildStaticConf("metaTable.storage")
+    .internal
+    .doc("Delta meta table storage types: jdbc/spark")
+    .stringConf
+    .createWithDefault("spark")
+
   val AUTO_VACUUM_UI_ENABLED = buildStaticConf("vacuum.ui.enabled")
     .booleanConf
     .createWithDefault(true)

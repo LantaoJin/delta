@@ -29,6 +29,6 @@ case class ShowDeltasCommand() extends RunnableCommand with DeltaCommand {
     .map(f => AttributeReference(f.name, f.dataType, f.nullable, f.metadata)())
 
   override def run(spark: SparkSession): Seq[Row] = {
-    getRowsFromMetadataTable(spark).toSeq
+    getRowsFromMetadataTable(spark)
   }
 }
