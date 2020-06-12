@@ -1389,20 +1389,4 @@ class SQLQuerySuite extends QueryTest
       }
     }
   }
-
-  test("convert temporary table is not allowed") {
-    withTempTable("tt1", "tt2") {
-      sql("CREATE TEMP TABLE tt1 (id INT) USING parquet")
-      val e1 = intercept[AnalysisException] {
-        sql("CONVERT TO DELTA tt1")
-      }.getMessage()
-      assert(e1.contains("CONVERT TO DELTA doesn't support TEMPORARY/VOLATILE table"))
-
-      sql("CREATE VOLATILE TABLE tt2 USING parquet AS SELECT 1 AS id")
-      val e2 = intercept[AnalysisException] {
-        sql("CONVERT TO DELTA tt2")
-      }.getMessage()
-      assert(e2.contains("CONVERT TO DELTA doesn't support TEMPORARY/VOLATILE table"))
-    }
-  }
 }
