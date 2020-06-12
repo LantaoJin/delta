@@ -93,12 +93,6 @@ abstract class ConvertToDeltaCommandBase(
         throw DeltaErrors.missingProviderForConvertException(convertProperties.targetDir)
     }
 
-    convertProperties.catalogTable match {
-      case Some(table) if DDLUtils.isTemporaryTable(table) =>
-        throw DeltaErrors.convertTemporaryTablesException(tableIdentifier)
-      case _ =>
-    }
-
     val deltaLog = DeltaLog.forTable(spark, deltaPath.getOrElse(convertProperties.targetDir))
     deltaLog.update()
     val txn = deltaLog.startTransaction()

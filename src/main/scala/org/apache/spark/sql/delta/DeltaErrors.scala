@@ -668,10 +668,6 @@ object DeltaErrors
       s"convert a $sourceName source: $ident")
   }
 
-  def convertTemporaryTablesException(ident: TableIdentifier): Throwable = {
-    new AnalysisException(s"CONVERT TO DELTA doesn't support TEMPORARY/VOLATILE table $ident")
-  }
-
   def unexpectedPartitionColumnFromFileNameException(
       path: String, parsedCol: String, expectedCol: String): Throwable = {
     new AnalysisException(s"Expecting partition column ${formatColumn(expectedCol)}, but" +
