@@ -17,11 +17,10 @@
 package org.apache.spark.sql.delta
 
 // scalastyle:off import.ordering.noEmptyLine
-import java.util.Locale
-
+import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
-import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.sql.delta.files.{TahoeFileIndex, TahoeLogFileIndex}
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.sources.DeltaSourceUtils
@@ -32,6 +31,8 @@ import org.apache.spark.sql.catalyst.catalog.{CatalogTable, SessionCatalog}
 import org.apache.spark.sql.catalyst.expressions.{Expression, PredicateHelper, SubqueryExpression}
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.delta.actions.AddFile
+import org.apache.spark.sql.delta.actions.SingleAction.addFileEncoder
 import org.apache.spark.sql.execution.datasources.{FileIndex, HadoopFsRelation, LogicalRelation}
 import org.apache.spark.sql.internal.SQLConf
 
@@ -292,5 +293,57 @@ object DeltaTableUtils extends PredicateHelper
       val timestamp = tt.getTimestamp(conf.sessionLocalTimeZone)
       deltaLog.history.getActiveCommitAtTime(timestamp, false).version -> "timestamp"
     }
+  }
+
+  def calculateTotalSizeAndSmallFileNumForDelta(spark: SparkSession,
+      catalogTable: CatalogTable): (BigInt, Int) = {
+    val deltaLog = DeltaLog.forTable(spark, catalogTable)
+    val res = calculateLocationSizeAndSmallFileNum(spark, catalogTable.identifier, deltaLog)
+    (BigInt(res._1), res._2)
+  }
+
+  def calculateLocationSizeAndSmallFileNum(
+      sparkSession: SparkSession,
+      identifier: TableIdentifier,
+      deltaLog: DeltaLog): (Long, Int) = {
+    def getPathSizeAndSmallFileNum(fs: FileSystem, path: Path): (Long, Int) = {
+      val fileStatus = fs.getFileStatus(path)
+      val res = if (fileStatus.isDirectory) {
+        (0L, 0)
+      } else {
+        val len = fileStatus.getLen
+        // Ignore empty files, like _SUCCESS.
+        val smallFileNum =
+          if (len > 0 && len < sparkSession.sessionState.conf.smallFileSizeThreshold) 1 else 0
+        (len, smallFileNum)
+      }
+      res
+    }
+
+    val startTime = System.nanoTime()
+    logInfo(s"Starting to calculate the total file size and " +
+      s"small files number under path ${deltaLog.dataPath}.")
+    val snapshot = deltaLog.snapshot
+    val files = snapshot.allFiles.as[AddFile](addFileEncoder).collect()
+    val fs = deltaLog.dataPath.getFileSystem(sparkSession.sessionState.newHadoopConf())
+    val sizeAndNum = files.map(f => new Path(deltaLog.dataPath, f.path)).map { path =>
+      try {
+        getPathSizeAndSmallFileNum(fs, path)
+      } catch {
+        case NonFatal(e) =>
+          logWarning(
+            s"Failed to get the size and small files number of table ${identifier.table} in the " +
+              s"database ${identifier.database} because of ${e.toString}", e)
+          (0L, 0)
+      }
+    }.reduceOption { (first, second) =>
+      (first._1 + second._1, first._2 + second._2)
+    }
+
+    val durationInMs = (System.nanoTime() - startTime) / (1000 * 1000)
+    logInfo(s"It took $durationInMs ms to calculate the total file size" +
+      s" and small files number under path ${deltaLog.dataPath}.")
+
+    sizeAndNum.getOrElse((0L, 0))
   }
 }
