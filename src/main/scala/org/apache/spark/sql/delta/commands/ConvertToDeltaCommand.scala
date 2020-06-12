@@ -550,13 +550,16 @@ abstract class ConvertToDeltaCommandBase(
   }
 
   private def saveToMetaTable(spark: SparkSession, convertProperties: ConvertProperties): Unit = {
+    val defaultRetentionHours =
+      spark.sessionState.conf.getConf(DeltaSQLConf.AUTO_VACUUM_RETENTION_HOURS)
     convertProperties.catalogTable.foreach { table =>
       val metadata = DeltaTableMetadata(
         table.identifier.database.getOrElse(""),
         table.identifier.table,
         spark.sessionState.catalog.getCurrentUser,
         convertProperties.targetDir,
-        vacuum = true)
+        vacuum = true,
+        retention = defaultRetentionHours)
       spark.sharedState.externalCatalog.postToAll(ConvertToDeltaEvent(metadata))
     }
   }

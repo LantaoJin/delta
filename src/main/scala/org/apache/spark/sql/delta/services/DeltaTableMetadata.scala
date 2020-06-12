@@ -27,10 +27,10 @@ import org.apache.spark.sql.delta.sources.DeltaSQLConf
  */
 case class DeltaTableMetadata(
     db: String, tbl: String, maker: String, path: String,
-    vacuum: Boolean, retention: Long = 2L) extends Ordered [DeltaTableMetadata] {
+    vacuum: Boolean, retention: Long) extends Ordered [DeltaTableMetadata] {
 
-  def this(db: String, tbl: String) {
-    this(db, tbl, "", "", false)
+  private def this(db: String, tbl: String) {
+    this(db, tbl, "", "", false, 2L) // 2L is useless, but better use a value greater than 0
   }
 
   override def hashCode: scala.Int = {
@@ -74,6 +74,10 @@ case class DeltaTableMetadata(
 //                 API                 //
 // ----------------------------------- //
 object DeltaTableMetadata extends Logging {
+
+  def buildSearchCondition(db: String, tbl: String): DeltaTableMetadata = {
+    new DeltaTableMetadata(db, tbl)
+  }
 
   def deltaMetaTableIdentifier(conf: SparkConf): String = {
     conf.get(DeltaSQLConf.META_TABLE_IDENTIFIER)

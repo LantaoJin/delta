@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.delta.{DeltaErrors, DeltaLog, DeltaTableIdentifier, DeltaTableUtils}
 import org.apache.spark.sql.delta.commands.VacuumCommand
 import org.apache.spark.sql.delta.services.{DeltaTableMetadata, UpdateDeltaEvent}
+import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.execution.command.{CommandUtils, RunnableCommand}
 import org.apache.spark.sql.types.StringType
 
@@ -87,13 +88,15 @@ case class VacuumTableCommand(
   private def updateMetaTable(
       spark: SparkSession, table: TableIdentifier, pathToVacuum: String): Unit = {
     val catalog = spark.sessionState.catalog
+    val defaultRetentionHours =
+      spark.sessionState.conf.getConf(DeltaSQLConf.AUTO_VACUUM_RETENTION_HOURS)
     val metadata = DeltaTableMetadata(
       table.database.getOrElse(catalog.getCurrentDatabase),
       table.table,
       catalog.getCurrentUser,
       pathToVacuum,
       vacuum = true,
-      horizonHours.getOrElse(0D).toLong)
+      horizonHours.getOrElse(defaultRetentionHours.toDouble).toLong)// todo(lajin) change to double
     spark.sharedState.externalCatalog.postToAll(UpdateDeltaEvent(metadata))
   }
 }

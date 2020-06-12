@@ -263,6 +263,12 @@ object DeltaSQLConf {
     .booleanConf
     .createWithDefault(false)
 
+  val AUTO_VACUUM_RETENTION_HOURS = buildStaticConf("vacuum.auto.retention.hours")
+    .doc("The default Delta tombstone retention period. Should be greater than 0.")
+    .longConf
+    .checkValue(_ > 0, "Retention hours should be greater than 0")
+    .createWithDefault(2L)
+
   val AUTO_VACUUM_INTERVAL = buildStaticConf("vacuum.schedule.interval")
     .doc("The interval hours of a vacuum task is scheduled. The default value is 24 hours.")
     .timeConf(TimeUnit.SECONDS)

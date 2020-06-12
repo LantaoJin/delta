@@ -60,7 +60,7 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
           }
         })
       case e: RenameTableEvent =>
-        val searchCondition = new DeltaTableMetadata(e.database, e.name)
+        val searchCondition = DeltaTableMetadata.buildSearchCondition(e.database, e.name)
         if (validate.deltaTableToVacuumTask.contains(searchCondition)) {
           val old = validate.deltaTableToVacuumTask.keySet.find(_.equals(searchCondition)).get
           validate.deltaTableToVacuumTask(searchCondition).foreach(_.cancel(true))
@@ -93,7 +93,7 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
           }
         }
       case e: DropTableEvent =>
-        val searchCondition = new DeltaTableMetadata(e.database, e.name)
+        val searchCondition = DeltaTableMetadata.buildSearchCondition(e.database, e.name)
         if (validate.deltaTableToVacuumTask.contains(searchCondition)) {
           validate.deltaTableToVacuumTask(searchCondition).foreach(_.cancel(true))
           validate.deltaTableToVacuumTask.remove(searchCondition)
