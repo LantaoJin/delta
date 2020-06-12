@@ -24,7 +24,7 @@ import org.apache.spark.sql.delta.{DeltaErrors, DeltaLog, DeltaTableIdentifier, 
 import org.apache.spark.sql.delta.commands.VacuumCommand
 import org.apache.spark.sql.delta.services.{DeltaTableMetadata, UpdateDeltaEvent}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
-import org.apache.spark.sql.execution.command.{CommandUtils, RunnableCommand}
+import org.apache.spark.sql.execution.command.{CommandUtils, DDLUtils, RunnableCommand}
 import org.apache.spark.sql.types.StringType
 
 /**
@@ -44,6 +44,14 @@ case class VacuumTableCommand(
     Seq(AttributeReference("path", StringType, nullable = true)())
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
+    table.foreach { t =>
+      val catalogTable = sparkSession.sessionState.catalog.getTableMetadata(t)
+      if (DDLUtils.isTemporaryTable(catalogTable)) {
+        logWarning(s"VACUUM doesn't support TEMPORARY/VOLATILE table ${catalogTable.identifier}")
+        return Seq.empty[Row]
+      }
+    }
+
     val pathToVacuum =
       new Path(if (table.nonEmpty) {
         DeltaTableIdentifier(sparkSession, table.get) match {

@@ -31,7 +31,7 @@ import org.apache.spark.sql.delta.commands.VacuumCommand
 import org.apache.spark.sql.delta.services.DeltaTableMetadata._
 import org.apache.spark.sql.delta.services.ui.DeltaTab
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
-import org.apache.spark.sql.execution.command.CommandUtils
+import org.apache.spark.sql.execution.command.{CommandUtils, DDLUtils}
 import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.util.{ThreadUtils, Utils}
 
@@ -94,6 +94,10 @@ class VacuumTask(table: DeltaTableMetadata) extends Runnable with Logging {
 
   override def run(): Unit = {
     val catalogTable = spark.sessionState.catalog.getTableMetadata(table.identifier)
+    if (DDLUtils.isTemporaryTable(catalogTable)) {
+      logInfo(s"Skip vacuum temporary table ${table.identifier.unquotedString}")
+      return
+    }
     val deltaLog = DeltaLog.forTable(spark, catalogTable)
     logInfo(s"Start vacuum ${table.identifier.unquotedString} retain ${table.retention} hours")
     VacuumCommand.gc(spark, deltaLog, dryRun = false, Some(table.retention.toDouble),

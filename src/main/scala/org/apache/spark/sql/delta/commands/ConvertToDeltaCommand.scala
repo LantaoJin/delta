@@ -560,7 +560,8 @@ abstract class ConvertToDeltaCommandBase(
         convertProperties.targetDir,
         vacuum = true,
         retention = defaultRetentionHours)
-      spark.sharedState.externalCatalog.postToAll(ConvertToDeltaEvent(metadata))
+      val isTemp = DDLUtils.isTemporaryTable(table)
+      spark.sharedState.externalCatalog.postToAll(ConvertToDeltaEvent(metadata, isTemp))
     }
   }
 }

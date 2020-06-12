@@ -185,6 +185,70 @@ class AutoVacuumSuite extends QueryTest
     }
   }
 
+  test("test delta temporary table") {
+    sys.props("spark.testing") = "true"
+    spark.sparkContext.conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS,
+      "io.delta.sql.DeltaSparkSessionExtension")
+    spark.sparkContext.conf.set(DeltaSQLConf.AUTO_VACUUM_ENABLED, true)
+    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_IDENTIFIER, DELTA_META_TABLE_NAME)
+    withDatabase("carmel_system") {
+      sql("create database carmel_system")
+      sql("use carmel_system")
+      withTempPaths(numPaths = 2) { case Seq(dir, dir1) =>
+        withTable(s"$DELTA_META_TABLE_NAME", "delta1", "delta2", "t_delta") {
+          sql(
+            s"""
+               |${DELTA_META_TABLE_CREATION_SQL}
+               |LOCATION '$dir'
+               |""".stripMargin)
+          sql(
+            s"""
+               |CONVERT TO DELTA $DELTA_META_TABLE_NAME
+               |""".stripMargin)
+          sql(
+            s"""
+               |CREATE TABLE delta1(id INT) USING parquet
+               |LOCATION '$dir1'
+               |""".stripMargin)
+          sql(
+            s"""
+               |CREATE TEMPORARY TABLE t_delta(id INT) USING parquet
+               |""".stripMargin)
+          sql(
+            """
+              |CONVERT TO DELTA delta1
+              |""".stripMargin)
+          sql(
+            """
+              |CONVERT TO DELTA t_delta
+              |""".stripMargin)
+          Thread.sleep(3000)
+          checkAnswer(
+            sql("SHOW DELTAS"),
+            Row("carmel_system", "delta1", "",
+              s"${getTableLocation("delta1")}", true, 2L) ::
+              Row("carmel_system", "carmel_delta_tables", "",
+                s"${getTableLocation("carmel_delta_tables")}", true, 2L) :: Nil)
+          sql(
+            """
+              |ALTER TABLE delta1 RENAME TO delta2
+              |""".stripMargin)
+          sql(
+            """
+              |DROP TABLE t_delta
+              |""".stripMargin)
+          Thread.sleep(3000)
+          checkAnswer(
+            sql("SHOW DELTAS"),
+            Row("carmel_system", "delta2", "",
+              s"${getTableLocation("delta2")}", true, 2L) ::
+              Row("carmel_system", "carmel_delta_tables", "",
+                s"${getTableLocation("carmel_delta_tables")}", true, 2L) :: Nil)
+        }
+      }
+    }
+  }
+
   test("test using jdbc instead of delta table") {
     sys.props("spark.testing") = "true"
     spark.sparkContext.conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS,

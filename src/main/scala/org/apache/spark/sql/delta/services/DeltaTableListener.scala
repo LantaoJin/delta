@@ -22,6 +22,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{CatalogUtils, DropTableEvent, RenameTableEvent, TableEvent}
 import org.apache.spark.sql.delta.DeltaTableUtils
+import org.apache.spark.sql.execution.command.DDLUtils
 import org.apache.spark.util.ThreadUtils
 
 class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logging {
@@ -32,6 +33,7 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
 
   override def onOtherEvent(event: SparkListenerEvent): Unit = {
     event match {
+      case c @ ConvertToDeltaEvent(_, isTemporaryTable) if isTemporaryTable => // do nothing
       case e: ConvertToDeltaEvent =>
         validate.enableVacuum(e.metadata)
         metaHandlerThread.execute(new Runnable {
@@ -49,16 +51,16 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
             DeltaTableMetadata.updateMetadataTable(spark, e.metadata)
           }
         })
-      case e: DeleteDeltaEvent =>
-        if (validate.deltaTableToVacuumTask.contains(e.metadata)) {
-          validate.deltaTableToVacuumTask(e.metadata).foreach(_.cancel(true))
-          validate.deltaTableToVacuumTask.remove(e.metadata)
-        }
-        metaHandlerThread.execute(new Runnable {
-          override def run(): Unit = {
-            DeltaTableMetadata.deleteFromMetadataTable(spark, e.metadata)
-          }
-        })
+//      case e: DeleteDeltaEvent =>
+//        if (validate.deltaTableToVacuumTask.contains(e.metadata)) {
+//          validate.deltaTableToVacuumTask(e.metadata).foreach(_.cancel(true))
+//          validate.deltaTableToVacuumTask.remove(e.metadata)
+//        }
+//        metaHandlerThread.execute(new Runnable {
+//          override def run(): Unit = {
+//            DeltaTableMetadata.deleteFromMetadataTable(spark, e.metadata)
+//          }
+//        })
       case e: RenameTableEvent =>
         val searchCondition = DeltaTableMetadata.buildSearchCondition(e.database, e.name)
         if (validate.deltaTableToVacuumTask.contains(searchCondition)) {
@@ -78,7 +80,7 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
         } else {
           val catalog = spark.sessionState.catalog
           val table = catalog.getTableMetadata(TableIdentifier(e.newName, Some(e.database)))
-          if (DeltaTableUtils.isDeltaTable(table)) {
+          if (DeltaTableUtils.isDeltaTable(table) && !DDLUtils.isTemporaryTable(table)) {
             DeltaTableMetadata.selectFromMetadataTable(spark, searchCondition).foreach { oldMeta =>
               val newTableIdent = TableIdentifier(e.newName, Some(e.database))
               val newTable = catalog.getTableMetadata(newTableIdent)
@@ -115,17 +117,13 @@ object DeltaTableListener {
 
 trait DeltaMetaEvent extends TableEvent
 
-case class ConvertToDeltaEvent(metadata: DeltaTableMetadata) extends DeltaMetaEvent {
+case class ConvertToDeltaEvent(
+    metadata: DeltaTableMetadata, isTemporaryTable: Boolean) extends DeltaMetaEvent {
   override val name: String = metadata.tbl
   override val database: String = metadata.db
 }
 
 case class UpdateDeltaEvent(metadata: DeltaTableMetadata) extends DeltaMetaEvent {
-  override val name: String = metadata.tbl
-  override val database: String = metadata.db
-}
-
-case class DeleteDeltaEvent(metadata: DeltaTableMetadata) extends DeltaMetaEvent {
   override val name: String = metadata.tbl
   override val database: String = metadata.db
 }
