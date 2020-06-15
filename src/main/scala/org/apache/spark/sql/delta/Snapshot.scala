@@ -248,6 +248,12 @@ class Snapshot(
     val implicits = spark.implicits
     import implicits._
 
+    if (table.partitionColumnNames.isEmpty) {
+      throw new AnalysisException(
+        s"SHOW PARTITIONS is not allowed on a table that is not partitioned:" +
+          s" ${table.identifier.quotedString}")
+    }
+
     partialSpec.foreach { spec =>
       requireNonEmptyValueInPartitionSpec(Seq(spec))
     }

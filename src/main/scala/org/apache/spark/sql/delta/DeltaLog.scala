@@ -613,6 +613,12 @@ class DeltaLog private(
     }
   }
 
+  def checkLogDirectoryExist(): Unit = {
+    if (!fs.exists(logPath)) {
+      throw new IOException(s"Log directory $logPath not exists")
+    }
+  }
+
   /* ------------  *
    |  Integration  |
    * ------------  */

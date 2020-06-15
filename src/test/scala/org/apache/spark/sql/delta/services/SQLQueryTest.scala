@@ -521,6 +521,209 @@ class SQLQuerySuite extends QueryTest
     }
   }
 
+  private def verifyConvertBack(tableName: String): Unit = {
+    val rowsBefore = sql(s"SELECT * FROM $tableName").collect()
+    val descBefore = sql(s"desc formatted $tableName").collect()
+    sql(s"CONVERT TO PARQUET $tableName")
+    val rowsAfter = sql(s"SELECT * FROM $tableName").collect()
+    val descAfter = sql(s"desc formatted $tableName").collect()
+
+    assert(descBefore.containsSlice(Seq(Row("Provider", "delta", ""))))
+    assert(!descBefore.containsSlice(Seq(Row("Partition Provider", "Catalog", ""))))
+    assert(descAfter.containsSlice(Seq(Row("Provider", "parquet", ""))))
+    assert(descAfter.containsSlice(Seq(Row("Partition Provider", "Catalog", ""))))
+    QueryTest.sameRows(rowsBefore, rowsAfter) match {
+      case Some(errorMessage) =>
+        assert(false, errorMessage)
+      case None =>
+        assert(rowsAfter.length != 0)
+    }
+  }
+
+  test("test convert back") {
+    withTable("tt1", "tt2") {
+      spark.range(0, 50).map(x => (x.toString, x)).toDF("a", "b")
+        .write.saveAsTable("tt1")
+      sql(
+        s"""
+           |CREATE TABLE tt2(a int, b int) USING PARQUET
+           |""".stripMargin)
+      sql("CONVERT TO DELTA tt2")
+      sql(s"INSERT INTO tt2 SELECT a, b from tt1")
+      sql(
+        """
+          |UPDATE t
+          |FROM tt2 t, tt1 s
+          |SET t.b = s.b
+          |WHERE t.a = s.a
+          |""".stripMargin)
+      sql(
+        """
+          |DELETE t
+          |FROM tt2 t, tt1 s
+          |WHERE t.a = s.a AND s.a % 3 = 0
+          |""".stripMargin)
+
+      verifyConvertBack("tt2")
+
+      val e = intercept[AnalysisException] {
+        sql("SHOW PARTITIONS tt2")
+      }.getMessage()
+      assert(e.contains("SHOW PARTITIONS is not allowed on a table that is not partitioned"))
+    }
+  }
+
+  test("test convert back for partition table") {
+    withTable("tt1", "tt2") {
+      spark.range(0, 50).map(x => (x.toString, x, x % 10)).toDF("a", "b", "c")
+        .write.saveAsTable("tt1")
+      sql(
+        s"""
+           |CREATE TABLE tt2(a int, b int, dt1 int) USING PARQUET
+           |PARTITIONED BY (dt1)
+           |""".stripMargin)
+      sql("CONVERT TO DELTA tt2")
+      sql(s"INSERT INTO tt2 SELECT a, b, c from tt1")
+      sql(
+        """
+          |UPDATE t
+          |FROM tt2 t, tt1 s
+          |SET t.b = s.b
+          |WHERE t.a = s.a
+          |""".stripMargin)
+      sql(
+        """
+          |DELETE t
+          |FROM tt2 t, tt1 s
+          |WHERE t.a = s.a AND s.a % 3 = 0
+          |""".stripMargin)
+
+      sql(
+        """
+          |DELETE FROM tt2 t
+          |WHERE t.dt1 = 3 OR t.dt1 = 5
+          |""".stripMargin)
+
+      verifyConvertBack("tt2")
+
+      assert(sql("SHOW PARTITIONS tt2").collect().length == 8)
+    }
+  }
+
+  test("test convert back for partition table, write date before convert to delta") {
+    withTable("tt1", "tt2") {
+      spark.range(0, 50).map(x => (x.toString, x, x % 10)).toDF("a", "b", "c")
+        .write.saveAsTable("tt1")
+      sql(
+        s"""
+           |CREATE TABLE tt2(a int, b int, dt1 int) USING PARQUET
+           |PARTITIONED BY (dt1)
+           |""".stripMargin)
+      sql(s"INSERT INTO tt2 SELECT a, b, c from tt1")
+      assert(sql("SHOW PARTITIONS tt2").collect().length == 10)
+
+      // before convert to delta, the partition columns have already in HMS
+      sql("CONVERT TO DELTA tt2")
+      sql(
+        """
+          |UPDATE t
+          |FROM tt2 t, tt1 s
+          |SET t.b = s.b
+          |WHERE t.a = s.a
+          |""".stripMargin)
+      sql(
+        """
+          |DELETE t
+          |FROM tt2 t, tt1 s
+          |WHERE t.a = s.a AND s.a % 3 = 0
+          |""".stripMargin)
+
+      sql(
+        """
+          |DELETE FROM tt2 t
+          |WHERE t.dt1 = 3 OR t.dt1 = 5
+          |""".stripMargin)
+
+      verifyConvertBack("tt2")
+
+      assert(sql("SHOW PARTITIONS tt2").collect().length == 8)
+    }
+  }
+
+  test("test convert back for bucket table") {
+    withTable("tt1", "tt2") {
+      spark.range(0, 50).map(x => (x.toString, x, x)).toDF("a", "b", "c")
+        .write.saveAsTable("tt1")
+      sql(
+        s"""
+           |CREATE TABLE tt2(a int, b int, c int) USING PARQUET
+           |CLUSTERED BY (c)
+           |INTO 2 BUCKETS
+           |""".stripMargin)
+      sql("CONVERT TO DELTA tt2")
+      sql(s"INSERT INTO tt2 SELECT a, b, c from tt1")
+      sql(
+        """
+          |UPDATE t
+          |FROM tt2 t, tt1 s
+          |SET t.c = s.c + 100
+          |WHERE t.a = s.a
+          |""".stripMargin)
+      sql(
+        """
+          |DELETE t
+          |FROM tt2 t, tt1 s
+          |WHERE t.a = s.a AND s.a % 3 = 0
+          |""".stripMargin)
+
+      verifyConvertBack("tt2")
+
+      val e = intercept[AnalysisException] {
+        sql("SHOW PARTITIONS tt2")
+      }.getMessage()
+      assert(e.contains("SHOW PARTITIONS is not allowed on a table that is not partitioned"))
+    }
+  }
+
+  test("test convert back for bucket partition table") {
+    withTable("tt1", "tt2") {
+      spark.range(0, 50).map(x => (x.toString, x, x, x % 10)).toDF("a", "b", "c", "d")
+        .write.saveAsTable("tt1")
+      sql(
+        s"""
+           |CREATE TABLE tt2(a int, b int, c int, dt1 int) USING PARQUET
+           |CLUSTERED BY (c)
+           |INTO 2 BUCKETS
+           |PARTITIONED BY (dt1)
+           |""".stripMargin)
+      sql("CONVERT TO DELTA tt2")
+      sql(s"INSERT INTO tt2 SELECT a, b, c, d from tt1")
+      sql(
+        """
+          |UPDATE t
+          |FROM tt2 t, tt1 s
+          |SET t.c = s.c + 100
+          |WHERE t.a = s.a
+          |""".stripMargin)
+      sql(
+        """
+          |DELETE t
+          |FROM tt2 t, tt1 s
+          |WHERE t.a = s.a AND s.a % 3 = 0
+          |""".stripMargin)
+
+      sql(
+        """
+          |DELETE FROM tt2 t
+          |WHERE t.dt1 = 3 OR t.dt1 = 5
+          |""".stripMargin)
+
+      verifyConvertBack("tt2")
+
+      assert(sql("SHOW PARTITIONS tt2").collect().length == 8)
+    }
+  }
+
   test("test time travel rollback command") {
     withSQLConf(DeltaSQLConf.RESOLVE_TIME_TRAVEL_ON_IDENTIFIER.key -> "true") {
       withTable("test") {

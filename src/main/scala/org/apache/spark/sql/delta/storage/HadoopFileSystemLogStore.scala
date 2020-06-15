@@ -130,7 +130,7 @@ abstract class HadoopFileSystemLogStore(
 
   override def invalidateCache(): Unit = {}
 
-  override def delete(paths: Traversable[Path]): Unit = {
+  override def delete(paths: Traversable[Path], recursive: Boolean): Unit = {
     throw DeltaErrors.operationNotSupportedException("Delete delta logs in HadoopFileSystemLog")
   }
 }

@@ -80,6 +80,7 @@ statement
         (LIMIT limit=INTEGER_VALUE)?                                    #describeDeltaHistory
     | CONVERT TO DELTA table=qualifiedName
         (PARTITIONED BY '(' colTypeList ')')?                           #convert
+    | CONVERT TO PARQUET table=qualifiedName                            #convertBack
     | SHOW DELTAS                                                       #showDeltas
     | ROLLBACK table=qualifiedName AT
         (VERSION EQ version=INTEGER_VALUE |
@@ -132,6 +133,7 @@ nonReserved
     | GENERATE | FOR | TABLE
     | SHOW | DELTAS
     | ROLLBACK | AT | VERSION | TIMESTAMP | EQ
+    | PARQUET
     ;
 
 // Define how the keywords above should appear in a user's SQL statement.
@@ -166,6 +168,7 @@ VERSION: 'VERSION';
 TIMESTAMP: 'TIMESTAMP';
 AT: 'AT';
 EQ: '=' | '==';
+PARQUET: 'PARQUET';
 
 STRING
     : '\'' ( ~('\''|'\\') | ('\\' .) )* '\''

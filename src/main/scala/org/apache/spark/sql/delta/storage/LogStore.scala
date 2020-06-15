@@ -95,7 +95,7 @@ trait LogStore {
    */
   def isPartialWriteVisible(path: Path): Boolean = true
 
-  def delete(paths: Traversable[Path]): Unit
+  def delete(paths: Traversable[Path], recursive: Boolean = false): Unit
 }
 
 object LogStore extends LogStoreProvider

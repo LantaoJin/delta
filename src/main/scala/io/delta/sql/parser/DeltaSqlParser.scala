@@ -42,9 +42,9 @@ import java.util.Locale
 
 import scala.collection.JavaConverters._
 
-import org.apache.spark.sql.delta.commands.DeltaGenerateCommand
+import org.apache.spark.sql.delta.commands.{ConvertBackCommand, ConvertToDeltaCommand, DeltaGenerateCommand, DescribeDeltaDetailCommand}
 import io.delta.sql.parser.DeltaSqlBaseParser._
-import io.delta.tables.execution.{DescribeDeltaHistoryCommand, ShowDeltasCommand, RollbackCommand, VacuumTableCommand}
+import io.delta.tables.execution.{DescribeDeltaHistoryCommand, RollbackCommand, ShowDeltasCommand, VacuumTableCommand}
 import org.antlr.v4.runtime._
 import org.antlr.v4.runtime.atn.PredictionMode
 import org.antlr.v4.runtime.misc.{Interval, ParseCancellationException}
@@ -56,8 +56,6 @@ import org.apache.spark.sql.catalyst.parser.{ParseErrorListener, ParseException,
 import org.apache.spark.sql.catalyst.parser.ParserUtils.{string, withOrigin}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.trees.Origin
-import org.apache.spark.sql.delta.commands.DescribeDeltaDetailCommand
-import org.apache.spark.sql.delta.commands.ConvertToDeltaCommand
 import org.apache.spark.sql.types._
 
 /**
@@ -193,6 +191,10 @@ class DeltaSqlAstBuilder extends DeltaSqlBaseBaseVisitor[AnyRef] {
       visitTableIdentifier(ctx.table),
       Option(ctx.colTypeList).map(colTypeList => StructType(visitColTypeList(colTypeList))),
       None)
+  }
+
+  override def visitConvertBack(ctx: ConvertBackContext): LogicalPlan = withOrigin(ctx) {
+    ConvertBackCommand(visitTableIdentifier(ctx.table), None, None)
   }
 
   override def visitShowDeltas(ctx: ShowDeltasContext): AnyRef = withOrigin(ctx) {

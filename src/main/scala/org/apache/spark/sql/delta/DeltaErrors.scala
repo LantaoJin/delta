@@ -668,6 +668,15 @@ object DeltaErrors
       s"convert a $sourceName source: $ident")
   }
 
+  def convertBackNonDeltaTablesException(ident: TableIdentifier, sourceName: String): Throwable = {
+    new AnalysisException("CONVERT TO PARQUET only supports delta tables, but you are trying to " +
+      s"convert a $sourceName source: $ident")
+  }
+
+  def unsupportedInHiveMetastoreException(dir: String): Throwable = {
+    new AnalysisException(s"$dir has no related metadata in Hive Metastore")
+  }
+
   def unexpectedPartitionColumnFromFileNameException(
       path: String, parsedCol: String, expectedCol: String): Throwable = {
     new AnalysisException(s"Expecting partition column ${formatColumn(expectedCol)}, but" +

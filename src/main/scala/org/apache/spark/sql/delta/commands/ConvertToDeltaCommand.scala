@@ -33,12 +33,12 @@ import org.apache.spark.sql.delta.util.SerializableFileStatus
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
-import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.{QualifiedTableName, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogUtils}
 import org.apache.spark.sql.catalyst.analysis.Analyzer
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.delta.services.{ConvertToDeltaEvent, DeltaTableMetadata}
-import org.apache.spark.sql.execution.command.{DDLUtils, RunnableCommand}
+import org.apache.spark.sql.execution.command.{AlterTableDropPartitionCommand, AlterTableDropRangePartitionCommand, DDLUtils, RunnableCommand}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetToSparkSchemaConverter}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
@@ -253,13 +253,48 @@ abstract class ConvertToDeltaCommandBase(
         adds.toIterator
       }
 
-      // change provider to delta
       if (convertProperties.catalogTable.isDefined) {
-        val newTable = convertProperties.catalogTable.get.copy(provider = Some("delta"))
+        val oldTable = convertProperties.catalogTable.get
+        val newTable = oldTable.copy(provider = Some("delta"), tracksPartitionsInCatalog = false)
+        try {
+          // 1. now we can drop partition metadata from hive metastore
+          val deletedPartitions = spark.sessionState.catalog.listPartitions(oldTable.identifier)
+          if (deletedPartitions.nonEmpty) {
+            val isRangePartitionedTable = false // todo (lajin)
+            if (isRangePartitionedTable) {
+              AlterTableDropRangePartitionCommand(
+                oldTable.identifier,
+                deletedPartitions.map(_.spec.head._2),
+                ifExists = true,
+                purge = false,
+                retainData = true).run(spark)
+            } else {
+              AlterTableDropPartitionCommand.fromSpecs(
+                oldTable.identifier,
+                deletedPartitions.map(_.spec),
+                ifExists = true,
+                purge = false,
+                retainData = true /* already deleted */).run(spark)
+            }
+          }
+        } catch {
+          case e: Throwable =>
+            // just logging, won't rollback
+            logError(s"Failed to drop partition metadata for ${oldTable.identifier}, " +
+              s"some dirty data will keep in Hive Metastore.", e)
+        }
+
+        // 2. change provider to delta. prevent spark reading it as parquet
+        // todo (lajin) step 2 should execute before step 1.
+        // but now we can not DropPartition to delta table, keep this as todo
         spark.sessionState.catalog.alterTable(newTable)
+
         spark.catalog.refreshTable(newTable.identifier.quotedString)
+        val qualifiedTableName = QualifiedTableName(newTable.database, newTable.identifier.table)
+        spark.sessionState.catalog.invalidateCachedTable(qualifiedTableName)
       }
 
+      // 3. write delta log
       streamWrite(
         spark,
         txn,
