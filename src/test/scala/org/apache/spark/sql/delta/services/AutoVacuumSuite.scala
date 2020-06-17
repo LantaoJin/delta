@@ -264,7 +264,12 @@ class AutoVacuumSuite extends QueryTest
     try {
       try {
         val create = conn.createStatement
-        create.execute(DELTA_META_TABLE_DROP_SQL)
+        try {
+          create.execute(DELTA_META_TABLE_DROP_SQL)
+        } catch {
+          case e: SQLException =>
+          // table not exists
+        }
         create.execute(DELTA_META_TABLE_CREATION_SQL2)
         create.close()
       } catch {
@@ -326,6 +331,13 @@ class AutoVacuumSuite extends QueryTest
           sql("SHOW DELTAS"),
           Row("default", "delta3", "",
             s"${getTableLocation("delta3")}", true, 2L) :: Nil)
+
+        sql(
+          """
+            |CONVERT TO PARQUET delta3
+            |""".stripMargin)
+        Thread.sleep(7000)
+        checkAnswer(sql("SHOW DELTAS"), Nil)
       }
     }
   }

@@ -23,8 +23,9 @@ import scala.util.{Failure, Success, Try}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Row, SparkSession}
 import org.apache.spark.sql.catalyst.{QualifiedTableName, TableIdentifier}
+import org.apache.spark.sql.delta.services.{ConvertToParquetEvent, DeltaTableMetadata}
 import org.apache.spark.sql.delta.{DeltaErrors, DeltaLog, OptimisticTransaction}
-import org.apache.spark.sql.execution.command.{AlterTableAddPartitionCommand, AlterTableAddRangePartitionCommand, CommandUtils}
+import org.apache.spark.sql.execution.command.{AlterTableAddPartitionCommand, AlterTableAddRangePartitionCommand, CommandUtils, DDLUtils}
 import org.apache.spark.sql.types.StructType
 
 case class ConvertBackCommand(
@@ -119,6 +120,18 @@ case class ConvertBackCommand(
     spark.sessionState.catalog.invalidateCachedTable(qualified)
     spark.catalog.refreshTable(newTable.identifier.quotedString)
     CommandUtils.updateTableStats(spark, newTable)
+
+    removeFromMetaTable(spark, convertProperties)
     Seq.empty[Row]
+  }
+
+  private def removeFromMetaTable(
+      spark: SparkSession, convertProperties: ConvertProperties): Unit = {
+    convertProperties.catalogTable.foreach { table =>
+      val searchCondition = DeltaTableMetadata.buildSearchCondition(
+        table.identifier.database.getOrElse(""), table.identifier.table)
+      val isTemp = DDLUtils.isTemporaryTable(table)
+      spark.sharedState.externalCatalog.postToAll(ConvertToParquetEvent(searchCondition, isTemp))
+    }
   }
 }

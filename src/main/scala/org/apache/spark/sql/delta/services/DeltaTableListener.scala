@@ -41,6 +41,14 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
             DeltaTableMetadata.insertIntoMetadataTable(spark, e.metadata)
           }
         })
+      case c @ ConvertToParquetEvent(_, isTemporaryTable) if isTemporaryTable => // do nothing
+      case e: ConvertToParquetEvent =>
+        validate.disableVacuum(e.metadata)
+        metaHandlerThread.execute(new Runnable {
+          override def run(): Unit = {
+            DeltaTableMetadata.deleteFromMetadataTable(spark, e.metadata)
+          }
+        })
       case e: UpdateDeltaEvent =>
         if (validate.deltaTableToVacuumTask.contains(e.metadata)) {
           validate.deltaTableToVacuumTask(e.metadata).foreach(_.cancel(true))
@@ -65,8 +73,7 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
         val searchCondition = DeltaTableMetadata.buildSearchCondition(e.database, e.name)
         if (validate.deltaTableToVacuumTask.contains(searchCondition)) {
           val old = validate.deltaTableToVacuumTask.keySet.find(_.equals(searchCondition)).get
-          validate.deltaTableToVacuumTask(searchCondition).foreach(_.cancel(true))
-          validate.deltaTableToVacuumTask.remove(searchCondition)
+          validate.disableVacuum(old)
           val newTableIdent = TableIdentifier(e.newName, Some(e.database))
           val newTable = spark.sessionState.catalog.getTableMetadata(newTableIdent)
           val newMetadata = DeltaTableMetadata(e.database, e.newName,
@@ -102,7 +109,6 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
         }
         metaHandlerThread.execute(new Runnable {
           override def run(): Unit = {
-            // todo this has performance problem till we changed the underlay storage
             DeltaTableMetadata.deleteFromMetadataTable(spark, searchCondition)
           }
         })
@@ -118,6 +124,12 @@ object DeltaTableListener {
 trait DeltaMetaEvent extends TableEvent
 
 case class ConvertToDeltaEvent(
+    metadata: DeltaTableMetadata, isTemporaryTable: Boolean) extends DeltaMetaEvent {
+  override val name: String = metadata.tbl
+  override val database: String = metadata.db
+}
+
+case class ConvertToParquetEvent(
     metadata: DeltaTableMetadata, isTemporaryTable: Boolean) extends DeltaMetaEvent {
   override val name: String = metadata.tbl
   override val database: String = metadata.db
