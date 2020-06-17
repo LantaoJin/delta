@@ -25,7 +25,7 @@ import org.apache.spark.sql.delta.actions.AddFile
 import org.apache.spark.sql.delta.files._
 import org.apache.spark.sql.delta.util.{AnalysisHelper, SetAccumulator}
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
-import org.apache.spark.sql.catalyst.expressions.{NullIntolerant, _}
+import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.execution.SQLExecution
@@ -224,9 +224,9 @@ case class UpdateWithJoinCommand(
     val incrUpdatedCountExpr = makeMetricUpdateUDF("numRowsUpdated")
 
     val joinCondition = condition.getOrElse(Literal(true, BooleanType))
-    val (targetOnlyPredicatesNullIntolerant, otherPredicates) =
+    val (targetOnlyPredicates, otherPredicates) =
       splitConjunctivePredicates(joinCondition).partition { expr =>
-        isNullIntolerant(expr) && expr.references.subsetOf(target.outputSet)
+        expr.references.subsetOf(target.outputSet)
       }
 
     val sourceOnlyPredicates =
@@ -242,10 +242,10 @@ case class UpdateWithJoinCommand(
     val targetDF = Dataset.ofRows(spark, newTarget)
       .withColumn(TARGET_ROW_PRESENT_COL, lit(true))
 
-    val joinedDF = if (leftJoinRewriteEnabled && targetOnlyPredicatesNullIntolerant.nonEmpty) {
+    val joinedDF = if (leftJoinRewriteEnabled && targetOnlyPredicates.nonEmpty) {
       targetDF.join(sourceDF, new Column(otherPredicates.reduceLeftOption(And)
         .getOrElse(Literal(true, BooleanType))), "left")
-        .filter(new Column(targetOnlyPredicatesNullIntolerant.reduceLeftOption(And)
+        .filter(new Column(targetOnlyPredicates.reduceLeftOption(And)
           .getOrElse(Literal(true, BooleanType))))
     } else {
       targetDF.join(sourceDF, new Column(joinCondition), "left")
@@ -289,17 +289,10 @@ case class UpdateWithJoinCommand(
     val outputDF = Dataset.ofRows(spark, joinedPlan).
       mapPartitions(processor.processPartition)(outputRowEncoder)
 
-    val unionDF = if (leftJoinRewriteEnabled && targetOnlyPredicatesNullIntolerant.nonEmpty) {
+    val unionDF = if (leftJoinRewriteEnabled && targetOnlyPredicates.nonEmpty) {
       val targetDF = Dataset.ofRows(spark, newTarget)
-      // Before adding NOT operation, we should infer isNotNull for targetOnlyPredicates
-      val targetOnlyPredicatesIsNotNull = targetOnlyPredicatesNullIntolerant.toSet
-        .union(
-          constructIsNotNullConstraints(targetOnlyPredicatesNullIntolerant.toSet, target.output)
-        ).filter { c =>
-          c.references.nonEmpty && c.references.subsetOf(target.outputSet) && c.deterministic
-        }.reduceLeft(And)
-
-      outputDF.union(targetDF.filter(new Column(NotNullSafe(targetOnlyPredicatesIsNotNull))))
+      outputDF.union(targetDF.filter(new Column(
+        Not(EqualNullSafe(targetOnlyPredicates.reduceLeft(And), Literal(true, BooleanType))))))
     } else {
       outputDF
     }
