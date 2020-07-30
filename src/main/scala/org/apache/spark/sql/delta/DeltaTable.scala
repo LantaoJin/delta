@@ -54,8 +54,9 @@ object DeltaTable {
  */
 object DeltaFullTable {
   def unapply(a: LogicalPlan): Option[TahoeLogFileIndex] = a match {
-    case PhysicalOperation(_, filters, DeltaTable(index: TahoeLogFileIndex)) =>
-      if (index.partitionFilters.isEmpty && index.versionToUse.isEmpty && filters.isEmpty) {
+    case PhysicalOperation(projects, filters, d @ DeltaTable(index: TahoeLogFileIndex)) =>
+      if (index.partitionFilters.isEmpty && index.versionToUse.isEmpty &&
+          filters.isEmpty && projects.length == d.output.length) {
         Some(index)
       } else if (index.versionToUse.nonEmpty) {
         throw new AnalysisException(

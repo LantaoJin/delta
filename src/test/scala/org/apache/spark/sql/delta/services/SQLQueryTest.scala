@@ -1200,7 +1200,6 @@ class SQLQuerySuite extends QueryTest
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
         SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0",
-        SQLConf.REDUCE_POST_SHUFFLE_PARTITIONS_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> s"$shufflePartitionNum",
         DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
         withTable("tt1", "tt2") {
@@ -1246,7 +1245,6 @@ class SQLQuerySuite extends QueryTest
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
         SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0",
-        SQLConf.REDUCE_POST_SHUFFLE_PARTITIONS_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> s"$shufflePartitionNum",
         DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
         withTable("tt1", "tt2") {
@@ -1293,7 +1291,6 @@ class SQLQuerySuite extends QueryTest
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
         SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0",
-        SQLConf.REDUCE_POST_SHUFFLE_PARTITIONS_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> s"$shufflePartitionNum",
         DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
         withTable("tt1", "tt2") {
@@ -1341,7 +1338,6 @@ class SQLQuerySuite extends QueryTest
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> ae.toString,
         SQLConf.AUTO_REPARTITION_FOR_WRITING_ENABLED.key -> "true",
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0",
-        SQLConf.REDUCE_POST_SHUFFLE_PARTITIONS_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> s"$shufflePartitionNum",
         DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
         withTable("tt1", "tt2") {
@@ -1669,6 +1665,22 @@ class SQLQuerySuite extends QueryTest
           Row(1, 1, 1) :: Row(2, 20, 2) :: Row(3, 3, 3) :: Nil
         )
       }
+    }
+  }
+
+  test("temporary view may break the rule of full scan") {
+    withTable("delta_table") {
+      sql(
+        s"""
+           |CREATE TABLE delta_table
+           |USING delta AS SELECT 1 AS key, 1 AS value
+           """.stripMargin)
+
+      sql("create temporary view temp_view as select key from delta_table")
+      val e1 = intercept[AnalysisException] (
+        sql("UPDATE temp_view v SET key=2")
+      ).getMessage
+      assert(e1.contains("Expect a full scan of Delta sources, but found a partial scan."))
     }
   }
 }
