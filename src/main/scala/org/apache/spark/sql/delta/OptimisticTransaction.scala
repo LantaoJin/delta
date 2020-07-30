@@ -299,11 +299,6 @@ trait OptimisticTransactionImpl extends TransactionalWrite with SQLMetricsReport
         finalActions = commitInfo +: finalActions
       }
 
-      // the table stats may be not accurate
-      if (catalogTable.nonEmpty) {
-        CommandUtils.updateTableStats(spark, catalogTable.get)
-      }
-
       // Register post-commit hooks if any
       lazy val hasFileActions = finalActions.collect { case f: FileAction => f }.nonEmpty
       if (DeltaConfigs.SYMLINK_FORMAT_MANIFEST_ENABLED.fromMetaData(metadata) && hasFileActions) {
@@ -313,6 +308,10 @@ trait OptimisticTransactionImpl extends TransactionalWrite with SQLMetricsReport
       val commitVersion = doCommit(snapshot.version + 1, finalActions, 0, isolationLevelToUse)
       logInfo(s"Committed delta #$commitVersion to ${deltaLog.logPath}")
       postCommit(commitVersion, finalActions)
+
+      if (catalogTable.nonEmpty) {
+        CommandUtils.updateTableStats(spark, catalogTable.get)
+      }
       commitVersion
     } catch {
       case e: DeltaConcurrentModificationException =>

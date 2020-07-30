@@ -113,7 +113,7 @@ class SQLQuerySuite extends QueryTest
         table = catalog.getTableMetadata(TableIdentifier("target"))
         assert(table.stats.isDefined)
         val size3 = table.stats.get.sizeInBytes
-        assert(size2 < size3)
+        assert(size2 == size3)
 
         sql(
           """
@@ -126,7 +126,7 @@ class SQLQuerySuite extends QueryTest
         table = catalog.getTableMetadata(TableIdentifier("target"))
         assert(table.stats.isDefined)
         val size4 = table.stats.get.sizeInBytes
-        assert(size3 < size4)
+        assert(size3 > size4)
 
         sql(
           """
@@ -139,7 +139,7 @@ class SQLQuerySuite extends QueryTest
         table = catalog.getTableMetadata(TableIdentifier("target"))
         assert(table.stats.isDefined)
         val size5 = table.stats.get.sizeInBytes
-        assert(size4 > size5)
+        assert(size4 == size5)
       }
     }
   }
