@@ -130,6 +130,8 @@ case class MergeIntoCommand(
     "numTargetFilesRemoved" -> createMetric(sc, "number of files removed to target"),
     "numTargetFilesAdded" -> createMetric(sc, "number of files added to target"))
 
+  private lazy val catalogTable = getCatalogTableFromTarget(target)
+
   override def run(
     spark: SparkSession): Seq[Row] = recordDeltaOperation(targetDeltaLog, "delta.dml.merge") {
     targetDeltaLog.withNewTransaction { deltaTxn =>
@@ -164,7 +166,8 @@ case class MergeIntoCommand(
           Option(condition.sql),
           updateClause.flatMap(_.condition).map(_.sql),
           deleteClause.flatMap(_.condition).map(_.sql),
-          notMatchedClause.flatMap(_.condition).map(_.sql)))
+          notMatchedClause.flatMap(_.condition).map(_.sql)),
+        catalogTable)
 
       // Record metrics
       val stats = MergeStats(

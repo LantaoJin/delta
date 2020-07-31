@@ -19,13 +19,13 @@ package org.apache.spark.sql.delta
 // scalastyle:off import.ordering.noEmptyLine
 import java.util.Locale
 
+import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 import org.apache.spark.sql.delta.files.{TahoeFileIndex, TahoeLogFileIndex}
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.sources.DeltaSourceUtils
-import org.apache.hadoop.fs.Path
-
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
@@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.catalog.{CatalogTable, SessionCatalog}
 import org.apache.spark.sql.catalyst.expressions.{Expression, PredicateHelper, SubqueryExpression}
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.delta.actions.{AddFile, SingleAction}
 import org.apache.spark.sql.execution.datasources.{FileIndex, HadoopFsRelation, LogicalRelation}
 import org.apache.spark.sql.internal.SQLConf
 
@@ -294,5 +295,41 @@ object DeltaTableUtils extends PredicateHelper
       val timestamp = tt.getTimestamp(conf.sessionLocalTimeZone)
       deltaLog.history.getActiveCommitAtTime(timestamp, false).version -> "timestamp"
     }
+  }
+
+  def calculateTotalSize(
+      sparkSession: SparkSession,
+      deltaLog: DeltaLog): BigInt = {
+    def getPathSize(fs: FileSystem, path: Path): Long = {
+      val fileStatus = fs.getFileStatus(path)
+      val size = if (fileStatus.isDirectory) {
+        0L
+      } else {
+        fileStatus.getLen
+      }
+
+      size
+    }
+
+    val startTime = System.nanoTime()
+    val snapshot = deltaLog.snapshot
+    val files = snapshot.allFiles.as[AddFile](SingleAction.addFileEncoder).collect()
+    val fs = deltaLog.dataPath.getFileSystem(sparkSession.sessionState.newHadoopConf())
+    val size = files.map(f => new Path(deltaLog.dataPath, f.path)).map { path =>
+      try {
+        getPathSize(fs, path)
+      } catch {
+        case NonFatal(e) =>
+          logWarning(s"Failed to get the size under path ${deltaLog.dataPath} " +
+            s"because of ${e.toString}", e)
+          0L
+      }
+    }.reduceOption(_ + _)
+
+    val durationInMs = (System.nanoTime() - startTime) / (1000 * 1000)
+    logInfo(s"It took $durationInMs ms to calculate the total file size " +
+      s"under path ${deltaLog.dataPath}.")
+    val res = size.getOrElse(0L)
+    res
   }
 }

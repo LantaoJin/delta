@@ -351,7 +351,8 @@ class DeltaLog private(
   def createRelation(
       partitionFilters: Seq[Expression] = Nil,
       snapshotToUseOpt: Option[Snapshot] = None,
-      isTimeTravelQuery: Boolean = false): BaseRelation = {
+      isTimeTravelQuery: Boolean = false,
+      catalogTable: Option[CatalogTable] = None): BaseRelation = {
 
     /** Used to link the files present in the table into the query planner. */
     val snapshotToUse = snapshotToUseOpt.getOrElse(snapshot)
@@ -373,7 +374,8 @@ class DeltaLog private(
           new DeltaOptions(Map.empty[String, String], spark.sessionState.conf),
           partitionColumns = Seq.empty,
           configuration = Map.empty,
-          data = data).run(spark)
+          data = data,
+          table = catalogTable).run(spark)
       }
     }
   }

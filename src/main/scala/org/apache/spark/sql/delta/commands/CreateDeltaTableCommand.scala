@@ -126,10 +126,11 @@ case class CreateDeltaTableCommand(
             options,
             partitionColumns = table.partitionColumnNames,
             configuration = table.properties,
-            data = data).write(txn, sparkSession)
+            data = data,
+            table = Some(table)).write(txn, sparkSession)
 
           val op = getOperation(txn.metadata, isManagedTable, Some(options))
-          txn.commit(actions, op)
+          txn.commit(actions, op, Some(table))
         }
       } else {
         def createTransactionLogOrVerify(): Unit = {

@@ -124,7 +124,7 @@ case class DeltaTableV2(
   ).asJava
 
   override def newWriteBuilder(info: LogicalWriteInfo): WriteBuilder = {
-    new WriteIntoDeltaBuilder(deltaLog, info.options)
+    new WriteIntoDeltaBuilder(deltaLog, info.options, catalogTable)
   }
 
   /**
@@ -140,13 +140,15 @@ case class DeltaTableV2(
     val partitionPredicates = DeltaDataSource.verifyAndCreatePartitionFilters(
       path.toString, snapshot, partitionFilters)
 
-    deltaLog.createRelation(partitionPredicates, Some(snapshot), timeTravelSpec.isDefined)
+    deltaLog.createRelation(partitionPredicates, Some(snapshot), timeTravelSpec.isDefined,
+      catalogTable)
   }
 }
 
 private class WriteIntoDeltaBuilder(
     log: DeltaLog,
-    writeOptions: CaseInsensitiveStringMap)
+    writeOptions: CaseInsensitiveStringMap,
+    catalogTable: Option[CatalogTable] = None)
   extends WriteBuilder with V1WriteBuilder with SupportsOverwrite with SupportsTruncate {
 
   private var forceOverwrite = false
@@ -180,7 +182,8 @@ private class WriteIntoDeltaBuilder(
           new DeltaOptions(options.toMap, session.sessionState.conf),
           Nil,
           log.snapshot.metadata.configuration,
-          data).run(session)
+          data,
+          catalogTable).run(session)
 
         // TODO: Push this to Apache Spark
         // Re-cache all cached plans(including this relation itself, if it's cached) that refer

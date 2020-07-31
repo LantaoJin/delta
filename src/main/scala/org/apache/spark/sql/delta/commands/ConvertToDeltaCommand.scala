@@ -249,7 +249,8 @@ abstract class ConvertToDeltaCommandBase(
             numFiles = 0L,
             partitionColNames,
             collectStats = false,
-            catalogTable = catalogTable.map(t => t.identifier.toString)))
+            catalogTable = catalogTable.map(t => t.identifier.toString)),
+          target.catalogTable)
       }
       convertMetadata(catalogTable.get, spark.sessionState.catalog)
     } else {

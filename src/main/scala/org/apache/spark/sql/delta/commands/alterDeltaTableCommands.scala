@@ -71,7 +71,8 @@ case class AlterTableSetPropertiesDeltaCommand(
       DeltaConfigs.verifyProtocolVersionRequirements(configuration, txn.protocol)
       val metadata = txn.metadata
       val newMetadata = metadata.copy(configuration = metadata.configuration ++ configuration)
-      txn.commit(newMetadata :: Nil, DeltaOperations.SetTableProperties(configuration))
+      txn.commit(newMetadata :: Nil, DeltaOperations.SetTableProperties(configuration),
+        table.catalogTable)
 
       Seq.empty[Row]
     }
@@ -114,7 +115,9 @@ case class AlterTableUnsetPropertiesDeltaCommand(
         case (key, _) => normalizedKeys.contains(key)
       }
       val newMetadata = metadata.copy(configuration = newConfiguration)
-      txn.commit(newMetadata :: Nil, DeltaOperations.UnsetTableProperties(normalizedKeys, ifExists))
+      txn.commit(newMetadata :: Nil,
+        DeltaOperations.UnsetTableProperties(normalizedKeys, ifExists),
+        table.catalogTable)
 
       Seq.empty[Row]
     }
@@ -183,7 +186,7 @@ case class AlterTableAddColumnsDeltaCommand(
           case QualifiedColTypeWithPosition(path, col, colPosition) =>
             DeltaOperations.QualifiedColTypeWithPositionForLog(
               path, col, colPosition.map(_.toString))
-        }))
+        }), table.catalogTable)
 
       Seq.empty[Row]
     }
@@ -396,7 +399,7 @@ case class AlterTableReplaceColumnsDeltaCommand(
       ParquetSchemaConverter.checkFieldNames(SchemaUtils.explodeNestedFieldNames(newSchema))
 
       val newMetadata = metadata.copy(schemaString = newSchema.json)
-      txn.commit(newMetadata :: Nil, DeltaOperations.ReplaceColumns(columns))
+      txn.commit(newMetadata :: Nil, DeltaOperations.ReplaceColumns(columns), table.catalogTable)
 
       Seq.empty[Row]
     }

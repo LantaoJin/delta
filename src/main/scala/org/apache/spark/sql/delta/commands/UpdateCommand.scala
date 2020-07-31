@@ -59,6 +59,8 @@ case class UpdateCommand(
     "numUpdatedRows" -> createMetric(sc, "number of rows updated.")
   )
 
+  private lazy val catalogTable = getCatalogTableFromTarget(target)
+
   final override def run(sparkSession: SparkSession): Seq[Row] = {
     recordDeltaOperation(tahoeFileIndex.deltaLog, "delta.dml.update") {
       val deltaLog = tahoeFileIndex.deltaLog
@@ -164,7 +166,7 @@ case class UpdateCommand(
       metrics("numAddedFiles").set(numRewrittenFiles)
       metrics("numRemovedFiles").set(numTouchedFiles)
       txn.registerSQLMetrics(sparkSession, metrics)
-      txn.commit(actions, DeltaOperations.Update(condition.map(_.toString)))
+      txn.commit(actions, DeltaOperations.Update(condition.map(_.toString)), catalogTable)
       // This is needed to make the SQL metrics visible in the Spark UI
       val executionId = sparkSession.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       SQLMetrics.postDriverMetricUpdates(

@@ -30,6 +30,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.{Analyzer, EliminateSubqueryAliases, NoSuchTableException, UnresolvedRelation}
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{Expression, SubqueryExpression}
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
@@ -284,6 +285,12 @@ trait DeltaCommand extends DeltaLogging {
           "delta.commitLarge.failure",
           data = Map("exception" -> Utils.exceptionString(e), "operation" -> op.name))
         throw e
+    }
+  }
+
+  protected def getCatalogTableFromTarget(target: LogicalPlan): Option[CatalogTable] = {
+    target.collectFirst {
+      case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
     }
   }
 }

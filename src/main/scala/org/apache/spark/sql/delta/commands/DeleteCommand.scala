@@ -59,6 +59,8 @@ case class DeleteCommand(
     "numDeletedRows" -> createMetric(sc, "number of rows deleted.")
   )
 
+  private lazy val catalogTable = getCatalogTableFromTarget(target)
+
   final override def run(sparkSession: SparkSession): Seq[Row] = {
     recordDeltaOperation(tahoeFileIndex.deltaLog, "delta.dml.delete") {
       val deltaLog = tahoeFileIndex.deltaLog
@@ -179,7 +181,7 @@ case class DeleteCommand(
     if (deleteActions.nonEmpty) {
       metrics("numAddedFiles").set(numRewrittenFiles)
       txn.registerSQLMetrics(sparkSession, metrics)
-      txn.commit(deleteActions, DeltaOperations.Delete(condition.map(_.sql).toSeq))
+      txn.commit(deleteActions, DeltaOperations.Delete(condition.map(_.sql).toSeq), catalogTable)
       // This is needed to make the SQL metrics visible in the Spark UI
       val executionId = sparkSession.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       SQLMetrics.postDriverMetricUpdates(

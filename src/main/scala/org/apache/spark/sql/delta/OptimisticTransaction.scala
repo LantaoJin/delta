@@ -23,7 +23,6 @@ import java.util.concurrent.TimeUnit.NANOSECONDS
 import scala.collection.mutable
 import scala.collection.mutable.{ArrayBuffer, HashSet}
 import scala.util.control.NonFatal
-
 import com.databricks.spark.util.TagDefinitions.TAG_LOG_STORE_CLASS
 import org.apache.spark.sql.delta.DeltaOperations.Operation
 import org.apache.spark.sql.delta.actions._
@@ -33,10 +32,12 @@ import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.schema.SchemaUtils
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.catalog.{CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.execution.command.CommandUtils
 import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
 import org.apache.spark.util.{Clock, Utils}
 
@@ -307,7 +308,9 @@ trait OptimisticTransactionImpl extends TransactionalWrite with SQLMetricsReport
    * @param op          Details of operation that is performing this transactional commit
    */
   @throws(classOf[ConcurrentModificationException])
-  def commit(actions: Seq[Action], op: DeltaOperations.Operation): Long = recordDeltaOperation(
+  def commit(actions: Seq[Action],
+      op: DeltaOperations.Operation,
+      table: Option[CatalogTable] = None): Long = recordDeltaOperation(
       deltaLog,
       "delta.commit") {
     commitStartNano = System.nanoTime()
@@ -357,6 +360,7 @@ trait OptimisticTransactionImpl extends TransactionalWrite with SQLMetricsReport
       val commitVersion = doCommit(snapshot.version + 1, finalActions, 0, isolationLevelToUse)
       logInfo(s"Committed delta #$commitVersion to ${deltaLog.logPath}")
       postCommit(commitVersion, finalActions)
+      table.foreach(updateTableStats)
       commitVersion
     } catch {
       case e: DeltaConcurrentModificationException =>
@@ -371,6 +375,15 @@ trait OptimisticTransactionImpl extends TransactionalWrite with SQLMetricsReport
     runPostCommitHooks(version, actions)
 
     version
+  }
+
+  private def updateTableStats(table: CatalogTable): Unit = {
+    val catalog = spark.sessionState.catalog
+    val newSize = DeltaTableUtils.calculateTotalSize(spark, deltaLog)
+    val newStats = CatalogStatistics(sizeInBytes = newSize)
+    if (table.stats.isEmpty || table.stats.get.sizeInBytes != newSize) {
+      catalog.alterTableStats(table.identifier, Some(newStats))
+    }
   }
 
   /**

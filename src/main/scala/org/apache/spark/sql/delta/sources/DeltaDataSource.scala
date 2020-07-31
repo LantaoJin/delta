@@ -16,6 +16,8 @@
 
 package org.apache.spark.sql.delta.sources
 
+import org.apache.spark.sql.execution.datasources.LogicalRelation
+
 import scala.util.{Failure, Success, Try}
 
 // scalastyle:off import.ordering.noEmptyLine
@@ -135,6 +137,9 @@ class DeltaDataSource
       mode: SaveMode,
       parameters: Map[String, String],
       data: DataFrame): BaseRelation = {
+    val catalogTable = data.queryExecution.logical.collectFirst {
+      case LogicalRelation(_, _, Some(table), _) => table
+    }
     val path = parameters.getOrElse("path", {
       throw DeltaErrors.pathNotSpecifiedException
     })
@@ -149,9 +154,10 @@ class DeltaDataSource
       new DeltaOptions(parameters, sqlContext.sparkSession.sessionState.conf),
       partitionColumns = partitionColumns,
       configuration = Map.empty,
-      data = data).run(sqlContext.sparkSession)
+      data = data,
+      table = catalogTable).run(sqlContext.sparkSession)
 
-    deltaLog.createRelation()
+    deltaLog.createRelation(catalogTable = catalogTable)
   }
 
   override def createRelation(

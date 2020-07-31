@@ -20,8 +20,8 @@ package org.apache.spark.sql.delta.commands
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.{Action, AddFile}
 import org.apache.spark.sql.delta.schema.ImplicitMetadataOperation
-
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.execution.command.RunnableCommand
 
 /**
@@ -48,7 +48,8 @@ case class WriteIntoDelta(
     options: DeltaOptions,
     partitionColumns: Seq[String],
     configuration: Map[String, String],
-    data: DataFrame)
+    data: DataFrame,
+    table: Option[CatalogTable] = None)
   extends RunnableCommand
   with ImplicitMetadataOperation
   with DeltaCommand {
@@ -65,7 +66,7 @@ case class WriteIntoDelta(
       val actions = write(txn, sparkSession)
       val operation = DeltaOperations.Write(mode, Option(partitionColumns),
         options.replaceWhere, options.userMetadata)
-      txn.commit(actions, operation)
+      txn.commit(actions, operation, table)
     }
     Seq.empty
   }
