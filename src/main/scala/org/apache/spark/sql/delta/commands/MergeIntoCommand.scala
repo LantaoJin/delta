@@ -27,14 +27,16 @@ import org.apache.spark.SparkContext
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.encoders.{ExpressionEncoder, RowEncoder}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, Literal, PredicateHelper, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, Literal, NamedExpression, PredicateHelper, UnsafeProjection}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.plans.logical._
+import org.apache.spark.sql.delta.schema.ImplicitMetadataOperation
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.StructType
 
 case class MergeDataRows(rows: Long)
 case class MergeDataFiles(files: Long)
@@ -85,6 +87,7 @@ case class MergeStats(
  * @param condition         Condition for a source row to match with a target row
  * @param matchedClauses    All info related to matched clauses.
  * @param notMatchedClause  All info related to not matched clause.
+ * @param migratedSchema    The final schema of the target - may be changed by schema evolution.
  */
 case class MergeIntoCommand(
     @transient source: LogicalPlan,
@@ -92,17 +95,22 @@ case class MergeIntoCommand(
     @transient targetFileIndex: TahoeFileIndex,
     condition: Expression,
     matchedClauses: Seq[DeltaMergeIntoMatchedClause],
-    notMatchedClause: Option[DeltaMergeIntoInsertClause]) extends RunnableCommand
-  with DeltaCommand with PredicateHelper with AnalysisHelper {
+    notMatchedClause: Option[DeltaMergeIntoInsertClause],
+    migratedSchema: Option[StructType]) extends RunnableCommand
+  with DeltaCommand with PredicateHelper with AnalysisHelper with ImplicitMetadataOperation {
 
   import SQLMetrics._
   import MergeIntoCommand._
+
+  override val canMergeSchema: Boolean = conf.getConf(DeltaSQLConf.DELTA_SCHEMA_AUTO_MIGRATE)
+  override val canOverwriteSchema: Boolean = false
 
   @transient private lazy val sc: SparkContext = SparkContext.getOrCreate()
   @transient private lazy val targetDeltaLog: DeltaLog = targetFileIndex.deltaLog
 
   /** Whether this merge statement only inserts new data. */
   private def isInsertOnly: Boolean = matchedClauses.isEmpty && notMatchedClause.isDefined
+  private def isMatchedOnly: Boolean = notMatchedClause.isEmpty && matchedClauses.nonEmpty
 
   lazy val updateClause: Option[DeltaMergeIntoUpdateClause] =
     matchedClauses.collectFirst { case u: DeltaMergeIntoUpdateClause => u }
@@ -111,18 +119,30 @@ case class MergeIntoCommand(
 
   override lazy val metrics = Map[String, SQLMetric](
     "numSourceRows" -> createMetric(sc, "number of source rows participated in merge"),
-    "numTargetRowsCopied" -> createMetric(sc, "number of target rows rewritten unmodified"),
-    "numTargetRowsInserted" -> createMetric(sc, "number of inserted rows"),
-    "numTargetRowsUpdated" -> createMetric(sc, "number of updated rows"),
-    "numTargetRowsDeleted" -> createMetric(sc, "number of deleted rows"),
-    "numTargetFilesBeforeSkipping" -> createMetric(sc, "number of target files before skipping"),
-    "numTargetFilesAfterSkipping" -> createMetric(sc, "number of target files after skipping"),
-    "numTargetFilesRemoved" -> createMetric(sc, "number of files removed to target"),
-    "numTargetFilesAdded" -> createMetric(sc, "number of files added to target"))
+    "numRowsCopied" -> createMetric(sc, "number of target rows rewritten unmodified"),
+    "numRowsInserted" -> createMetric(sc, "number of inserted rows"),
+    "numRowsUpdated" -> createMetric(sc, "number of updated rows"),
+    "numRowsDeleted" -> createMetric(sc, "number of deleted rows"),
+    "numFilesBeforeSkipping" -> createMetric(sc, "number of target files before skipping"),
+    "numFilesAfterSkipping" -> createMetric(sc, "number of target files after skipping"),
+    "numRemovedFiles" -> createMetric(sc, "number of files removed to target"),
+    "numAddedFiles" -> createMetric(sc, "number of files added to target"))
 
   override def run(
     spark: SparkSession): Seq[Row] = recordDeltaOperation(targetDeltaLog, "delta.dml.merge") {
     targetDeltaLog.withNewTransaction { deltaTxn =>
+//      if (target.schema.size != deltaTxn.metadata.schema.size) {
+//        throw DeltaErrors.schemaChangedSinceAnalysis(
+//          atAnalysis = target.schema, latestSchema = deltaTxn.metadata.schema)
+//      }
+
+      if (canMergeSchema) {
+        updateMetadata(
+          spark, deltaTxn, migratedSchema.getOrElse(target.schema),
+          deltaTxn.metadata.partitionColumns, deltaTxn.metadata.configuration,
+          isOverwriteMode = false, rearrangeOnly = false)
+      }
+
       val deltaActions = {
        if (isInsertOnly && spark.conf.get(DeltaSQLConf.MERGE_INSERT_ONLY_ENABLED)) {
          writeInsertsOnlyWhenNoMatchedClauses(spark, deltaTxn)
@@ -135,11 +155,11 @@ case class MergeIntoCommand(
          filesToRewrite.map(_.remove) ++ newWrittenFiles
        }
       }
-      deltaTxn.registerSQLMetrics(spark, metrics)
-
       val catalogTable = target.collectFirst {
         case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
       }
+
+      deltaTxn.registerSQLMetrics(spark, metrics)
       deltaTxn.commit(
         deltaActions,
         DeltaOperations.Merge(
@@ -162,17 +182,17 @@ case class MergeIntoCommand(
         // Data sizes of source and target at different stages of processing
         MergeDataRows(metrics("numSourceRows").value),
         targetBeforeSkipping =
-          MergeDataFiles(metrics("numTargetFilesBeforeSkipping").value),
+          MergeDataFiles(metrics("numFilesBeforeSkipping").value),
         targetAfterSkipping =
-          MergeDataFiles(metrics("numTargetFilesAfterSkipping").value),
+          MergeDataFiles(metrics("numFilesAfterSkipping").value),
 
         // Data change sizes
-        targetFilesAdded = metrics("numTargetFilesAdded").value,
-        targetFilesRemoved = metrics("numTargetFilesRemoved").value,
-        targetRowsCopied = metrics("numTargetRowsCopied").value,
-        targetRowsUpdated = metrics("numTargetRowsUpdated").value,
-        targetRowsInserted = metrics("numTargetRowsInserted").value,
-        targetRowsDeleted = metrics("numTargetRowsDeleted").value)
+        targetFilesAdded = metrics("numAddedFiles").value,
+        targetFilesRemoved = metrics("numRemovedFiles").value,
+        targetRowsCopied = metrics("numRowsCopied").value,
+        targetRowsUpdated = metrics("numRowsUpdated").value,
+        targetRowsInserted = metrics("numRowsInserted").value,
+        targetRowsDeleted = metrics("numRowsDeleted").value)
       recordDeltaEvent(targetFileIndex.deltaLog, "delta.dml.merge.stats", data = stats)
 
       // This is needed to make the SQL metrics visible in the Spark UI
@@ -195,7 +215,7 @@ case class MergeIntoCommand(
 
     // Accumulator to collect all the distinct touched files
     val touchedFilesAccum = new SetAccumulator[String]()
-    spark.sparkContext.register(touchedFilesAccum, "MergeIntoDelta.touchedFiles")
+    spark.sparkContext.register(touchedFilesAccum, TOUCHED_FILES_ACCUM_NAME)
 
     // UDFs to records touched files names and add them to the accumulator
     val recordTouchedFileName = udf { (fileName: String) => {
@@ -208,16 +228,15 @@ case class MergeIntoCommand(
       splitConjunctivePredicates(condition).filter(_.references.subsetOf(target.outputSet))
     val dataSkippedFiles = deltaTxn.filterFiles(targetOnlyPredicates)
 
-    val sourceOnlyPredicates =
-      splitConjunctivePredicates(condition).filter(_.references.subsetOf(source.outputSet))
-
     // Apply inner join to between source and target using the merge condition to find matches
     // In addition, we attach two columns
     // - a monotonically increasing row id for target rows to later identify whether the same
     //     target row is modified by multiple user or not
     // - the target file name the row is from to later identify the files touched by matched rows
-    val sourceDF = addFilterPushdown(Dataset.ofRows(spark, source), sourceOnlyPredicates)
+    val sourceDF = Dataset.ofRows(spark, source)
     val targetDF = Dataset.ofRows(spark, buildTargetPlanWithFiles(deltaTxn, dataSkippedFiles))
+    // Since the columns with non-deterministic udf prevent from applying parquet filter pushdown,
+    // we add a filter with all target only predicates to targetDF to avoid whole table scan.
     val targetDFWithFilterPushdown = addFilterPushdown(targetDF, targetOnlyPredicates)
       .withColumn(ROW_ID_COL, monotonically_increasing_id())
       .withColumn(FILE_NAME_COL, input_file_name())
@@ -249,9 +268,9 @@ case class MergeIntoCommand(
     val touchedAddFiles = touchedFileNames.filter(_.nonEmpty).map(f =>
       getTouchedFile(targetDeltaLog.dataPath, f, nameToAddFileMap))
 
-    metrics("numTargetFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
-    metrics("numTargetFilesAfterSkipping") += dataSkippedFiles.size
-    metrics("numTargetFilesRemoved") += touchedAddFiles.size
+    metrics("numFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
+    metrics("numFilesAfterSkipping") += dataSkippedFiles.size
+    metrics("numRemovedFiles") += touchedAddFiles.size
     touchedAddFiles
   }
 
@@ -267,9 +286,9 @@ case class MergeIntoCommand(
 
     // UDFs to update metrics
     val incrSourceRowCountExpr = makeMetricUpdateUDF("numSourceRows")
-    val incrInsertedCountExpr = makeMetricUpdateUDF("numTargetRowsInserted")
+    val incrInsertedCountExpr = makeMetricUpdateUDF("numRowsInserted")
 
-    val outputColNames = target.output.map(_.name)
+    val outputColNames = getTargetOutputCols(deltaTxn).map(_.name)
     val outputExprs = notMatchedClause.get.resolvedActions.map(_.expr) :+ incrInsertedCountExpr
     val outputCols = outputExprs.zip(outputColNames).map { case (expr, name) =>
       new Column(Alias(expr, name)())
@@ -292,14 +311,13 @@ case class MergeIntoCommand(
 
     val insertDf = sourceDF.join(targetDF, new Column(condition), "leftanti").
       select(outputCols: _*)
-    val normalized = convertToInsertIntoDataSource(conf,
-      target, insertDf.queryExecution.logical)
+    val normalized = convertToInsertIntoDataSource(conf, target, insertDf.queryExecution.logical)
     val normalizedDF = Dataset.ofRows(spark, normalized)
     val newFiles = deltaTxn.writeFiles(normalizedDF, metrics)
-    metrics("numTargetFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
-    metrics("numTargetFilesAfterSkipping") += dataSkippedFiles.size
-    metrics("numTargetFilesRemoved") += 0
-    metrics("numTargetFilesAdded") += newFiles.size
+    metrics("numFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
+    metrics("numFilesAfterSkipping") += dataSkippedFiles.size
+    metrics("numRemovedFiles") += 0
+    metrics("numAddedFiles") += newFiles.size
     newFiles
   }
 
@@ -312,10 +330,17 @@ case class MergeIntoCommand(
     deltaTxn: OptimisticTransaction,
     filesToRewrite: Seq[AddFile]
   ): Seq[AddFile] = {
+    val targetOutputCols = getTargetOutputCols(deltaTxn)
 
     // Generate a new logical plan that has same output attributes exprIds as the target plan.
     // This allows us to apply the existing resolved update/insert expressions.
     val newTarget = buildTargetPlanWithFiles(deltaTxn, filesToRewrite)
+    val joinType = if (isMatchedOnly &&
+      spark.conf.get(DeltaSQLConf.MERGE_MATCHED_ONLY_ENABLED)) {
+      "rightOuter"
+    } else {
+      "fullOuter"
+    }
 
     logDebug(s"""writeAllChanges using full outer join:
                 |  source.output: ${source.outputSet}
@@ -326,21 +351,46 @@ case class MergeIntoCommand(
 
     // UDFs to update metrics
     val incrSourceRowCountExpr = makeMetricUpdateUDF("numSourceRows")
-    val incrUpdatedCountExpr = makeMetricUpdateUDF("numTargetRowsUpdated")
-    val incrInsertedCountExpr = makeMetricUpdateUDF("numTargetRowsInserted")
-    val incrNoopCountExpr = makeMetricUpdateUDF("numTargetRowsCopied")
-    val incrDeletedCountExpr = makeMetricUpdateUDF("numTargetRowsDeleted")
+    val incrUpdatedCountExpr = makeMetricUpdateUDF("numRowsUpdated")
+    val incrInsertedCountExpr = makeMetricUpdateUDF("numRowsInserted")
+    val incrNoopCountExpr = makeMetricUpdateUDF("numRowsCopied")
+    val incrDeletedCountExpr = makeMetricUpdateUDF("numRowsDeleted")
+
+    val sourceOnlyPredicatesInCondition =
+      splitConjunctivePredicates(condition).filter(_.references.subsetOf(source.outputSet))
+
+    val sourceOnlyPredicatesInUpdate = updateClause.flatMap(_.condition).map { c =>
+      splitConjunctivePredicates(c).filter(_.references.subsetOf(source.outputSet))
+    }.getOrElse(Nil)
+
+    val sourceOnlyPredicatesInDelete = updateClause.flatMap(_.condition).map { c =>
+      splitConjunctivePredicates(c).filter(_.references.subsetOf(source.outputSet))
+    }.getOrElse(Nil)
+
+    val sourceOnlyPredicatesToPushdown =
+      if (sourceOnlyPredicatesInUpdate.nonEmpty && sourceOnlyPredicatesInDelete.isEmpty) {
+        sourceOnlyPredicatesInCondition ++ sourceOnlyPredicatesInUpdate
+      } else if (sourceOnlyPredicatesInUpdate.isEmpty && sourceOnlyPredicatesInDelete.nonEmpty) {
+        sourceOnlyPredicatesInCondition ++ sourceOnlyPredicatesInDelete
+      } else {
+        // We cannot add sourceOnlyPredicatesInUpdate and sourceOnlyPredicatesInDelete together if
+        // sourceOnlyPredicatesInUpdate and sourceOnlyPredicatesInDelete are all empty or non-empty
+        sourceOnlyPredicatesInCondition
+      }
 
     // Apply full outer join to find both, matches and non-matches. We are adding two boolean fields
     // with value `true`, one to each side of the join. Whether this field is null or not after
     // the full outer join, will allow us to identify whether the resultanet joined row was a
     // matched inner result or an unmatched result with null on one side.
     val joinedDF = {
-      val sourceDF = Dataset.ofRows(spark, source)
-        .withColumn(SOURCE_ROW_PRESENT_COL, new Column(incrSourceRowCountExpr))
+      val sourceDF = (if (isMatchedOnly && sourceOnlyPredicatesToPushdown.nonEmpty) {
+        addFilterPushdown(Dataset.ofRows(spark, source), sourceOnlyPredicatesToPushdown)
+      } else {
+        Dataset.ofRows(spark, source)
+      }).withColumn(SOURCE_ROW_PRESENT_COL, new Column(incrSourceRowCountExpr))
       val targetDF = Dataset.ofRows(spark, newTarget)
         .withColumn(TARGET_ROW_PRESENT_COL, lit(true))
-      sourceDF.join(targetDF, new Column(condition), "fullOuter")
+      sourceDF.join(targetDF, new Column(condition), joinType)
     }
 
     val joinedPlan = joinedDF.queryExecution.analyzed
@@ -356,7 +406,7 @@ case class MergeIntoCommand(
           u.resolvedActions.map(_.expr) :+ Literal(false) :+ incrUpdatedCountExpr
         case _: DeltaMergeIntoDeleteClause =>
           // Generate expressions to set the ROW_DELETED_COL = true
-          target.output :+ Literal(true) :+ incrDeletedCountExpr
+          targetOutputCols :+ Literal(true) :+ incrDeletedCountExpr
       }
       resolveOnJoinedPlan(exprs)
     }
@@ -374,7 +424,7 @@ case class MergeIntoCommand(
     val matchedClause1 = matchedClauses.headOption
     val matchedClause2 = matchedClauses.drop(1).headOption
     val joinedRowEncoder = RowEncoder(joinedPlan.schema, checkOverflow = false)
-    val outputRowEncoder = RowEncoder(target.schema, checkOverflow = false).resolveAndBind()
+    val outputRowEncoder = RowEncoder(deltaTxn.metadata.schema).resolveAndBind()
 
     val processor = new JoinedRowProcessor(
       targetRowHasNoMatch = resolveOnJoinedPlan(Seq(col(SOURCE_ROW_PRESENT_COL).isNull.expr)).head,
@@ -385,8 +435,8 @@ case class MergeIntoCommand(
       matchedOutput2 = matchedClause2.map(matchedClauseOutput),
       notMatchedCondition = clauseCondition(notMatchedClause),
       notMatchedOutput = notMatchedClause.map(notMatchedClauseOutput),
-      noopCopyOutput = resolveOnJoinedPlan(target.output :+ Literal(false) :+ incrNoopCountExpr),
-      deleteRowOutput = resolveOnJoinedPlan(target.output :+ Literal(true) :+ Literal(true)),
+      noopCopyOutput = resolveOnJoinedPlan(targetOutputCols :+ Literal(false) :+ incrNoopCountExpr),
+      deleteRowOutput = resolveOnJoinedPlan(targetOutputCols :+ Literal(true) :+ Literal(true)),
       joinedAttributes = joinedPlan.output,
       joinedRowEncoder = joinedRowEncoder,
       outputRowEncoder = outputRowEncoder)
@@ -398,8 +448,8 @@ case class MergeIntoCommand(
     val normalized = convertToInsertIntoDataSource(conf, target, outputDF.queryExecution.logical)
     val normalizedDF = Dataset.ofRows(spark, normalized)
     // Write to Delta
-    val newFiles = deltaTxn.writeFiles(normalizedDF, metrics)
-    metrics("numTargetFilesAdded") += newFiles.size
+    val newFiles = deltaTxn.writeFiles(normalizedDF, metrics) // todo
+    metrics("numAddedFiles") += newFiles.size
     newFiles
   }
 
@@ -418,9 +468,11 @@ case class MergeIntoCommand(
     // create an alias
     val aliases = plan.output.map {
       case newAttrib: AttributeReference =>
-        val existingTargetAttrib = target.output.find(_.name == newAttrib.name).getOrElse {
-          throw new AnalysisException(
-            s"Could not find ${newAttrib.name} among the existing target output ${target.output}")
+        val existingTargetAttrib = getTargetOutputCols(deltaTxn).find(_.name == newAttrib.name)
+          .getOrElse {
+            throw new AnalysisException(
+              s"Could not find ${newAttrib.name} among the existing target output " +
+                s"${getTargetOutputCols(deltaTxn)}")
         }.asInstanceOf[AttributeReference]
         Alias(newAttrib, existingTargetAttrib.name)(exprId = existingTargetAttrib.exprId)
     }
@@ -435,9 +487,27 @@ case class MergeIntoCommand(
   }
 
   private def seqToString(exprs: Seq[Expression]): String = exprs.map(_.sql).mkString("\n\t")
+
+  private def getTargetOutputCols(txn: OptimisticTransaction): Seq[NamedExpression] = {
+    txn.metadata.schema.map { col =>
+      target.output.find(attr => conf.resolver(attr.name, col.name)).getOrElse {
+        Alias(Literal(null, col.dataType), col.name)()
+      }
+    }
+  }
 }
 
 object MergeIntoCommand {
+  /**
+   * Spark UI will track all normal accumulators along with Spark tasks to show them on Web UI.
+   * However, the accumulator used by `MergeIntoCommand` can store a very large value since it
+   * tracks all files that need to be rewritten. We should ask Spark UI to not remember it,
+   * otherwise, the UI data may consume lots of memory. Hence, we use the prefix `internal.metrics.`
+   * to make this accumulator become an internal accumulator, so that it will not be tracked by
+   * Spark UI.
+   */
+  val TOUCHED_FILES_ACCUM_NAME = "internal.metrics.MergeIntoDelta.touchedFiles"
+
   val ROW_ID_COL = "_row_id_"
   val FILE_NAME_COL = "_file_name_"
   val SOURCE_ROW_PRESENT_COL = "_source_row_present_"
@@ -506,12 +576,14 @@ object MergeIntoCommand {
         }
       }
 
+      val toRow = joinedRowEncoder.toRow _
+      val fromRow = outputRowEncoder.fromRow _
       rowIterator
-        .map(joinedRowEncoder.toRow)
+        .map(toRow)
         .map(processRow)
         .filter(!shouldDeleteRow(_))
         .map { notDeletedInternalRow =>
-          outputRowEncoder.fromRow(outputProj(notDeletedInternalRow))
+          fromRow(outputProj(notDeletedInternalRow))
         }
     }
   }

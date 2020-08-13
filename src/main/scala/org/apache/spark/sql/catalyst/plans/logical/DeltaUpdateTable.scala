@@ -17,8 +17,8 @@
 package org.apache.spark.sql.catalyst.plans.logical
 
 import org.apache.spark.sql.AnalysisException
-import org.apache.spark.sql.catalyst.analysis.{UnresolvedAttribute, UnresolvedStar}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, ExtractValue, GetStructField}
+import org.apache.spark.sql.catalyst.analysis.UnresolvedStar
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, ExtractValue, GetStructField, NamedExpression}
 
 /**
  * Perform UPDATE on a table
@@ -28,9 +28,9 @@ import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeRef
  * @param updateExpressions: the corresponding update expression if the condition is matched
  * @param condition: Only rows that match the condition will be updated
  */
-case class UpdateTable(
+case class DeltaUpdateTable(
     target: LogicalPlan,
-    updateColumns: Seq[Attribute],
+    updateColumns: Seq[NamedExpression],
     updateExpressions: Seq[Expression],
     condition: Option[Expression]) extends Command {
 
@@ -46,7 +46,7 @@ case class UpdateTable(
 case class UpdateWithJoinTable(
     target: LogicalPlan,
     source: LogicalPlan,
-    updateColumns: Seq[Attribute],
+    updateColumns: Seq[NamedExpression],
     updateExpressions: Seq[Expression],
     condition: Option[Expression],
     updateClause: DeltaMergeIntoUpdateClause) extends Command {
@@ -57,29 +57,7 @@ case class UpdateWithJoinTable(
   override def output: Seq[Attribute] = Seq.empty
 }
 
-object UpdateTable {
-
-  /** Resolve all the references of target columns and condition using the given `resolver` */
-  def resolveReferences(update: UpdateTable, resolver: Expression => Expression): UpdateTable = {
-    if (update.resolved) return update
-    assert(update.target.resolved)
-
-    val UpdateTable(child, updateColumns, updateExpressions, condition) = update
-
-    val cleanedUpAttributes = updateColumns.map { unresolvedExpr =>
-      // Keep them unresolved but use the cleaned-up name parts from the resolved
-      val errMsg = s"Failed to resolve ${unresolvedExpr.sql} given columns " +
-        s"[${child.output.map(_.qualifiedName).mkString(", ")}]."
-      val resolveNameParts =
-        UpdateTable.getNameParts(resolver(unresolvedExpr), errMsg, update)
-      UnresolvedAttribute(resolveNameParts)
-    }
-
-    update.copy(
-      updateColumns = cleanedUpAttributes,
-      updateExpressions = updateExpressions.map(resolver),
-      condition = condition.map(resolver))
-  }
+object DeltaUpdateTable {
 
   /**
    * Extracts name parts from a resolved expression referring to a nested or non-nested column
@@ -99,18 +77,15 @@ object UpdateTable {
    *        ->  `AttributeReference(a)` ++ Seq(b, c)
    *          ->  [a, b, c]
    */
-  def getNameParts(
-      resolvedTargetCol: Expression,
-      errMsg: String,
-      errNode: LogicalPlan): Seq[String] = {
+  def getTargetColNameParts(resolvedTargetCol: Expression, errMsg: String = null): Seq[String] = {
 
     def fail(extraMsg: String): Nothing = {
-      throw new AnalysisException(
-        s"$errMsg - $extraMsg", errNode.origin.line, errNode.origin.startPosition)
+      val msg = Option(errMsg).map(_ + " - ").getOrElse("") + extraMsg
+      throw new AnalysisException(msg)
     }
 
     def extractRecursively(expr: Expression): Seq[String] = expr match {
-      case attr: AttributeReference => Seq(attr.name)
+      case attr: Attribute => Seq(attr.name)
 
       case Alias(c, _) => extractRecursively(c)
 

@@ -53,6 +53,17 @@ object DeltaSQLConf {
       .checkValue(n => n > 0, "Delta snapshot partition number must be positive.")
       .createWithDefault(50)
 
+  val DELTA_SCHEMA_ON_READ_CHECK_ENABLED =
+    buildConf("checkLatestSchemaOnRead")
+      .doc("In Delta, we always try to give users the latest version of their data without " +
+        "having to call REFRESH TABLE or redefine their DataFrames when used in the context of " +
+        "streaming. There is a possibility that the schema of the latest version of the table " +
+        "may be incompatible with the schema at the time of DataFrame creation. This flag " +
+        "enables a check that ensures that users won't read corrupt data if the source schema " +
+        "changes in an incompatible way.")
+      .booleanConf
+      .createWithDefault(true)
+
   val DELTA_COLLECT_STATS =
     buildConf("stats.collect")
       .internal()
@@ -222,6 +233,16 @@ object DeltaSQLConf {
         """
           |If enabled, merge without any matched clause (i.e., insert-only merge) will be optimized
           |by avoiding rewriting old files and just inserting new files.
+        """.stripMargin)
+      .booleanConf
+      .createWithDefault(true)
+
+  val MERGE_MATCHED_ONLY_ENABLED =
+    buildConf("merge.optimizeMatchedOnlyMerge.enabled")
+      .internal()
+      .doc(
+        """If enabled, merge without 'when not matched' clause will be optimized to use a
+          |right outer join instead of a full outer join.
         """.stripMargin)
       .booleanConf
       .createWithDefault(true)

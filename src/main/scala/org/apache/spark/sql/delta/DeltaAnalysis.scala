@@ -14,17 +14,20 @@
  * limitations under the License.
  */
 
-package io.delta.sql.analysis
+package org.apache.spark.sql.delta
 
-import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.{GetColumnByOrdinal, UnresolvedAttribute, UnresolvedExtractValue, caseInsensitiveResolution, withPosition}
-import org.apache.spark.sql.catalyst.expressions.{Alias, And, Attribute, Cast, CurrentDate, CurrentTimestamp, EqualTo, Expression, ExtractValue, IsNotNull, NamedExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, And, Cast, CurrentDate, CurrentTimestamp, EqualTo, Expression, ExtractValue, IsNotNull, NamedExpression}
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.toPrettySQL
-import org.apache.spark.sql.delta.DeltaErrors
+import org.apache.spark.sql.delta.metering.DeltaLogging
+import org.apache.spark.sql.delta.util.AnalysisHelper
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.{AnalysisException, SparkSession}
 
-class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
+class DeltaAnalysis(spark: SparkSession, conf: SQLConf)
+  extends Rule[LogicalPlan] with AnalysisHelper with DeltaLogging {
 
   private def resolver = spark.sessionState.conf.resolver
 
@@ -33,17 +36,17 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
         if !u.resolved && table.resolved =>
       checkTargetTable(table)
       val resolvedAssignments = resolveAssignments(assignments, u)
-      val columns = resolvedAssignments.map(_.key.asInstanceOf[Attribute])
+      val columns = resolvedAssignments.map(_.key.asInstanceOf[NamedExpression])
       val values = resolvedAssignments.map(_.value)
       val resolvedUpdateCondition = condition.map(resolveExpressionTopDown(_, u))
-      UpdateTable(table, columns, values, resolvedUpdateCondition)
+      DeltaUpdateTable(table, columns, values, resolvedUpdateCondition)
 
     case u @ UpdateTableStatement(target, assignments, condition, Some(source))
         if !u.resolved && target.resolved && source.resolved &&
           target.outputSet.intersect(source.outputSet).isEmpty => // no conflicting attributes
       checkTargetTable(target)
       val resolvedAssignments = resolveAssignments(assignments, u)
-      val columns = resolvedAssignments.map(_.key.asInstanceOf[Attribute])
+      val columns = resolvedAssignments.map(_.key.asInstanceOf[NamedExpression])
       val values = resolvedAssignments.map(_.value)
       val resolvedUpdateCondition =
         condition.map(resolveExpressionTopDown(_, u)).flatMap(inferredConditions)
@@ -52,9 +55,9 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
         // If join condition is empty and SET expressions are all foldable,
         // skip join and fallback to simple update
         logInfo(s"Update conditions are empty with foldable SET clause, fallback to simple update")
-        UpdateTable(target, columns, values, resolvedUpdateCondition)
+        DeltaUpdateTable(target, columns, values, resolvedUpdateCondition)
       } else {
-        val updateActions = UpdateTable.toActionFromAssignments(resolvedAssignments)
+        val updateActions = DeltaUpdateTable.toActionFromAssignments(resolvedAssignments)
         val actions = DeltaMergeIntoUpdateClause(resolvedUpdateCondition, updateActions)
         source match {
           case _: Join =>
@@ -76,7 +79,7 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
     case d @ DeleteFromStatement(table, condition, None)
         if !d.resolved && table.resolved =>
       checkTargetTable(table)
-      Delete(table, condition)
+      DeltaDelete(table, condition)
 
     case d @ DeleteFromStatement(target, condition, Some(source))
         if !d.resolved && target.resolved && source.resolved &&
@@ -97,30 +100,38 @@ class DeltaSqlResolution(spark: SparkSession) extends Rule[LogicalPlan] {
           DeleteWithJoinTable(target, withProject, resolvedDeleteCondition, actions)
       }
 
-//    case m @ MergeIntoTableStatement(targetTable, sourceTable,
-//        mergeCondition, matchedActions, notMatchedActions)
-//        if !m.resolved && targetTable.resolved && sourceTable.resolved &&
-//          target.outputSet.intersect(source.outputSet).isEmpty => // no conflicting attributes
-//      val resolvedMergeCondition = resolveExpression(mergeCondition, m)
-//      val newMatchedActions = matchedActions.collect {
-//        case DeleteAction(deleteCondition) =>
-//          val resolvedDeleteCondition = deleteCondition.map(resolveExpression(_, m))
-//          MergeIntoDeleteClause(resolvedDeleteCondition)
-//        case UpdateAction(updateCondition, assignments) =>
-//          val resolvedUpdateCondition = updateCondition.map(resolveExpression(_, m))
-//          val resolvedAssignments = resolveAssignments(assignments, m)
-//          val updateActions = MergeIntoClause.toActionFromAssignments(resolvedAssignments)
-//          MergeIntoUpdateClause(resolvedUpdateCondition, updateActions)
-//      }
-//      val newNotMatchedActions = notMatchedActions.collectFirst {
-//        case InsertAction(insertCondition, assignments) =>
-//          val resolvedInsertCondition = insertCondition.map(resolveExpression(_, m))
-//          val resolvedAssignments = resolveAssignments(assignments, m)
-//          val insertActions = MergeIntoClause.toActionFromAssignments(resolvedAssignments)
-//          MergeIntoInsertClause(resolvedInsertCondition, insertActions)
-//      }
-//      MergeInto(targetTable, sourceTable,
-//        resolvedMergeCondition, newMatchedActions, newNotMatchedActions)
+    case m @ MergeIntoTableStatement(target, source, condition, matched, notMatched)
+        if m.childrenResolved =>
+      checkTargetTable(target)
+      val matchedActions = matched.map {
+        case update: UpdateAction =>
+          DeltaMergeIntoUpdateClause(
+            update.condition,
+            DeltaMergeIntoClause.toActions(update.assignments))
+        case delete: DeleteAction =>
+          DeltaMergeIntoDeleteClause(delete.condition)
+        case insert =>
+          throw new AnalysisException(
+            "Insert clauses cannot be part of the WHEN MATCHED clause in MERGE INTO.")
+      }
+      val notMatchedActions = notMatched.map {
+        case insert: InsertAction =>
+          DeltaMergeIntoInsertClause(
+            insert.condition,
+            DeltaMergeIntoClause.toActions(insert.assignments))
+        case other =>
+          throw new AnalysisException(s"${other.prettyName} clauses cannot be part of the " +
+            s"WHEN NOT MATCHED clause in MERGE INTO.")
+      }
+      // Even if we're merging into a non-Delta target, we will catch it later and throw an
+      // exception.
+      val deltaMerge =
+        DeltaMergeInto(target, source, condition, matchedActions ++ notMatchedActions)
+
+      val deltaMergeResolved =
+        DeltaMergeInto.resolveReferences(deltaMerge, conf)(tryResolveReferences(spark) _)
+
+      deltaMergeResolved
   }
 
   private def resolveAssignments(

@@ -348,8 +348,8 @@ trait DescribeDeltaHistorySuiteBase
         val operationMetrics: Map[String, String] = getOperationMetrics(deltaTable.history(1))
 
         val expectedMetrics = Map(
-          "numTargetRowsInserted" -> "50",
-          "numTargetRowsUpdated" -> "50",
+          "numRowsInserted" -> "50",
+          "numRowsUpdated" -> "50",
           "numOutputRows" -> "100",
           "numSourceRows" -> "100"
         )

@@ -23,7 +23,7 @@ import java.util.ConcurrentModificationException
 import org.apache.spark.sql.delta.actions.{CommitInfo, Metadata}
 import org.apache.spark.sql.delta.hooks.PostCommitHook
 import org.apache.spark.sql.delta.metering.DeltaLogging
-import org.apache.spark.sql.delta.schema.{Invariant, InvariantViolationException}
+import org.apache.spark.sql.delta.schema.{Invariant, InvariantViolationException, SchemaUtils}
 import org.apache.spark.sql.delta.util.JsonUtils
 import org.apache.hadoop.fs.Path
 
@@ -33,6 +33,8 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.delta.sources.DeltaSQLConf
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.{DataType, StructField, StructType}
 
@@ -147,6 +149,18 @@ object DeltaErrors
   def notADeltaSourceException(command: String, plan: Option[LogicalPlan] = None): Throwable = {
     val planName = if (plan.isDefined) plan.toString else ""
     new AnalysisException(s"$command destination only supports Delta sources.\n$planName")
+  }
+
+  def schemaChangedSinceAnalysis(atAnalysis: StructType, latestSchema: StructType): Throwable = {
+    val schemaDiff = SchemaUtils.reportDifferences(atAnalysis, latestSchema)
+      .map(_.replace("Specified", "Latest"))
+    new AnalysisException(
+      s"""The schema of your Delta table has changed in an incompatible way since your DataFrame or
+         |DeltaTable object was created. Please redefine your DataFrame or DeltaTable object.
+         |Changes:\n${schemaDiff.mkString("\n")}
+         |This check can be turned off by setting the session configuration key
+         |${DeltaSQLConf.DELTA_SCHEMA_ON_READ_CHECK_ENABLED.key} to false.
+       """.stripMargin)
   }
 
   def missingTableIdentifierException(operationName: String): Throwable = {
@@ -748,6 +762,22 @@ object DeltaErrors
   def rollbackToInvalidVersion(version: Long): Throwable = {
     new AnalysisException(s"Rollback to invalid version $version.")
   }
+
+  def metadataAbsentException(): Throwable = {
+    new IllegalStateException(
+      s"Couldn't find Metadata while committing the first version of the Delta table.")
+  }
+
+  def addFilePartitioningMismatchException(
+      addFilePartitions: Seq[String],
+      metadataPartitions: Seq[String]): Throwable = {
+    new IllegalStateException(
+      """
+        |The AddFile contains partitioning schema different from the table's partitioning schema
+        |expected: ${DeltaErrors.formatColumnList(metadataPartitions)}
+        |actual: ${DeltaErrors.formatColumnList(addFilePartitions)
+      """.stripMargin)
+  }
 }
 
 /** The basic class for all Tahoe commit conflict exceptions. */
@@ -832,11 +862,14 @@ class MetadataMismatchErrorBuilder {
 
   private var mentionedOption = false
 
-  def addSchemaMismatch(original: StructType, data: StructType): Unit = {
+  def addSchemaMismatch(original: StructType, data: StructType, id: String): Unit = {
     bits ++=
-      s"""A schema mismatch detected when writing to the Delta table.
-         |To enable schema migration, please set:
+      s"""A schema mismatch detected when writing to the Delta table (Table ID: $id).
+         |To enable schema migration using DataFrameWriter or DataStreamWriter, please set:
          |'.option("${DeltaOptions.MERGE_SCHEMA_OPTION}", "true")'.
+         |For other operations, set the session configuration
+         |${DeltaSQLConf.DELTA_SCHEMA_AUTO_MIGRATE.key} to "true". See the documentation
+         |specific to the operation for details.
          |
          |Table schema:
          |${DeltaErrors.formatSchema(original)}
@@ -844,7 +877,6 @@ class MetadataMismatchErrorBuilder {
          |Data schema:
          |${DeltaErrors.formatSchema(data)}
          """.stripMargin :: Nil
-    mentionedOption = true
   }
 
   def addPartitioningMismatch(original: Seq[String], provided: Seq[String]): Unit = {
@@ -866,13 +898,7 @@ class MetadataMismatchErrorBuilder {
     mentionedOption = true
   }
 
-  def finalizeAndThrow(): Unit = {
-    if (mentionedOption) {
-      bits ++=
-        """If Table ACLs are enabled, these options will be ignored. Please use the ALTER TABLE
-          |command for changing the schema.
-        """.stripMargin :: Nil
-    }
+  def finalizeAndThrow(conf: SQLConf): Unit = {
     throw new AnalysisException(bits.mkString("\n"))
   }
 }

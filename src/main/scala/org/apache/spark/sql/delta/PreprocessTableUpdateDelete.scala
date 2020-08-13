@@ -14,23 +14,22 @@
  * limitations under the License.
  */
 
-package io.delta.sql.analysis
+package org.apache.spark.sql.delta
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
-import org.apache.spark.sql.catalyst.expressions.{Expression, SubqueryExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
-import org.apache.spark.sql.catalyst.plans.logical.{Delete, DeleteWithJoinTable, DeltaMergeAction, LogicalPlan, UpdateTable, UpdateWithJoinTable}
+import org.apache.spark.sql.catalyst.expressions.{Expression, SubqueryExpression}
+import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.delta.commands.{DeleteCommand, DeleteWithJoinCommand, UpdateCommand, UpdateWithJoinCommand}
-import org.apache.spark.sql.delta.{DeltaErrors, DeltaFullTable, UpdateExpressionsSupport}
 import org.apache.spark.sql.internal.SQLConf
 
 class PreprocessTableUpdateDelete(
     spark: SparkSession) extends Rule[LogicalPlan] with UpdateExpressionsSupport {
 
   def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperatorsDown {
-    case UpdateTable(table, updateColumns, updateExpressions, condition) =>
+    case DeltaUpdateTable(table, updateColumns, updateExpressions, condition) =>
       condition.foreach(checkCondition(_, "update"))
       val index = EliminateSubqueryAliases(table) match {
         case DeltaFullTable(tahoeFileIndex) => tahoeFileIndex
@@ -38,7 +37,7 @@ class PreprocessTableUpdateDelete(
           throw DeltaErrors.notADeltaSourceException("UPDATE", Some(o))
       }
       val resolveNameParts = updateColumns.map { col =>
-        UpdateTable.getNameParts(col, "", table)
+        DeltaUpdateTable.getTargetColNameParts(col, "")
       }
       val alignedUpdateExprs = generateUpdateExpressions(
         table.output, resolveNameParts, updateExpressions, conf.resolver)
@@ -54,7 +53,7 @@ class PreprocessTableUpdateDelete(
       }
 
       val resolveNameParts = updateColumns.map { col =>
-        UpdateTable.getNameParts(col, "", target)
+        DeltaUpdateTable.getTargetColNameParts(col, "")
       }
       val alignedUpdateExprs = generateUpdateExpressions(
         target.output, resolveNameParts, updateExpressions, conf.resolver)
@@ -65,7 +64,7 @@ class PreprocessTableUpdateDelete(
 
       UpdateWithJoinCommand(source, target, index, condition, update)
 
-    case Delete(table, condition) =>
+    case DeltaDelete(table, condition) =>
       val index = EliminateSubqueryAliases(table) match {
         case DeltaFullTable(tahoeFileIndex) =>
           tahoeFileIndex

@@ -16,9 +16,9 @@
 
 package io.delta.sql
 
-import io.delta.sql.analysis.{DeltaSqlResolution, PreprocessTableUpdateDelete}
 import io.delta.sql.parser.DeltaSqlParser
 import org.apache.spark.sql.SparkSessionExtensions
+import org.apache.spark.sql.delta.{DeltaAnalysis, PreprocessTableMerge, PreprocessTableUpdateDelete}
 
 /**
  * An extension for Spark SQL to activate Delta SQL parser to support Delta SQL grammar.
@@ -74,9 +74,11 @@ class DeltaSparkSessionExtension extends (SparkSessionExtensions => Unit) {
       new DeltaSqlParser(parser)
     }
     extensions.injectResolutionRule { session =>
-      new DeltaSqlResolution(session)
+      new DeltaAnalysis(session, session.sessionState.conf)
     }
-
+    extensions.injectPostHocResolutionRule { session =>
+      new PreprocessTableMerge(session, session.sessionState.conf)
+    }
     extensions.injectPostHocResolutionRule { session =>
       new PreprocessTableUpdateDelete(session)
     }

@@ -225,12 +225,14 @@ class DeltaMergeBuilder private(
   def execute(): Unit = {
     val sparkSession = targetTable.toDF.sparkSession
     val resolvedMergeInto =
-      DeltaMergeInto.resolveReferences(mergePlan)(tryResolveReferences(sparkSession) _)
+      DeltaMergeInto.resolveReferences(mergePlan, sparkSession.sessionState.conf)(
+        tryResolveReferences(sparkSession) _)
     if (!resolvedMergeInto.resolved) {
       throw DeltaErrors.analysisException("Failed to resolve\n", plan = Some(resolvedMergeInto))
     }
     // Preprocess the actions and verify
-    val mergeIntoCommand = PreprocessTableMerge(sparkSession.sessionState.conf)(resolvedMergeInto)
+    val mergeIntoCommand =
+      PreprocessTableMerge(sparkSession, sparkSession.sessionState.conf)(resolvedMergeInto)
     sparkSession.sessionState.analyzer.checkAnalysis(mergeIntoCommand)
     mergeIntoCommand.run(sparkSession)
   }

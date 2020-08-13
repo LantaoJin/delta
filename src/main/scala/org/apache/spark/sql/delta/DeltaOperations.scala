@@ -155,13 +155,13 @@ object DeltaOperations {
     }
     override val operationMetrics: Seq[String] = Seq(
       "numSourceRows",
-      "numTargetRowsInserted",
-      "numTargetRowsUpdated",
-      "numTargetRowsDeleted",
-      "numTargetRowsCopied",
+      "numRowsInserted",
+      "numRowsUpdated",
+      "numRowsDeleted",
+      "numRowsCopied",
       "numOutputRows",
-      "numTargetFilesAdded",
-      "numTargetFilesRemoved")
+      "numAddedFiles",
+      "numRemovedFiles")
   }
   /** Recorded when an update operation is committed to the table. */
   case class Update(predicate: Option[String]) extends Operation("UPDATE") {
