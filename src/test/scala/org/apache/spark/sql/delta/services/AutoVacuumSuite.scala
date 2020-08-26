@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.delta.services
 
+import java.io.File
 import java.sql.{DriverManager, SQLException}
 
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -338,6 +339,48 @@ class AutoVacuumSuite extends QueryTest
             |""".stripMargin)
         Thread.sleep(7000)
         checkAnswer(sql("SHOW DELTAS"), Nil)
+      }
+    }
+  }
+
+  test("test double check delta table") {
+    sys.props("spark.testing") = "true"
+    spark.sparkContext.conf.set(DeltaSQLConf.AUTO_VACUUM_ENABLED, true)
+    spark.sparkContext.conf.set(DeltaSQLConf.DELTA_LISTENER_ENABLED, false)
+    spark.sparkContext.conf.set(DeltaSQLConf.META_TABLE_IDENTIFIER, DELTA_META_TABLE_NAME)
+    spark.sparkContext.conf.set(
+      StaticSQLConf.SPARK_SESSION_EXTENSIONS, "io.delta.sql.DeltaSparkSessionExtension")
+    withTempDir { dir =>
+      spark.sparkContext.conf.set(
+        StaticSQLConf.HIVE_THRIFT_SERVER_DATA_UPLOAD_WORKSPACE_BASE_DIR, dir.getCanonicalPath)
+      val db1 = new File(dir, "P_abc_t")
+      db1.mkdir()
+      val db2 = new File(dir, "P_def_T")
+      db2.mkdir()
+      val invalid = new File(dir, "d_ghi_t")
+      invalid.mkdir()
+      val file = new File(dir, "p_file_t")
+      file.createNewFile()
+      withDatabase("carmel_system", "P_ABC_T", "P_DEF_T") {
+        sql("create database carmel_system")
+        sql("create database P_ABC_T")
+        sql("create database P_DEF_T")
+        withTable(DELTA_META_TABLE_NAME, "P_ABC_T.t1", "P_ABC_T.t2", "P_DEF_T.t1") {
+          sql(DELTA_META_TABLE_CREATION_SQL)
+          sql("create table P_ABC_T.t1 (id int) using delta")
+          sql("create table P_ABC_T.t2 (id int) using delta")
+          sql("create table P_DEF_T.t1 (id int) using delta")
+
+          Thread.sleep(10000)
+          checkAnswer(
+            sql("SHOW DELTAS"),
+            Row("p_abc_t", "t1", "",
+              s"${getTableLocation("t1", Some("p_abc_t"))}", true, 2L) ::
+            Row("p_abc_t", "t2", "",
+              s"${getTableLocation("t2", Some("p_abc_t"))}", true, 2L) ::
+            Row("p_def_t", "t1", "",
+              s"${getTableLocation("t1", Some("p_def_t"))}", true, 2L) :: Nil)
+        }
       }
     }
   }

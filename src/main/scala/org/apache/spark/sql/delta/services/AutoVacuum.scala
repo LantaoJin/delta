@@ -22,9 +22,13 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.util.Random
 
+import org.apache.hadoop.fs.Path
+
 import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.catalog.CatalogUtils
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.delta.{DeltaLog, DeltaTableUtils}
 import org.apache.spark.sql.delta.commands.VacuumCommand
@@ -39,10 +43,17 @@ class AutoVacuum(ctx: SparkContext) extends Logging {
 
   private val validate = new ValidateTask(ctx.getConf)
 
+  private lazy val validator =
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("delta-table-validator")
+
+  private lazy val doubleCheckerThread =
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("delta-double-checker")
+
   val started: Boolean = {
     // add delta listener only delta enabled
     if (ctx.getConf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS)
-        .contains("io.delta.sql.DeltaSparkSessionExtension")) {
+        .contains("io.delta.sql.DeltaSparkSessionExtension") &&
+        ctx.getConf.get(DeltaSQLConf.DELTA_LISTENER_ENABLED)) {
       ctx.addSparkListener(
         new DeltaTableListener(validate), DeltaTableListener.DELTA_MANAGEMENT_QUEUE)
     }
@@ -67,8 +78,10 @@ class AutoVacuum(ctx: SparkContext) extends Logging {
        */
       val validatorInterval = ctx.getConf.get(DeltaSQLConf.VALIDATOR_INTERVAL)
       val initialDelay = if (Utils.isTesting) 5 else 300 // 5 min
-      val validator = ThreadUtils.newDaemonSingleThreadScheduledExecutor("delta-table-validator")
       validator.scheduleWithFixedDelay(validate, initialDelay, validatorInterval, TimeUnit.SECONDS)
+      val doubleCheckerInterval = ctx.getConf.get(DeltaSQLConf.DOUBLE_CHECK_INTERVAL)
+      doubleCheckerThread.scheduleWithFixedDelay(new DoubleCheckerTask(ctx.getConf, validate),
+        if (Utils.isTesting) 5 else doubleCheckerInterval, doubleCheckerInterval, TimeUnit.SECONDS)
       true
     } else {
       false
@@ -206,7 +219,7 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
   }
 
   def enableVacuum(meta: DeltaTableMetadata): Unit = {
-    if (conf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
+    if (conf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED) && meta.vacuum) {
       val interval = conf.get(DeltaSQLConf.AUTO_VACUUM_INTERVAL)
       val vacuumTask = new VacuumTask(meta)
       // 1 hour + random in 12 hours by default
@@ -222,5 +235,51 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
     DateTimeUtils.timestampToString(
       DateTimeUtils.fromJavaTimestamp(new java.sql.Timestamp(System.currentTimeMillis()))) + " " +
       DateTimeUtils.defaultTimeZone().getID
+  }
+}
+
+/**
+ * Double check the table is delta table and add it to the delta meta table
+ */
+class DoubleCheckerTask(conf: SparkConf, validate: ValidateTask) extends Runnable with Logging {
+
+  override def run(): Unit = {
+    val spark = SparkSession.active
+    val catalog = spark.sessionState.catalog
+    val baseDir = conf.get(StaticSQLConf.HIVE_THRIFT_SERVER_DATA_UPLOAD_WORKSPACE_BASE_DIR)
+    val hadoopConf = SparkHadoopUtil.get.newConfiguration(conf)
+    val basePath = new Path(baseDir)
+    val fs = basePath.getFileSystem(hadoopConf)
+    try {
+      fs.listStatus(basePath)
+        .filter(_.isDirectory)
+        .map(_.getPath.getName.toLowerCase())
+        .filter(_.startsWith("p_"))
+        .filter(_.endsWith("_t")).foreach { db =>
+        logInfo(s"Begin to double check the delta tables in $db")
+        catalog.getTablesByName(catalog.listTables(db))
+            .filter(DDLUtils.isDeltaTable).filterNot(DDLUtils.isTemporaryTable).foreach { table =>
+          val defaultRetentionHours = conf.get(DeltaSQLConf.AUTO_VACUUM_RETENTION_HOURS)
+          val metadata = DeltaTableMetadata(
+            table.identifier.database.getOrElse(""),
+            table.identifier.table,
+            table.owner,
+            CatalogUtils.URIToString(table.location),
+            vacuum = true,
+            retention = defaultRetentionHours)
+
+          if (!DeltaTableMetadata.metadataTableExists(spark, metadata)) {
+            logInfo(s"Found $metadata is missing in list, insert into meta table.")
+            validate.enableVacuum(metadata)
+            DeltaTableMetadata.insertIntoMetadataTable(spark, metadata)
+          }
+        }
+      }
+    } catch {
+      case e: Throwable =>
+        logWarning("Catch an exception when double check", e)
+    } finally {
+      fs.close()
+    }
   }
 }

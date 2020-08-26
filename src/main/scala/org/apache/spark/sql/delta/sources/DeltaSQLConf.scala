@@ -284,6 +284,11 @@ object DeltaSQLConf {
     .booleanConf
     .createWithDefault(false)
 
+  val DELTA_LISTENER_ENABLED = buildStaticConf("listener.enabled")
+    .internal()
+    .booleanConf
+    .createWithDefault(true)
+
   val AUTO_VACUUM_RETENTION_HOURS = buildStaticConf("vacuum.auto.retention.hours")
     .doc("The default Delta tombstone retention period. Should be greater than 0.")
     .longConf
@@ -299,4 +304,9 @@ object DeltaSQLConf {
     .doc("The interval of delta table validator thread is scheduled.")
     .timeConf(TimeUnit.SECONDS)
     .createWithDefault(30 * 60) // 30 minutes by default
+
+  val DOUBLE_CHECK_INTERVAL = buildStaticConf("doubleChecker.schedule.interval")
+    .doc("The interval of delta table double checker thread is scheduled.")
+    .timeConf(TimeUnit.SECONDS)
+    .createWithDefault(6 * 3600) // 6 hours by default
 }

@@ -56,7 +56,11 @@ class DeltaTableListener(validate: ValidateTask) extends SparkListener with Logg
         }
         metaHandlerThread.execute(new Runnable {
           override def run(): Unit = {
-            DeltaTableMetadata.updateMetadataTable(spark, e.metadata)
+            if (DeltaTableMetadata.metadataTableExists(spark, e.metadata)) {
+              DeltaTableMetadata.updateMetadataTable(spark, e.metadata)
+            } else {
+              DeltaTableMetadata.insertIntoMetadataTable(spark, e.metadata)
+            }
           }
         })
 //      case e: DeleteDeltaEvent =>
