@@ -20,7 +20,7 @@ organization := "io.delta"
 
 scalaVersion := "2.12.10"
 
-sparkVersion := "3.0.0"
+sparkVersion := "3.0.0.carmel0.1-SNAPSHOT"
 
 libraryDependencies ++= Seq(
   // Adding test classifier seems to break transitive resolution of the core dependencies
@@ -243,4 +243,10 @@ releaseProcess := Seq[ReleaseStep](
   publishArtifacts,
   setNextVersion,
   commitNextVersion
+)
+
+resolvers ++= Seq(
+  Resolver.mavenLocal,
+  "ebaycentral.snapshots" at "http://ebaycentral.qa.ebay.com/content/repositories/snapshots",
+  "ebaycentral.releases"  at "http://ebaycentral.qa.ebay.com/content/repositories/releases"
 )
