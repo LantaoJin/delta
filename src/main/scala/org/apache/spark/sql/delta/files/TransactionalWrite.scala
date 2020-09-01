@@ -131,8 +131,7 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
 
     val committer = getCommitter(outputPath)
 
-    val invariants = Invariants.getFromSchema(metadata.schema, spark)
-    Invariants.ensureNoCheckConstraints(metadata, spark)
+    val constraints = Constraints.getAll(metadata, spark)
 
     SQLExecution.withNewExecutionId(queryExecution) {
       val outputSpec = FileFormatWriter.OutputSpec(
@@ -140,7 +139,7 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
         Map.empty,
         output)
 
-      val physicalPlan = DeltaInvariantCheckerExec(queryExecution.executedPlan, invariants)
+      val physicalPlan = DeltaInvariantCheckerExec(queryExecution.executedPlan, constraints)
 
       val executionId = spark.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       logInfo(s"Physical plan of $executionId before execution:\n ${physicalPlan.toString()}")
