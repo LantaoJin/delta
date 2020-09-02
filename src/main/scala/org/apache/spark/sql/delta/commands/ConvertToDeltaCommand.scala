@@ -389,10 +389,8 @@ abstract class ConvertToDeltaCommandBase(
       commitLarge(
         spark,
         txn,
-        txn.metadata,
         Iterator.single(txn.protocol) ++ addFilesIter,
         getOperation(numFiles, convertProperties),
-        numFiles,
         getContext,
         metrics)
 
