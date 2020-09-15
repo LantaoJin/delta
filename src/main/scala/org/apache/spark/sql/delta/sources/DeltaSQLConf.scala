@@ -342,6 +342,12 @@ object DeltaSQLConf {
       .booleanConf
       .createWithDefault(true)
 
+  val DELTA_WRITE_CHECKSUM_ENABLED =
+    buildConf("writeChecksumFile.enabled")
+      .doc("Whether the checksum file can be written.")
+      .booleanConf
+      .createWithDefault(true)
+
   val REWRITE_LEFT_JOIN =
     buildConf("rewrite.leftJoin.enabled")
       .doc(
