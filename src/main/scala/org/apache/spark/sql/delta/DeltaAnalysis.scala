@@ -22,17 +22,12 @@ import org.apache.spark.sql.delta.files.TahoeLogFileIndex
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.schema.SchemaUtils
 import org.apache.spark.sql.delta.util.AnalysisHelper
-import org.apache.hadoop.fs.Path
-
-import org.apache.spark.sql.{AnalysisException, SaveMode, SparkSession}
-import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.{CannotReplaceMissingTableException, EliminateSubqueryAliases, UnresolvedRelation}
-import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTableType}
-import org.apache.spark.sql.catalyst.expressions.{Alias, And, AnsiCast, Cast, CreateStruct, Expression, GetStructField, NamedExpression, UpCast}
-import org.apache.spark.sql.catalyst.plans.logical.{AppendData, DeleteAction, DeleteFromTable, DeltaDelete, DeltaMergeInto, DeltaMergeIntoClause, DeltaMergeIntoDeleteClause, DeltaMergeIntoInsertClause, DeltaMergeIntoUpdateClause, DeltaUpdateTable, Filter, InsertAction, InsertIntoStatement, LocalRelation, LogicalPlan, MergeIntoTable, OverwriteByExpression, Project, UpdateAction, UpdateTable}
+import org.apache.spark.sql.{AnalysisException, SparkSession}
+import org.apache.spark.sql.catalyst.analysis.{GetColumnByOrdinal, UnresolvedAttribute, UnresolvedExtractValue, caseInsensitiveResolution, withPosition}
+import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.connector.catalog.CatalogV2Implicits._
-import org.apache.spark.sql.connector.catalog.Identifier
+import org.apache.spark.sql.catalyst.util.toPrettySQL
 import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.internal.SQLConf
@@ -44,6 +39,8 @@ import org.apache.spark.sql.types.{DataType, StructField, StructType}
  */
 class DeltaAnalysis(session: SparkSession, conf: SQLConf)
   extends Rule[LogicalPlan] with AnalysisHelper with DeltaLogging {
+
+  private def resolver = session.sessionState.conf.resolver
 
   type CastFunction = (Expression, DataType) => Expression
 
@@ -59,14 +56,20 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
       }
 
     // INSERT OVERWRITE by ordinal
-    case a @ OverwriteByExpression(
-        DataSourceV2Relation(d: DeltaTableV2, _, _, _, _), _, query, _, false)
+    case o @ OverwriteByExpression(
+    DataSourceV2Relation(d: DeltaTableV2, _, _, _, _), deleteExpr, query, _, false)
       if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema()) =>
       val projection = normalizeQueryColumns(query, d)
       if (projection != query) {
-        a.copy(query = projection)
+        val aliases = AttributeMap(query.output.zip(projection.output).collect {
+          case (l: AttributeReference, r: AttributeReference) if !l.sameRef(r) => (l, r)
+        })
+        val newDeleteExpr = deleteExpr.transformUp {
+          case a: AttributeReference => aliases.getOrElse(a, a)
+        }
+        o.copy(deleteExpr = newDeleteExpr, query = projection)
       } else {
-        a
+        o
       }
 
     // Pull out the partition filter that may be part of the FileIndex. This can happen when someone
@@ -74,7 +77,7 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
     case l @ DeltaTable(index: TahoeLogFileIndex) if index.partitionFilters.nonEmpty =>
       Filter(
         index.partitionFilters.reduce(And),
-        DeltaTableUtils.replaceFileIndex(l, index.copy(partitionFilters = Nil)))
+        DeltaTableUtils.replaceFileIndex(l, index.copy(partitionFilters = Nil), None))
 
 
     // This rule falls back to V1 nodes, since we don't have a V2 reader for Delta right now
@@ -83,7 +86,7 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
 
     // DML - TODO: Remove these Delta-specific DML logical plans and use Spark's plans directly
 
-    case d @ DeleteFromTable(table, condition) if d.childrenResolved =>
+    case d @ DeleteFromTable(table, condition, None) if d.childrenResolved =>
       // rewrites Delta from V2 to V1
       val newTarget = table.transformUp { case DeltaRelation(lr) => lr }
       val indices = newTarget.collect {
@@ -100,7 +103,39 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
         throw DeltaErrors.notADeltaSourceException("DELETE", Some(d))
       }
 
-    case u @ UpdateTable(table, assignments, condition) if u.childrenResolved =>
+    case d @ DeleteFromTable(target, condition, Some(source)) if d.childrenResolved &&
+        target.outputSet.intersect(source.outputSet).isEmpty => // no conflicting attributes
+      // rewrites Delta from V2 to V1
+      val newTarget = target.transformUp { case DeltaRelation(lr) => lr }
+      val indices = newTarget.collect {
+        case DeltaFullTable(index) => index
+      }
+      if (indices.isEmpty) {
+        // Not a Delta table at all, do not transform
+        d
+      } else if (indices.size == 1 && indices(0).deltaLog.snapshot.version > -1) {
+        // It is a well-defined Delta table with a schema
+
+        val resolvedDeleteCondition =
+          condition.map(resolveExpressionTopDown(_, d)).flatMap(inferredConditions)
+        val actions = DeltaMergeIntoDeleteClause(resolvedDeleteCondition)
+        source match {
+          case _: Join =>
+            // if the source contains Join, we should fill the join criteria
+            val withFilter = extractPredicatesOnlyInSource(source, resolvedDeleteCondition.get)
+              .map(Filter(_, source)).getOrElse(source)
+            val withProject = projectionForSource(withFilter, resolvedDeleteCondition)
+            DeleteWithJoinTable(newTarget, withProject, resolvedDeleteCondition, actions)
+          case _ =>
+            val withProject = projectionForSource(source, resolvedDeleteCondition)
+            DeleteWithJoinTable(newTarget, withProject, resolvedDeleteCondition, actions)
+        }
+      } else {
+        // Not a well-defined Delta table
+        throw DeltaErrors.notADeltaSourceException("DELETE", Some(d))
+      }
+
+    case u @ UpdateTable(table, assignments, condition, None) if u.childrenResolved =>
       val (cols, expressions) = assignments.map(a =>
         a.key.asInstanceOf[NamedExpression] -> a.value).unzip
       // rewrites Delta from V2 to V1
@@ -111,6 +146,46 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
             throw DeltaErrors.notADeltaSourceException("UPDATE", o)
         }
       DeltaUpdateTable(newTable, cols, expressions, condition)
+
+    case u @ UpdateTable(target, assignments, condition, Some(source)) if u.childrenResolved &&
+        target.outputSet.intersect(source.outputSet).isEmpty =>
+      // rewrites Delta from V2 to V1
+      val newTarget = target.transformUp { case DeltaRelation(lr) => lr }
+      newTarget.collectLeaves().headOption match {
+        case Some(DeltaFullTable(index)) =>
+        case o =>
+          throw DeltaErrors.notADeltaSourceException("UPDATE", o)
+      }
+      val resolvedAssignments = resolveAssignments(assignments, u)
+      val columns = resolvedAssignments.map(_.key.asInstanceOf[NamedExpression])
+      val values = resolvedAssignments.map(_.value)
+      val resolvedUpdateCondition =
+        condition.map(resolveExpressionTopDown(_, u)).flatMap(inferredConditions)
+
+      if (resolvedUpdateCondition.isEmpty && values.forall(_.foldable)) {
+        // If join condition is empty and SET expressions are all foldable,
+        // skip join and fallback to simple update
+        logInfo(s"Update conditions are empty with foldable SET clause, fallback to simple update")
+        DeltaUpdateTable(newTarget, columns, values, resolvedUpdateCondition)
+      } else {
+        val updateActions = DeltaUpdateTable.toActionFromAssignments(resolvedAssignments)
+        val actions = DeltaMergeIntoUpdateClause(resolvedUpdateCondition, updateActions)
+        source match {
+          case _: Join =>
+            // if the source contains Join, we should fill the join criteria
+            val withFilter = extractPredicatesOnlyInSource(source, resolvedUpdateCondition.get)
+              .map(Filter(_, source)).getOrElse(source)
+            val withProject =
+              projectionForSource(withFilter, resolvedUpdateCondition, columns, values)
+            UpdateWithJoinTable(
+              newTarget, withProject, columns, values, resolvedUpdateCondition, actions)
+          case _ =>
+            val withProject =
+              projectionForSource(source, resolvedUpdateCondition, columns, values)
+            UpdateWithJoinTable(
+              newTarget, withProject, columns, values, resolvedUpdateCondition, actions)
+        }
+      }
 
     case m@MergeIntoTable(target, source, condition, matched, notMatched) if m.childrenResolved =>
       val matchedActions = matched.map {
@@ -146,7 +221,6 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
       deltaMergeResolved
 
   }
-
 
   /**
    * Performs the schema adjustment by adding UpCasts (which are safe) and Aliases so that we
@@ -244,6 +318,192 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
     }
     Alias(CreateStruct(fields), parent.name)(
       parent.exprId, parent.qualifier, Option(parent.metadata))
+  }
+
+  private def resolveExpressionTopDown(e: Expression, q: LogicalPlan): Expression = {
+    if (e.resolved) return e
+    e match {
+      //      case f: LambdaFunction if !f.bound => f
+      case u @ UnresolvedAttribute(nameParts) =>
+        // Leave unchanged if resolution fails. Hopefully will be resolved next round.
+        val result =
+          withPosition(u) {
+            q.resolveChildren(nameParts, resolver)
+              .orElse(resolveLiteralFunction(nameParts, u, q))
+              .getOrElse(u)
+          }
+        logDebug(s"Resolving $u to $result")
+        result
+      case UnresolvedExtractValue(child, fieldExpr) if child.resolved =>
+        ExtractValue(child, fieldExpr, resolver)
+      case _ => e.mapChildren(resolveExpressionTopDown(_, q))
+    }
+  }
+
+  /**
+   * Literal functions do not require the user to specify braces when calling them
+   * When an attributes is not resolvable, we try to resolve it as a literal function.
+   */
+  private def resolveLiteralFunction(
+      nameParts: Seq[String],
+      attribute: UnresolvedAttribute,
+      plan: LogicalPlan): Option[Expression] = {
+    if (nameParts.length != 1) return None
+    val isNamedExpression = plan match {
+      case Aggregate(_, aggregateExpressions, _) => aggregateExpressions.contains(attribute)
+      case Project(projectList, _) => projectList.contains(attribute)
+      case Window(windowExpressions, _, _, _) => windowExpressions.contains(attribute)
+      case _ => false
+    }
+    val wrapper: Expression => Expression =
+      if (isNamedExpression) f => Alias(f, toPrettySQL(f))() else identity
+    // support CURRENT_DATE and CURRENT_TIMESTAMP
+    val literalFunctions = Seq(CurrentDate(), CurrentTimestamp())
+    val name = nameParts.head
+    val func = literalFunctions.find(e => caseInsensitiveResolution(e.prettyName, name))
+    func.map(wrapper)
+  }
+
+  private def splitConjunctivePredicates(condition: Expression): Seq[Expression] = {
+    condition match {
+      case And(cond1, cond2) =>
+        splitConjunctivePredicates(cond1) ++ splitConjunctivePredicates(cond2)
+      case other => other :: Nil
+    }
+  }
+
+  private def replaceConstraints(
+      constraints: Set[Expression],
+      source: Expression,
+      destination: Expression): Set[Expression] = {
+    if ((source.resolved && source.foldable) || (destination.resolved && destination.foldable)) {
+      constraints
+    } else {
+      constraints.map(_ transform {
+        case e: Expression if e.semanticEquals(source) => destination
+      })
+    }
+  }
+
+  /**
+   * Infers an additional set of constraints from a given set of equality constraints.
+   * For e.g., if an operator has constraints of the form (`a = 5`, `a = b`), this returns an
+   * constraints (`a = 5`, `a = b`, `b = 5`)
+   */
+  private def inferredConditions(condition: Expression): Option[Expression] = {
+    val constraints = splitConjunctivePredicates(condition).toSet
+    var inferredConstraints = constraints
+    // IsNotNull should be constructed by `constructIsNotNullConstraints`.
+    val predicates = constraints.filterNot(_.isInstanceOf[IsNotNull])
+    predicates.foreach {
+      case eq @ EqualTo(l @ Cast(_: Expression, _, _), r: Expression) =>
+        inferredConstraints ++= replaceConstraints(predicates - eq, r, l)
+      case eq @ EqualTo(l: Expression, r @ Cast(_: Expression, _, _)) =>
+        inferredConstraints ++= replaceConstraints(predicates - eq, l, r)
+      case eq @ EqualTo(l: Expression, r: Expression) =>
+        val candidateConstraints = predicates - eq
+        inferredConstraints ++= replaceConstraints(candidateConstraints, l, r)
+        inferredConstraints ++= replaceConstraints(candidateConstraints, r, l)
+      case _ => // No inference
+    }
+    // For easy writing unit test, we sort by simpleString
+    inferredConstraints.toSeq.sortBy(_.simpleString(SQLConf.get.maxToStringFields))
+      .reduceLeftOption(And)
+  }
+
+  /**
+   * Join criteria may cross target and source, this method extracts the join criteria
+   * and conditions which only related to source.
+   *
+   * For example:
+   * In below query, t1 is target, t2 is source.
+   * This method return (t2.id < 100).
+   *   Update t1
+   *   FROM t1, t2
+   *   WHERE t1.id = t2.id and t2.id < 100
+   *
+   * In below query, t1 is target, t2 join t3 is source.
+   * This method return (t2.id = t3.id), (t2.id < 100).
+   *   Update t1
+   *   FROM t2, t3, t1
+   *   WHERE t1.id = t2.id and t2.id = t3.id and t2.id < 100
+   *
+   * This method will infer and return (t2.id = t3.id), (t2.id < 100).
+   *   Update t1
+   *   FROM t2, t3, t1
+   *   WHERE t1.id = t2.id and t1.id = t3.id and t2.id < 100
+   */
+  private def extractPredicatesOnlyInSource(
+      source: LogicalPlan, predicates: Expression): Option[Expression] = {
+    val (predicatesInSourceOnly, predicatesContainsNonSource) =
+      splitConjunctivePredicates(predicates).partition {
+        case expr: Expression => expr.references.subsetOf(source.outputSet)
+        case _ => false
+      }
+    predicatesInSourceOnly.reduceLeftOption(And)
+  }
+
+  private def projectionForSource(
+      source: LogicalPlan,
+      condition: Option[Expression],
+      columns: Seq[NamedExpression] = Nil,
+      values: Seq[Expression] = Nil): LogicalPlan = {
+    val attributesInCondition =
+      condition.map(splitConjunctivePredicates(_).flatMap(_.references.toSeq)).toSet.flatten
+    val attributesInValues =
+      values.map(splitConjunctivePredicates(_).flatMap(_.references.toSeq)).toSet.flatten
+    val all = attributesInCondition ++ attributesInValues ++ columns.toSet
+    val attributesInSource = all.filter(source.outputSet.contains(_)).toSeq
+    Project(attributesInSource, source)
+  }
+
+  private def resolveAssignments(
+    assignments: Seq[Assignment],
+    plan: LogicalPlan): Seq[Assignment] = {
+    assignments.map { assign =>
+      val target = plan match {
+        case UpdateTable(target, _, _, _) => target
+        case _ => plan
+      }
+      val resolvedKey = assign.key match {
+        case c if !c.resolved => resolveExpressionBottomUp(c, target)
+        case o => o
+      }
+      val resolvedValue = assign.value match {
+        case c if !c.resolved => resolveExpressionTopDown(Cast(c, resolvedKey.dataType), plan)
+        case o => o
+      }
+      Assignment(resolvedKey, resolvedValue)
+    }
+  }
+
+  private def resolveExpressionBottomUp(
+    expr: Expression,
+    plan: LogicalPlan,
+    throws: Boolean = false): Expression = {
+    if (expr.resolved) return expr
+    // Resolve expression in one round.
+    // If throws == false or the desired attribute doesn't exist
+    // (like try to resolve `a.b` but `a` doesn't exist), fail and return the origin one.
+    // Else, throw exception.
+    try {
+      expr transformUp {
+        case GetColumnByOrdinal(ordinal, _) => plan.output(ordinal)
+        case u @ UnresolvedAttribute(nameParts) =>
+          val result =
+            withPosition(u) {
+              plan.resolve(nameParts, resolver)
+                .orElse(resolveLiteralFunction(nameParts, u, plan))
+                .getOrElse(u)
+            }
+          logDebug(s"Resolving $u to $result")
+          result
+        case UnresolvedExtractValue(child, fieldName) if child.resolved =>
+          ExtractValue(child, fieldName, resolver)
+      }
+    } catch {
+      case a: AnalysisException if !throws => expr
+    }
   }
 }
 

@@ -83,6 +83,10 @@ case class DeltaUnsupportedOperationsCheck(spark: SparkSession)
       recordDeltaEvent(null, "delta.unsupported.insertDirectory")
       fail(operation = "INSERT OVERWRITE DIRECTORY", i.provider)
 
+    case t: TruncateTableCommand =>
+      recordDeltaEvent(null, "delta.unsupported.truncateTable")
+      fail(operation = "TRUNCATE TABLE", t.tableName)
+
     // Delta table checks
     case append: AppendData =>
       val op = if (append.isByName) "APPEND" else "INSERT"

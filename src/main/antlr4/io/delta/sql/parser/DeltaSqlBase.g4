@@ -80,6 +80,7 @@ statement
         (LIMIT limit=INTEGER_VALUE)?                                    #describeDeltaHistory
     | CONVERT TO DELTA table=qualifiedName
         (PARTITIONED BY '(' colTypeList ')')?                           #convert
+    | CONVERT TO PARQUET table=qualifiedName                            #convertBack
     | .*?                                                               #passThrough
     ;
 
@@ -126,6 +127,7 @@ nonReserved
     | CONVERT | TO | DELTA | PARTITIONED | BY
     | DESC | DESCRIBE | LIMIT | DETAIL
     | GENERATE | FOR | TABLE
+    | PARQUET
     ;
 
 // Define how the keywords above should appear in a user's SQL statement.
@@ -151,6 +153,7 @@ RETAIN: 'RETAIN';
 RUN: 'RUN';
 TO: 'TO';
 VACUUM: 'VACUUM';
+PARQUET: 'PARQUET';
 
 STRING
     : '\'' ( ~('\''|'\\') | ('\\' .) )* '\''

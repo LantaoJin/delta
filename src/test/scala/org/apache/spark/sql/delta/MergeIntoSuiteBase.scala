@@ -521,7 +521,7 @@ abstract class MergeIntoSuiteBase
           insert = "(key2, value) VALUES (key1 - 10, src.value + 10)")
       }.toString
 
-      val expectedEx = DeltaErrors.multipleSourceRowMatchingTargetRowInMergeException(spark)
+      val expectedEx = DeltaErrors.multipleSourceRowMatchingTargetRowException(spark, "MERGE")
       assert(e.contains(expectedEx.getMessage))
     }
   }

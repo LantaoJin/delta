@@ -94,7 +94,8 @@ object VacuumCommand extends VacuumCommandImpl {
       deltaLog: DeltaLog,
       dryRun: Boolean = true,
       retentionHours: Option[Double] = None,
-      clock: Clock = new SystemClock): DataFrame = {
+      clock: Clock = new SystemClock,
+      safetyCheckEnabled: Boolean = true): DataFrame = {
     recordDeltaOperation(deltaLog, "delta.gc") {
 
       val path = deltaLog.dataPath
@@ -109,7 +110,9 @@ object VacuumCommand extends VacuumCommandImpl {
         "a Delta table? Refusing to garbage collect.")
 
       val retentionMillis = retentionHours.map(h => TimeUnit.HOURS.toMillis(math.round(h)))
-      checkRetentionPeriodSafety(spark, retentionMillis, deltaLog.tombstoneRetentionMillis)
+      if (safetyCheckEnabled) {
+        checkRetentionPeriodSafety(spark, retentionMillis, deltaLog.tombstoneRetentionMillis)
+      }
 
       val deleteBeforeTimestamp = retentionMillis.map { millis =>
         clock.getTimeMillis() - millis

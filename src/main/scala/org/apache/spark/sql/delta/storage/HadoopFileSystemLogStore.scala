@@ -29,6 +29,7 @@ import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.delta.DeltaErrors
 
 /**
  * Default implementation of [[LogStore]] for Hadoop [[FileSystem]] implementations.
@@ -129,4 +130,8 @@ abstract class HadoopFileSystemLogStore(
   }
 
   override def invalidateCache(): Unit = {}
+
+  override def delete(paths: Traversable[Path], recursive: Boolean): Unit = {
+    throw DeltaErrors.operationNotSupportedException("Delete delta logs in HadoopFileSystemLog")
+  }
 }

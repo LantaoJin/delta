@@ -103,7 +103,9 @@ case class WriteIntoDelta(
       deltaLog.fs.mkdirs(deltaLog.logPath)
     }
 
-    val newFiles = txn.writeFiles(data, Some(options))
+    val normalized = convertToInsertIntoDataSource(txn.metadata, conf, data)
+    val normalizedDF = Dataset.ofRows(sparkSession, normalized)
+    val newFiles = txn.writeFiles(normalizedDF, Some(options))
     val deletedFiles = (mode, partitionFilters) match {
       case (SaveMode.Overwrite, None) =>
         txn.filterFiles().map(_.remove)

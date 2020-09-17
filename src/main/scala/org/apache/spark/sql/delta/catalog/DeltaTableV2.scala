@@ -36,6 +36,7 @@ import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.connector.expressions._
 import org.apache.spark.sql.connector.write.{LogicalWriteInfo, SupportsOverwrite, SupportsTruncate, V1WriteBuilder, WriteBuilder}
 import org.apache.spark.sql.execution.datasources.LogicalRelation
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
@@ -140,7 +141,8 @@ case class DeltaTableV2(
     val partitionPredicates = DeltaDataSource.verifyAndCreatePartitionFilters(
       path.toString, snapshot, partitionFilters)
 
-    deltaLog.createRelation(partitionPredicates, Some(snapshot), timeTravelSpec.isDefined)
+    deltaLog.createRelation(
+      partitionPredicates, Some(snapshot), timeTravelSpec.isDefined, catalogTable)
   }
 }
 
@@ -171,13 +173,14 @@ private class WriteIntoDeltaBuilder(
 
   override def buildForV1Write(): InsertableRelation = {
     new InsertableRelation {
-      override def insert(data: DataFrame, overwrite: Boolean): Unit = {
+      override def insert(
+          data: DataFrame, overwrite: Boolean, metrics: Map[String, SQLMetric]): Unit = {
         val session = data.sparkSession
 
         WriteIntoDelta(
           log,
           if (forceOverwrite) SaveMode.Overwrite else SaveMode.Append,
-          new DeltaOptions(options.toMap, session.sessionState.conf),
+          new DeltaOptions(options.toMap, session.sessionState.conf, metrics),
           Nil,
           log.snapshot.metadata.configuration,
           data).run(session)

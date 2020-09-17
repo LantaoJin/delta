@@ -185,6 +185,10 @@ class DeltaSqlAstBuilder extends DeltaSqlBaseBaseVisitor[AnyRef] {
       None)
   }
 
+  override def visitConvertBack(ctx: ConvertBackContext): LogicalPlan = withOrigin(ctx) {
+    ConvertBackCommand(visitTableIdentifier(ctx.table), None, None)
+  }
+
   override def visitSingleStatement(ctx: SingleStatementContext): LogicalPlan = withOrigin(ctx) {
     visit(ctx.statement).asInstanceOf[LogicalPlan]
   }

@@ -16,11 +16,10 @@
 
 package org.apache.spark.sql.delta
 
-import org.apache.spark.sql.delta.commands.DeleteCommand
-
+import org.apache.spark.sql.delta.commands.{DeleteCommand, DeleteWithJoinCommand}
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
 import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
-import org.apache.spark.sql.catalyst.plans.logical.{DeltaDelete, LogicalPlan}
+import org.apache.spark.sql.catalyst.plans.logical.{DeleteWithJoinTable, DeltaDelete, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.internal.SQLConf
 
@@ -32,11 +31,8 @@ case class PreprocessTableDelete(conf: SQLConf) extends Rule[LogicalPlan] {
   override def apply(plan: LogicalPlan): LogicalPlan = {
     plan.resolveOperators {
       case d: DeltaDelete if d.resolved =>
-        d.condition.foreach { cond =>
-          if (SubqueryExpression.hasSubquery(cond)) {
-            throw DeltaErrors.subqueryNotSupportedException("DELETE", cond)
-          }
-        }
+        toCommand(d)
+      case d: DeleteWithJoinTable if d.resolved =>
         toCommand(d)
     }
   }
@@ -47,5 +43,15 @@ case class PreprocessTableDelete(conf: SQLConf) extends Rule[LogicalPlan] {
 
     case o =>
       throw DeltaErrors.notADeltaSourceException("DELETE", Some(o))
+  }
+
+  def toCommand(d: DeleteWithJoinTable): DeleteWithJoinCommand = {
+    EliminateSubqueryAliases(d.target) match {
+      case DeltaFullTable(tahoeFileIndex) =>
+        DeleteWithJoinCommand(d.source, d.target, tahoeFileIndex, d.condition, d.deleteClause)
+
+      case o =>
+        throw DeltaErrors.notADeltaSourceException("DELETE", Some(o))
+    }
   }
 }

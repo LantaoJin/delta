@@ -21,17 +21,7 @@ import java.io.Closeable
 import java.util.Locale
 
 import scala.collection.JavaConverters._
-import scala.util.control.NonFatal
 
-import org.apache.spark.sql.delta._
-import org.apache.spark.sql.delta.actions.{AddFile, CommitInfo, Metadata, Protocol}
-import org.apache.spark.sql.delta.catalog.DeltaTableV2
-import org.apache.spark.sql.delta.schema.SchemaUtils
-import org.apache.spark.sql.delta.sources.{DeltaSourceUtils, DeltaSQLConf}
-import org.apache.spark.sql.delta.util.{DateFormatter, DeltaFileOperations, PartitionUtils, TimestampFormatter}
-import org.apache.spark.sql.delta.util.FileNames.deltaFile
-import org.apache.spark.sql.delta.util.SerializableFileStatus
-import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 
 import org.apache.spark.SparkException
@@ -41,7 +31,15 @@ import org.apache.spark.sql.catalyst.analysis.{Analyzer, NoSuchTableException}
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType, SessionCatalog}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog, V1Table}
-import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.delta._
+import org.apache.spark.sql.delta.actions.{AddFile, CommitInfo, Metadata, Protocol}
+import org.apache.spark.sql.delta.catalog.DeltaTableV2
+import org.apache.spark.sql.delta.schema.SchemaUtils
+import org.apache.spark.sql.delta.sources.{DeltaSQLConf, DeltaSourceUtils}
+import org.apache.spark.sql.delta.util.{DateFormatter, DeltaFileOperations, PartitionUtils, TimestampFormatter}
+import org.apache.spark.sql.delta.util.SerializableFileStatus
+import org.apache.spark.sql.delta.services.{ConvertToDeltaEvent, DeltaTableMetadata, config}
+import org.apache.spark.sql.execution.command.{DDLUtils, RunnableCommand}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetToSparkSchemaConverter}
 import org.apache.spark.sql.execution.streaming.{FileStreamSink, MetadataLogFileIndex}
 import org.apache.spark.sql.internal.SQLConf
@@ -110,7 +108,7 @@ abstract class ConvertToDeltaCommandBase(
   }
 
   /** Given the table identifier, figure out what our conversion target is. */
-  private def resolveConvertTarget(
+  protected def resolveConvertTarget(
       spark: SparkSession,
       tableIdentifier: TableIdentifier): Option[ConvertTarget] = {
     val v2SessionCatalog =
@@ -161,15 +159,18 @@ abstract class ConvertToDeltaCommandBase(
       // TODO: Schema changes unfortunately doesn't get reflected in the HiveMetaStore. Should be
       // fixed in Apache Spark
       schema = new StructType(),
-      partitionColumnNames = Seq.empty,
+      partitionColumnNames = catalogTable.partitionColumnNames,
+      bucketSpec = catalogTable.bucketSpec,
       properties = Map.empty,
       // TODO: Serde information also doesn't get removed
       storage = catalogTable.storage.copy(
         inputFormat = None,
         outputFormat = None,
-        serde = None)
+        serde = None),
+      tracksPartitionsInCatalog = false
     )
     sessionCatalog.alterTable(newCatalog)
+    sessionCatalog.refreshTable(newCatalog.identifier)
     logInfo("Convert to Delta converted metadata")
   }
 
@@ -328,24 +329,31 @@ abstract class ConvertToDeltaCommandBase(
     val serializableConfiguration = new SerializableConfiguration(sessionHadoopConf)
     val manifest = getFileManifest(spark, qualifiedDir, serializableConfiguration)
 
+    var numFiles = 0L
+    var dataSchema: StructType = StructType(Seq())
+    val initialList = manifest.getFiles
     try {
-      val initialList = manifest.getFiles
-      if (!initialList.hasNext) {
-        throw DeltaErrors.emptyDirectoryException(qualifiedDir)
-      }
-
-      val schemaBatchSize =
-        spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_IMPORT_BATCH_SIZE_SCHEMA_INFERENCE)
-      var dataSchema: StructType = StructType(Seq())
-      var numFiles = 0L
-      recordDeltaOperation(txn.deltaLog, "delta.convert.schemaInference") {
-        initialList.grouped(schemaBatchSize).foreach { batch =>
-          numFiles += batch.size
-          // Obtain a union schema from all files.
-          // Here we explicitly mark the inferred schema nullable. This also means we don't
-          // currently support specifying non-nullable columns after the table conversion.
-          val batchSchema = getSchemaForBatch(spark, batch, serializableConfiguration).asNullable
-          dataSchema = SchemaUtils.mergeSchemas(dataSchema, batchSchema)
+      if (convertProperties.catalogTable.isDefined &&
+          spark.sessionState.conf.getConf(DeltaSQLConf.USE_SCHEMA_FROM_EXISTS_TABLE)) {
+        dataSchema = convertProperties.catalogTable.get.dataSchema
+        numFiles = initialList.length
+      } else {
+        if (!initialList.hasNext) {
+          throw DeltaErrors.emptyDirectoryException(qualifiedDir)
+        } else {
+          val schemaBatchSize =
+            spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_IMPORT_BATCH_SIZE_SCHEMA_INFERENCE)
+          recordDeltaOperation(txn.deltaLog, "delta.convert.schemaInference") {
+            initialList.grouped(schemaBatchSize).foreach { batch =>
+              numFiles += batch.size
+              // Obtain a union schema from all files.
+              // Here we explicitly mark the inferred schema nullable. This also means we don't
+              // currently support specifying non-nullable columns after the table conversion.
+              val batchSchema =
+                getSchemaForBatch(spark, batch, serializableConfiguration).asNullable
+              dataSchema = SchemaUtils.mergeSchemas(dataSchema, batchSchema)
+            }
+          }
         }
       }
 
@@ -353,7 +361,8 @@ abstract class ConvertToDeltaCommandBase(
       val metadata = Metadata(
         schemaString = schema.json,
         partitionColumns = partitionColNames,
-        configuration = convertProperties.properties)
+        configuration = convertProperties.properties,
+        bucketSpec = convertProperties.catalogTable.flatMap(_.bucketSpec))
       txn.updateMetadataForNewTable(metadata)
 
       val addFilesIter = createDeltaActions(spark, manifest, txn, fs)
@@ -370,6 +379,8 @@ abstract class ConvertToDeltaCommandBase(
         numFiles,
         getContext,
         metrics)
+
+      saveToMetaTable(spark, convertProperties)
     } finally {
       manifest.close()
     }
@@ -644,6 +655,22 @@ abstract class ConvertToDeltaCommandBase(
       .map { fs => SerializableFileStatus.fromStatus(fs) }
 
     override def close(): Unit = {}
+  }
+
+  private def saveToMetaTable(spark: SparkSession, convertProperties: ConvertTarget): Unit = {
+    val defaultRetentionHours =
+      spark.sessionState.conf.getConf(config.AUTO_VACUUM_RETENTION_HOURS)
+    convertProperties.catalogTable.foreach { table =>
+      val metadata = DeltaTableMetadata(
+        table.identifier.database.getOrElse(""),
+        table.identifier.table,
+        spark.sessionState.catalog.getCurrentUser,
+        convertProperties.targetDir,
+        vacuum = true,
+        retention = defaultRetentionHours)
+      val isTemp = DDLUtils.isTemporaryTable(table)
+      spark.sharedState.externalCatalog.postToAll(ConvertToDeltaEvent(metadata, isTemp))
+    }
   }
 }
 

@@ -330,4 +330,22 @@ object DeltaSQLConf {
       .checkValue(_ >= 0, "the version must be >= 0")
       .createOptional
 
+  val REWRITE_LEFT_JOIN =
+    buildConf("rewrite.leftJoin.enabled")
+      .doc(
+        """
+          |If enabled, merge/delete/update will rewrite left join plan by union operation.
+        """.stripMargin)
+      .booleanConf
+      .createWithDefault(true)
+
+  val USE_SCHEMA_FROM_EXISTS_TABLE =
+    buildConf("useSchemaFromExistsTable.enabled")
+      .doc(
+        """
+          |If enabled, when we convert a table to delta, the table schema will reuse the exists
+          |table schema instead of merge from files.
+        """.stripMargin)
+      .booleanConf
+      .createWithDefault(true)
 }

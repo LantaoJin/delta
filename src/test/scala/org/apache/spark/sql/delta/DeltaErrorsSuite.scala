@@ -46,8 +46,8 @@ trait DeltaErrorsSuiteBase
       DeltaErrors.createExternalTableWithoutSchemaException(new Path(path), "tableName", spark),
     "createManagedTableWithoutSchemaException" ->
       DeltaErrors.createManagedTableWithoutSchemaException("tableName", spark),
-    "multipleSourceRowMatchingTargetRowInMergeException" ->
-      DeltaErrors.multipleSourceRowMatchingTargetRowInMergeException(spark),
+    "multipleSourceRowMatchingTargetRowException" ->
+      DeltaErrors.multipleSourceRowMatchingTargetRowException(spark, "MERGE"),
     "concurrentModificationException" -> new ConcurrentWriteException(None))
 
   def otherMessagesToTest: Map[String, String] = Map(

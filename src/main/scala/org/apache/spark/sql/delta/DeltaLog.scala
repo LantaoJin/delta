@@ -17,11 +17,11 @@
 package org.apache.spark.sql.delta
 
 // scalastyle:off import.ordering.noEmptyLine
-import java.io.{File, FileNotFoundException, IOException}
+import java.io.{File, IOException}
 import java.util.concurrent.{Callable, TimeUnit}
 import java.util.concurrent.locks.ReentrantLock
 
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.Future
 import scala.util.Try
 import scala.util.control.NonFatal
 
@@ -43,9 +43,10 @@ import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper
 import org.apache.spark.sql.execution.datasources._
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.sources.{BaseRelation, InsertableRelation}
 import org.apache.spark.sql.types.{StructField, StructType}
-import org.apache.spark.util.{Clock, SystemClock, ThreadUtils}
+import org.apache.spark.util.{Clock, SystemClock}
 
 /**
  * Used to query the current state of the log as well as modify it by adding
@@ -314,7 +315,8 @@ class DeltaLog private(
       snapshot: Snapshot,
       addFiles: Seq[AddFile],
       isStreaming: Boolean = false,
-      actionTypeOpt: Option[String] = None): DataFrame = {
+      actionTypeOpt: Option[String] = None,
+      table: Option[CatalogTable] = None): DataFrame = {
     val actionType = actionTypeOpt.getOrElse(if (isStreaming) "streaming" else "batch")
     val fileIndex = new TahoeBatchFileIndex(spark, actionType, addFiles, this, dataPath, snapshot)
 
@@ -322,11 +324,17 @@ class DeltaLog private(
       fileIndex,
       partitionSchema = snapshot.metadata.partitionSchema,
       dataSchema = snapshot.metadata.schema,
-      bucketSpec = None,
+      bucketSpec = snapshot.metadata.bucketSpec,
       snapshot.fileFormat,
       snapshot.metadata.format.options)(spark)
 
-    Dataset.ofRows(spark, LogicalRelation(relation, isStreaming = isStreaming))
+    if (isStreaming) {
+      Dataset.ofRows(spark, LogicalRelation(relation, isStreaming = isStreaming))
+    } else if (table.isDefined) {
+      Dataset.ofRows(spark, LogicalRelation(relation, table.get))
+    } else {
+      Dataset.ofRows(spark, LogicalRelation(relation, isStreaming = isStreaming))
+    }
   }
 
   /**
@@ -338,7 +346,8 @@ class DeltaLog private(
   def createRelation(
       partitionFilters: Seq[Expression] = Nil,
       snapshotToUseOpt: Option[Snapshot] = None,
-      isTimeTravelQuery: Boolean = false): BaseRelation = {
+      isTimeTravelQuery: Boolean = false,
+      catalogTable: Option[CatalogTable] = None): BaseRelation = {
 
     /** Used to link the files present in the table into the query planner. */
     val snapshotToUse = snapshotToUseOpt.getOrElse(snapshot)
@@ -349,19 +358,44 @@ class DeltaLog private(
       fileIndex,
       partitionSchema = snapshotToUse.metadata.partitionSchema,
       dataSchema = snapshotToUse.metadata.schema,
-      bucketSpec = None,
+      bucketSpec = catalogTable.flatMap(_.bucketSpec),
       snapshotToUse.fileFormat,
-      snapshotToUse.metadata.format.options)(spark) with InsertableRelation {
-      def insert(data: DataFrame, overwrite: Boolean): Unit = {
+      snapshotToUse.metadata.format.options ++
+        catalogTable.map(_.properties).getOrElse(Map.empty))(spark) with InsertableRelation {
+      override def insert(
+          data: DataFrame,
+          overwrite: Boolean,
+          metrics: Map[String, SQLMetric]): Unit = {
         val mode = if (overwrite) SaveMode.Overwrite else SaveMode.Append
+        val deltaOptions = data.queryExecution.logical match {
+          case InsertIntoDataSource(
+          LogicalRelation(_: HadoopFsRelation with InsertableRelation, _, Some(_), _),
+          _, _, staticPartitions, _, _) =>
+            val predicates = staticPartitions.map {
+              case (key, value) => key + "=" + value
+            }.mkString(" AND ")
+            if (predicates.isEmpty) {
+              Map.empty[String, String]
+            } else {
+              Map(DeltaOptions.REPLACE_WHERE_OPTION -> predicates)
+            }
+          case _ =>
+            Map.empty[String, String]
+        }
         WriteIntoDelta(
           deltaLog = DeltaLog.this,
           mode = mode,
-          new DeltaOptions(Map.empty[String, String], spark.sessionState.conf),
+          new DeltaOptions(deltaOptions, spark.sessionState.conf, metrics),
           partitionColumns = Seq.empty,
           configuration = Map.empty,
           data = data).run(spark)
       }
+    }
+  }
+
+  def checkLogDirectoryExist(): Unit = {
+    if (!fs.exists(logPath)) {
+      throw new IOException(s"Log directory $logPath not exists")
     }
   }
 }

@@ -28,6 +28,7 @@ import org.apache.spark.sql.delta.sources.DeltaSQLConf
 
 import org.apache.spark.network.util.{ByteUnit, JavaUtils}
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 
 
@@ -50,6 +51,8 @@ trait DeltaWriteOptions
 
   val replaceWhere: Option[String] = options.get(REPLACE_WHERE_OPTION)
   val userMetadata: Option[String] = options.get(USER_METADATA_OPTION)
+
+  val writeMetrics = Map.empty[String, SQLMetric]
 
   /**
    * Whether to add an adaptive shuffle before writing out the files to break skew, and coalesce
@@ -131,6 +134,8 @@ trait DeltaReadOptions extends DeltaOptionParser {
 
   val startingTimestamp = options.get(STARTING_TIMESTAMP_OPTION)
 
+  val readMetrics = Map.empty[String, SQLMetric]
+
   private def provideOneStartingOption(): Unit = {
     if (startingTimestamp.isDefined && startingVersion.isDefined) {
       throw new IllegalArgumentException(
@@ -148,12 +153,18 @@ trait DeltaReadOptions extends DeltaOptionParser {
  */
 class DeltaOptions(
     @transient protected[delta] val options: CaseInsensitiveMap[String],
-    @transient protected val sqlConf: SQLConf)
+    @transient protected val sqlConf: SQLConf,
+    @transient override val readMetrics: Map[String, SQLMetric],
+    @transient override val writeMetrics: Map[String, SQLMetric])
   extends DeltaWriteOptions with DeltaReadOptions with Serializable {
 
   DeltaOptions.verifyOptions(options)
 
-  def this(options: Map[String, String], conf: SQLConf) = this(CaseInsensitiveMap(options), conf)
+  def this(options: Map[String, String], conf: SQLConf) =
+    this(CaseInsensitiveMap(options), conf, Map.empty, Map.empty)
+
+  def this(options: Map[String, String], conf: SQLConf, writeMetrics: Map[String, SQLMetric]) =
+    this(CaseInsensitiveMap(options), conf, Map.empty, writeMetrics)
 }
 
 object DeltaOptions extends DeltaLogging {

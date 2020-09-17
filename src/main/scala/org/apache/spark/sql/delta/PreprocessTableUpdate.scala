@@ -16,8 +16,7 @@
 
 package org.apache.spark.sql.delta
 
-import org.apache.spark.sql.delta.commands.UpdateCommand
-
+import org.apache.spark.sql.delta.commands.{UpdateCommand, UpdateWithJoinCommand}
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
 import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
 import org.apache.spark.sql.catalyst.plans.logical._
@@ -42,6 +41,13 @@ case class PreprocessTableUpdate(conf: SQLConf)
         }
       }
       toCommand(u)
+    case u: UpdateWithJoinTable if u.resolved =>
+      u.condition.foreach { cond =>
+        if (SubqueryExpression.hasSubquery(cond)) {
+          throw DeltaErrors.subqueryNotSupportedException("UPDATE", cond)
+        }
+      }
+      toCommand(u)
   }
 
   def toCommand(update: DeltaUpdateTable): UpdateCommand = {
@@ -56,5 +62,26 @@ case class PreprocessTableUpdate(conf: SQLConf)
     val alignedUpdateExprs = generateUpdateExpressions(
       update.child.output, targetColNameParts, update.updateExpressions, conf.resolver)
     UpdateCommand(index, update.child, alignedUpdateExprs, update.condition)
+  }
+
+  def toCommand(u: UpdateWithJoinTable): UpdateWithJoinCommand = {
+    val index = EliminateSubqueryAliases(u.target) match {
+      case DeltaFullTable(tahoeFileIndex) =>
+        tahoeFileIndex
+      case o =>
+        throw DeltaErrors.notADeltaSourceException("UPDATE", Some(o))
+    }
+
+    val resolveNameParts = u.updateColumns.map { col =>
+      DeltaUpdateTable.getTargetColNameParts(col, "")
+    }
+    val alignedUpdateExprs = generateUpdateExpressions(
+      u.target.output, resolveNameParts, u.updateExpressions, conf.resolver)
+    val alignedActions = alignedUpdateExprs.zip(u.target.output).map {
+      case (expr, attrib) => DeltaMergeAction(Seq(attrib.name), expr)
+    }
+    val update = u.updateClause.copy(u.updateClause.condition, alignedActions)
+
+    UpdateWithJoinCommand(u.source, u.target, index, u.condition, update)
   }
 }

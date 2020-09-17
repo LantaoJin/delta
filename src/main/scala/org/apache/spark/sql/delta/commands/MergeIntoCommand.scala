@@ -152,7 +152,7 @@ object MergeStats {
  * @param targetFileIndex   TahoeFileIndex of the target table
  * @param condition         Condition for a source row to match with a target row
  * @param matchedClauses    All info related to matched clauses.
- * @param notMatchedClause  All info related to not matched clause.
+ * @param notMatchedClauses  All info related to not matched clause.
  * @param migratedSchema    The final schema of the target - may be changed by schema evolution.
  */
 case class MergeIntoCommand(
@@ -190,6 +190,8 @@ case class MergeIntoCommand(
     "numTargetFilesRemoved" -> createMetric(sc, "number of files removed to target"),
     "numTargetFilesAdded" -> createMetric(sc, "number of files added to target"))
 
+  val targetTable = getCatalogTableFromTargetPlan(target)
+
   override def run(
     spark: SparkSession): Seq[Row] = recordDeltaOperation(targetDeltaLog, "delta.dml.merge") {
     targetDeltaLog.withNewTransaction { deltaTxn =>
@@ -223,7 +225,8 @@ case class MergeIntoCommand(
         DeltaOperations.Merge(
           Option(condition.sql),
           matchedClauses.map(DeltaOperations.MergePredicate(_)),
-          notMatchedClauses.map(DeltaOperations.MergePredicate(_))))
+          notMatchedClauses.map(DeltaOperations.MergePredicate(_))),
+        targetTable)
 
       // Record metrics
       val stats = MergeStats(
@@ -303,7 +306,7 @@ case class MergeIntoCommand(
     // Calculate frequency of matches per source row
     val matchedRowCounts = collectTouchedFiles.groupBy(ROW_ID_COL).agg(sum("one").as("count"))
     if (matchedRowCounts.filter("count > 1").count() != 0) {
-      throw DeltaErrors.multipleSourceRowMatchingTargetRowInMergeException(spark)
+      throw DeltaErrors.multipleSourceRowMatchingTargetRowException(spark, "MERGE")
     }
 
     // Get the AddFiles using the touched file names.
@@ -311,7 +314,7 @@ case class MergeIntoCommand(
     logTrace(s"findTouchedFiles: matched files:\n\t${touchedFileNames.mkString("\n\t")}")
 
     val nameToAddFileMap = generateCandidateFileMap(targetDeltaLog.dataPath, dataSkippedFiles)
-    val touchedAddFiles = touchedFileNames.map(f =>
+    val touchedAddFiles = touchedFileNames.filter(_.nonEmpty).map(f =>
       getTouchedFile(targetDeltaLog.dataPath, f, nameToAddFileMap))
 
     metrics("numTargetFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
@@ -361,8 +364,9 @@ case class MergeIntoCommand(
     val insertDf = sourceDF.join(targetDF, new Column(condition), "leftanti")
       .select(outputCols: _*)
 
-    val newFiles = deltaTxn
-      .writeFiles(repartitionIfNeeded(spark, insertDf, deltaTxn.metadata.partitionColumns))
+    val options = new DeltaOptions(Map.empty[String, String], spark.sessionState.conf, metrics)
+    val newFiles = deltaTxn.writeFiles(
+      repartitionIfNeeded(spark, insertDf, deltaTxn.metadata.partitionColumns), Some(options))
     metrics("numTargetFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
     metrics("numTargetFilesAfterSkipping") += dataSkippedFiles.size
     metrics("numTargetFilesRemoved") += 0
@@ -469,8 +473,9 @@ case class MergeIntoCommand(
     logDebug("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
 
     // Write to Delta
-    val newFiles = deltaTxn
-      .writeFiles(repartitionIfNeeded(spark, outputDF, deltaTxn.metadata.partitionColumns))
+    val options = new DeltaOptions(Map.empty[String, String], spark.sessionState.conf, metrics)
+    val newFiles = deltaTxn.writeFiles(
+      repartitionIfNeeded(spark, outputDF, deltaTxn.metadata.partitionColumns), Some(options))
     metrics("numTargetFilesAdded") += newFiles.size
     newFiles
   }
@@ -484,7 +489,8 @@ case class MergeIntoCommand(
   private def buildTargetPlanWithFiles(
     deltaTxn: OptimisticTransaction,
     files: Seq[AddFile]): LogicalPlan = {
-    val plan = deltaTxn.deltaLog.createDataFrame(deltaTxn.snapshot, files).queryExecution.analyzed
+    val plan = deltaTxn.deltaLog.createDataFrame(deltaTxn.snapshot, files, table = targetTable)
+      .queryExecution.analyzed
 
     // For each plan output column, find the corresponding target output column (by name) and
     // create an alias

@@ -49,4 +49,16 @@ trait SQLMetricsReporting {
   def getMetricsForOperation(operation: Operation): Map[String, String] = {
     operation.transformMetrics(operationSQLMetrics)
   }
+
+  /**
+   * Fill missing metrics to the second parameter
+   */
+  def fillMissingMetrics(
+      operation: Operation, metrics: Map[String, SQLMetric]): Map[String, SQLMetric] = {
+    val metricsMap = operation.transformMetrics(metrics)
+    metrics.foreach {
+      case (key, sqlMetric) => if (sqlMetric.isZero()) sqlMetric.set(metricsMap(key).toLong)
+    }
+    metrics
+  }
 }

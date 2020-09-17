@@ -16,11 +16,10 @@
 
 package org.apache.spark.sql.delta.commands
 
-import org.apache.spark.sql.delta.{DeltaLog, DeltaOperations, DeltaTableUtils, OptimisticTransaction}
+import org.apache.spark.sql.delta.{DeltaLog, DeltaOperations, DeltaOptions, DeltaTableUtils, OptimisticTransaction}
 import org.apache.spark.sql.delta.actions.{Action, AddFile}
 import org.apache.spark.sql.delta.files.{TahoeBatchFileIndex, TahoeFileIndex}
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Expression, If, Literal}
@@ -53,10 +52,14 @@ case class UpdateCommand(
 
   @transient private lazy val sc: SparkContext = SparkContext.getOrCreate()
 
+  val targetTable = getCatalogTableFromTargetPlan(target)
+
   override lazy val metrics = Map[String, SQLMetric](
     "numAddedFiles" -> createMetric(sc, "number of files added."),
     "numRemovedFiles" -> createMetric(sc, "number of files removed."),
-    "numUpdatedRows" -> createMetric(sc, "number of rows updated.")
+    "numUpdatedRows" -> createMetric(sc, "number of rows updated."),
+    "numOutputRows" -> createMetric(sc, "number of output rows"),
+    "numCopiedRows" -> createMetric(sc, "number of copied rows")
   )
 
   final override def run(sparkSession: SparkSession): Seq[Row] = {
@@ -120,7 +123,7 @@ case class UpdateCommand(
         sparkSession, "update", candidateFiles, deltaLog, tahoeFileIndex.path, txn.snapshot)
       // Keep everything from the resolved target except a new TahoeFileIndex
       // that only involves the affected files instead of all files.
-      val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex)
+      val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex, targetTable)
       val data = Dataset.ofRows(sparkSession, newTarget)
       val updatedRowCount = metrics("numUpdatedRows")
       val updatedRowUdf = udf { () =>
@@ -164,7 +167,12 @@ case class UpdateCommand(
       metrics("numAddedFiles").set(numRewrittenFiles)
       metrics("numRemovedFiles").set(numTouchedFiles)
       txn.registerSQLMetrics(sparkSession, metrics)
-      txn.commit(actions, DeltaOperations.Update(condition.map(_.toString)))
+      val operation = DeltaOperations.Update(condition.map(_.toString))
+      txn.commit(actions, operation)
+
+      // fill missing metrics
+      txn.fillMissingMetrics(operation, metrics)
+
       // This is needed to make the SQL metrics visible in the Spark UI
       val executionId = sparkSession.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       SQLMetrics.postDriverMetricUpdates(
@@ -197,14 +205,20 @@ case class UpdateCommand(
     // Containing the map from the relative file path to AddFile
     val baseRelation = buildBaseRelation(
       spark, txn, "update", rootPath, inputLeafFiles, nameToAddFileMap)
-    val newTarget = DeltaTableUtils.replaceFileIndex(target, baseRelation.location)
+    val newTarget = DeltaTableUtils.replaceFileIndex(target, baseRelation.location, targetTable)
     val targetDf = Dataset.ofRows(spark, newTarget)
     val updatedDataFrame = {
       val updatedColumns = buildUpdatedColumns(condition)
       targetDf.select(updatedColumns: _*)
     }
 
-    txn.writeFiles(updatedDataFrame)
+    val options = new DeltaOptions(Map.empty[String, String], spark.sessionState.conf, metrics)
+
+    // Add a InsertIntoDataSource node to reuse the processing on node InsertIntoDataSource.
+    val normalized = convertToInsertIntoDataSource(
+      conf, target, updatedDataFrame.queryExecution.logical)
+    val normalizedDF = Dataset.ofRows(spark, normalized)
+    txn.writeFiles(normalizedDF, Some(options))
   }
 
   /**

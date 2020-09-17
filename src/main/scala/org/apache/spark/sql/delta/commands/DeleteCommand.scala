@@ -53,6 +53,8 @@ case class DeleteCommand(
 
   @transient private lazy val sc: SparkContext = SparkContext.getOrCreate()
 
+  val targetTable = getCatalogTableFromTargetPlan(target)
+
   override lazy val metrics = Map[String, SQLMetric](
     "numRemovedFiles" -> createMetric(sc, "number of files removed."),
     "numAddedFiles" -> createMetric(sc, "number of files added."),
@@ -94,6 +96,10 @@ case class DeleteCommand(
         numTouchedFiles = allFiles.size
         scanTimeMs = (System.nanoTime() - startTime) / 1000 / 1000
 
+        // to get the number deleted rows for entire table
+        val data = Dataset.ofRows(sparkSession, target)
+        metrics("numDeletedRows").set(data.count())
+
         val operationTimestamp = System.currentTimeMillis()
         metrics("numRemovedFiles").set(allFiles.size)
         allFiles.map(_.removeWithTimestamp(operationTimestamp))
@@ -112,6 +118,16 @@ case class DeleteCommand(
           numTouchedFiles = candidateFiles.size
 
           metrics("numRemovedFiles").set(numTouchedFiles)
+
+          // To get the number deleted rows for partition
+          val fileIndex = new TahoeBatchFileIndex(
+            sparkSession, "delete", candidateFiles, deltaLog, tahoeFileIndex.path, txn.snapshot)
+          // Keep everything from the resolved target except a new TahoeFileIndex
+          // that only involves the affected files instead of all files.
+          val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex, targetTable)
+          val partitioned = Dataset.ofRows(sparkSession, newTarget)
+          metrics("numDeletedRows").set(partitioned.count())
+
           candidateFiles.map(_.removeWithTimestamp(operationTimestamp))
         } else {
           // Case 3: Delete the rows based on the condition.
@@ -124,7 +140,7 @@ case class DeleteCommand(
             sparkSession, "delete", candidateFiles, deltaLog, tahoeFileIndex.path, txn.snapshot)
           // Keep everything from the resolved target except a new TahoeFileIndex
           // that only involves the affected files instead of all files.
-          val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex)
+          val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex, targetTable)
           val data = Dataset.ofRows(sparkSession, newTarget)
           val deletedRowCount = metrics("numDeletedRows")
           val deletedRowUdf = udf { () =>
@@ -156,15 +172,21 @@ case class DeleteCommand(
               sparkSession, txn, "delete", tahoeFileIndex.path, filesToRewrite, nameToAddFileMap)
             // Keep everything from the resolved target except a new TahoeFileIndex
             // that only involves the affected files instead of all files.
-            val newTarget = DeltaTableUtils.replaceFileIndex(target, baseRelation.location)
+            val newTarget = DeltaTableUtils.replaceFileIndex(
+              target, baseRelation.location, targetTable)
 
+            val options =
+              new DeltaOptions(Map.empty[String, String], sparkSession.sessionState.conf, metrics)
             val targetDF = Dataset.ofRows(sparkSession, newTarget)
             val filterCond = Not(EqualNullSafe(cond, Literal(true, BooleanType)))
             val updatedDF = targetDF.filter(new Column(filterCond))
 
+            val normalized = convertToInsertIntoDataSource(
+              conf, target, updatedDF.queryExecution.logical)
+            val normalizedDF = Dataset.ofRows(sparkSession, normalized)
             val rewrittenFiles = withStatusCode(
               "DELTA", s"Rewriting ${filesToRewrite.size} files for DELETE operation") {
-              txn.writeFiles(updatedDF)
+              txn.writeFiles(normalizedDF, Some(options))
             }
 
             numRewrittenFiles = rewrittenFiles.size
@@ -179,7 +201,8 @@ case class DeleteCommand(
     if (deleteActions.nonEmpty) {
       metrics("numAddedFiles").set(numRewrittenFiles)
       txn.registerSQLMetrics(sparkSession, metrics)
-      txn.commit(deleteActions, DeltaOperations.Delete(condition.map(_.sql).toSeq))
+
+      txn.commit(deleteActions, DeltaOperations.Delete(condition.map(_.sql).toSeq), targetTable)
       // This is needed to make the SQL metrics visible in the Spark UI
       val executionId = sparkSession.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       SQLMetrics.postDriverMetricUpdates(

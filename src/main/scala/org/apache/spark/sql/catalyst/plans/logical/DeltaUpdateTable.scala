@@ -17,7 +17,7 @@
 package org.apache.spark.sql.catalyst.plans.logical
 
 import org.apache.spark.sql.AnalysisException
-import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.catalyst.analysis.{UnresolvedAttribute, UnresolvedStar}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, ExtractValue, GetStructField, NamedExpression}
 
 /**
@@ -37,6 +37,20 @@ case class DeltaUpdateTable(
 
   assert(updateColumns.size == updateExpressions.size)
 
+  override def output: Seq[Attribute] = Seq.empty
+}
+
+case class UpdateWithJoinTable(
+  target: LogicalPlan,
+  source: LogicalPlan,
+  updateColumns: Seq[NamedExpression],
+  updateExpressions: Seq[Expression],
+  condition: Option[Expression],
+  updateClause: DeltaMergeIntoUpdateClause) extends Command {
+
+  assert(updateColumns.size == updateExpressions.size)
+
+  override def children: Seq[LogicalPlan] = Seq(target, source)
   override def output: Seq[Attribute] = Seq.empty
 }
 
@@ -82,5 +96,16 @@ object DeltaUpdateTable {
     }
 
     extractRecursively(resolvedTargetCol)
+  }
+
+  def toActionFromAssignments(
+      assignments: Seq[Assignment],
+      isEmptySeqEqualToStar: Boolean = true): Seq[Expression] = {
+    if (assignments.isEmpty && isEmptySeqEqualToStar) {
+      Seq[Expression](UnresolvedStar(None))
+    } else {
+      assignments.map(a =>
+        DeltaMergeAction(Seq(a.key.asInstanceOf[AttributeReference].name), a.value))
+    }
   }
 }

@@ -18,22 +18,24 @@ package org.apache.spark.sql.delta.commands
 
 import scala.util.control.NonFatal
 
-import org.apache.spark.sql.delta.{ConcurrentWriteException, DeltaErrors, DeltaLog, DeltaOperations, OptimisticTransaction, Serializable}
+import org.apache.hadoop.fs.Path
+
+import org.apache.spark.sql.delta.{ConcurrentWriteException, DeltaLog, DeltaOperations, OptimisticTransaction, Serializable}
 import org.apache.spark.sql.delta.actions._
 import org.apache.spark.sql.delta.files.TahoeBatchFileIndex
 import org.apache.spark.sql.delta.metering.DeltaLogging
-import org.apache.spark.sql.delta.sources.{DeltaSourceUtils, DeltaSQLConf}
+import org.apache.spark.sql.delta.sources.{DeltaSQLConf, DeltaSourceUtils}
 import org.apache.spark.sql.delta.util.DeltaFileOperations
 import org.apache.spark.sql.delta.util.FileNames.deltaFile
-import org.apache.hadoop.fs.Path
-
-import org.apache.spark.sql.{AnalysisException, SparkSession}
+import org.apache.spark.sql.{AnalysisException, Column, DataFrame, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.{Analyzer, EliminateSubqueryAliases, NoSuchTableException, UnresolvedRelation}
-import org.apache.spark.sql.catalyst.expressions.{Expression, SubqueryExpression}
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
+import org.apache.spark.sql.catalyst.expressions.{And, Expression, SubqueryExpression}
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, LogicalRelation}
+import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InsertIntoDataSource, LogicalRelation}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.util.Utils
 
 /**
@@ -109,7 +111,7 @@ trait DeltaCommand extends DeltaLogging {
       nameToAddFileMap: Map[String, AddFile],
       filesToRewrite: Seq[String],
       operationTimestamp: Long): Seq[RemoveFile] = {
-    filesToRewrite.map { absolutePath =>
+    filesToRewrite.filter(_.nonEmpty).map { absolutePath =>
       val addFile = getTouchedFile(deltaLog.dataPath, absolutePath, nameToAddFileMap)
       addFile.removeWithTimestamp(operationTimestamp)
     }
@@ -127,7 +129,9 @@ trait DeltaCommand extends DeltaLogging {
       inputLeafFiles: Seq[String],
       nameToAddFileMap: Map[String, AddFile]): HadoopFsRelation = {
     val deltaLog = txn.deltaLog
-    val scannedFiles = inputLeafFiles.map(f => getTouchedFile(rootPath, f, nameToAddFileMap))
+    val scannedFiles = inputLeafFiles.filter(_.nonEmpty).map {
+      f => getTouchedFile(rootPath, f, nameToAddFileMap)
+    }
     val fileIndex = new TahoeBatchFileIndex(
       spark, actionType, scannedFiles, deltaLog, rootPath, txn.snapshot)
     HadoopFsRelation(
@@ -284,6 +288,65 @@ trait DeltaCommand extends DeltaLogging {
           "delta.commitLarge.failure",
           data = Map("exception" -> Utils.exceptionString(e), "operation" -> op.name))
         throw e
+    }
+  }
+
+  protected def getCatalogTableFromTargetPlan(target: LogicalPlan): Option[CatalogTable] = {
+    target.collectFirst {
+      case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
+    }
+  }
+
+  protected def addFilterPushdown(df: DataFrame, predicates: Seq[Expression]): DataFrame = {
+    predicates.reduceLeftOption(And).map(f => df.filter(Column(f))).getOrElse(df)
+  }
+
+  protected def convertToInsertIntoDataSource(
+      conf: SQLConf, target: LogicalPlan, origin: LogicalPlan): LogicalPlan = {
+    try {
+      val targetRelation = target.collectFirst {
+        case r: LogicalRelation => r
+      }
+      if (targetRelation.isEmpty) {
+        throw new IllegalStateException("Table not exist!")
+      }
+      val table = targetRelation.head.catalogTable.
+        getOrElse(throw new IllegalStateException("Table not exist!"))
+      val partitionAttrs = table.partitionColumnNames.map { col =>
+        origin.output.resolve(col :: Nil, conf.resolver).
+          getOrElse(throw new AnalysisException(s"Cannot resolve column $col " +
+            s"in attributes ${target.output.map(_.name).mkString(",")}"))
+      }.map(_.toAttribute)
+
+      InsertIntoDataSource(targetRelation.head, origin,
+        overwrite = false, Map.empty, partitionAttrs, table.bucketSpec)
+    } catch {
+      case _: IllegalStateException =>
+        target
+    }
+  }
+
+  protected def convertToInsertIntoDataSource(
+      metadata: Metadata, conf: SQLConf, data: DataFrame): LogicalPlan = {
+    val origin = data.queryExecution.logical
+    try {
+      val targetRelation = origin.collectFirst {
+        case r: LogicalRelation => r
+      }
+      if (targetRelation.isEmpty) {
+        throw new IllegalStateException("Table not exist!")
+      }
+      val partitionAttrs = metadata.partitionColumns.map { col =>
+        origin.output.resolve(col :: Nil, conf.resolver).
+          getOrElse(throw new AnalysisException(s"Cannot resolve column $col " +
+            s"in attributes ${origin.output.map(_.name).mkString(",")}"))
+      }.map(_.toAttribute)
+
+      InsertIntoDataSource(targetRelation.head, origin,
+        overwrite = false, Map.empty, partitionAttrs, metadata.bucketSpec)
+    } catch {
+      case _: IllegalStateException =>
+        origin
     }
   }
 }

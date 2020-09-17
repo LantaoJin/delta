@@ -122,4 +122,9 @@ class HDFSLogStore(sparkConf: SparkConf, defaultHadoopConf: Configuration)
   }
 
   override def isPartialWriteVisible(path: Path): Boolean = true
+
+  override def delete(paths: Traversable[Path], recursive: Boolean): Unit = {
+    val fc = getFileContext(paths.head)
+    paths.foreach(fc.delete(_, recursive))
+  }
 }

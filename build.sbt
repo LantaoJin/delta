@@ -29,6 +29,9 @@ libraryDependencies ++= Seq(
   "org.apache.spark" %% "spark-core" % sparkVersion.value % "provided",
   "org.apache.spark" %% "spark-catalyst" % sparkVersion.value % "provided",
 
+  // deps
+  "mysql" % "mysql-connector-java" % "5.1.38" % "provided",
+
   // Test deps
   "org.scalatest" %% "scalatest" % "3.0.5" % "test",
   "junit" % "junit" % "4.12" % "test",
@@ -250,3 +253,9 @@ resolvers ++= Seq(
   "ebaycentral.snapshots" at "http://ebaycentral.qa.ebay.com/content/repositories/snapshots",
   "ebaycentral.releases"  at "http://ebaycentral.qa.ebay.com/content/repositories/releases"
 )
+
+publishTo := Some(
+  "ebaycentral.snapshots" at "http://ebaycentral.qa.ebay.com/content/repositories/snapshots"
+)
+
+credentials += Credentials(Path.userHome / ".sbt" / ".credentials")

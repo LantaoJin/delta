@@ -195,7 +195,7 @@ case class CreateDeltaTableCommand(
       val tableWithDefaultOptions = tableWithLocation.copy(
         schema = new StructType(),
         partitionColumnNames = Nil,
-        tracksPartitionsInCatalog = true)
+        tracksPartitionsInCatalog = false) // delta table won't use catalog any more
       logInfo(s"Table is path-based table: $tableByPath. Update catalog with mode: $operation")
       updateCatalog(sparkSession, tableWithDefaultOptions)
 

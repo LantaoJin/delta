@@ -16,6 +16,8 @@
 
 package org.apache.spark.sql.delta.sources
 
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
+
 import scala.util.{Failure, Success, Try}
 
 // scalastyle:off import.ordering.noEmptyLine
@@ -168,6 +170,25 @@ class DeltaDataSource
     DeltaTableV2(
       sqlContext.sparkSession,
       new Path(maybePath),
+      timeTravelOpt = timeTravelByParams).toBaseRelation
+  }
+
+  override def createRelation(
+      sqlContext: SQLContext,
+      parameters: Map[String, String],
+      catalogTable: Option[CatalogTable]): BaseRelation = {
+    val maybePath = parameters.getOrElse("path", {
+      throw DeltaErrors.pathNotSpecifiedException
+    })
+
+    // Log any invalid options that are being passed in
+    DeltaOptions.verifyOptions(CaseInsensitiveMap(parameters))
+
+    val timeTravelByParams = DeltaDataSource.getTimeTravelVersion(parameters)
+    DeltaTableV2(
+      sqlContext.sparkSession,
+      new Path(maybePath),
+      catalogTable,
       timeTravelOpt = timeTravelByParams).toBaseRelation
   }
 

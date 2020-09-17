@@ -587,16 +587,16 @@ object DeltaErrors
         + unknownColumns.mkString(", "))
   }
 
-  def multipleSourceRowMatchingTargetRowInMergeException(spark: SparkSession): Throwable = {
+  def multipleSourceRowMatchingTargetRowException(spark: SparkSession,
+      op: String, detailInfo: String = ""): Throwable = {
     new UnsupportedOperationException(
-      s"""Cannot perform MERGE as multiple source rows matched and attempted to update the same
+      s"""Cannot perform $op as multiple source rows matched and attempted to update the same
          |target row in the Delta table. By SQL semantics of merge, when multiple source rows match
          |on the same target row, the update operation is ambiguous as it is unclear which source
          |should be used to update the matching target row.
+         |$detailInfo
          |You can preprocess the source table to eliminate the possibility of multiple matches.
-         |Please refer to
-         |${generateDocsLink(spark.sparkContext.getConf,
-        "/delta-update.html#upsert-into-a-table-using-merge")}""".stripMargin
+       """.stripMargin
     )
   }
 
@@ -809,6 +809,15 @@ object DeltaErrors
   def convertNonParquetTablesException(ident: TableIdentifier, sourceName: String): Throwable = {
     new AnalysisException("CONVERT TO DELTA only supports parquet tables, but you are trying to " +
       s"convert a $sourceName source: $ident")
+  }
+
+  def convertBackNonDeltaTablesException(ident: TableIdentifier, sourceName: String): Throwable = {
+    new AnalysisException("CONVERT TO PARQUET only supports delta tables, but you are trying to " +
+      s"convert a $sourceName source: $ident")
+  }
+
+  def unsupportedInHiveMetastoreException(dir: String): Throwable = {
+    new AnalysisException(s"$dir has no related metadata in Hive Metastore")
   }
 
   def unexpectedPartitionColumnFromFileNameException(

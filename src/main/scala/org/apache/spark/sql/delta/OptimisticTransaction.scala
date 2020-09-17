@@ -34,10 +34,10 @@ import org.apache.spark.sql.delta.schema.SchemaUtils
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.hadoop.fs.Path
 
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{AnalysisException, SparkSession}
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
+import org.apache.spark.sql.execution.command.CommandUtils
 import org.apache.spark.util.{Clock, Utils}
 
 /** Record metrics about a successful commit. */
@@ -333,7 +333,8 @@ trait OptimisticTransactionImpl extends TransactionalWrite with SQLMetricsReport
    * @param op          Details of operation that is performing this transactional commit
    */
   @throws(classOf[ConcurrentModificationException])
-  def commit(actions: Seq[Action], op: DeltaOperations.Operation): Long = recordDeltaOperation(
+  def commit(actions: Seq[Action], op: DeltaOperations.Operation,
+      catalogTable: Option[CatalogTable] = None): Long = recordDeltaOperation(
       deltaLog,
       "delta.commit") {
     commitStartNano = System.nanoTime()
@@ -384,6 +385,8 @@ trait OptimisticTransactionImpl extends TransactionalWrite with SQLMetricsReport
       val commitVersion = doCommit(snapshot.version + 1, finalActions, 0, isolationLevelToUse)
       logInfo(s"Committed delta #$commitVersion to ${deltaLog.logPath}")
       postCommit(commitVersion, finalActions)
+
+      catalogTable.foreach(CommandUtils.updateTableStats(spark, _))
       commitVersion
     } catch {
       case e: DeltaConcurrentModificationException =>

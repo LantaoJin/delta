@@ -88,9 +88,9 @@ object DeltaOperations {
       if (strMetrics("numDeletedRows") == "0" && strMetrics("numRemovedFiles") != "0") {
         // identify when row level metrics are unavailable. This will happen when the entire
         // table or partition are deleted.
-        strMetrics -= "numDeletedRows"
-        strMetrics -= "numCopiedRows"
-        strMetrics -= "numAddedFiles"
+        strMetrics += "numDeletedRows" -> metrics("numOutputRows").value.toString
+//        strMetrics -= "numCopiedRows"
+//        strMetrics -= "numAddedFiles"
       }
       strMetrics
     }
@@ -371,7 +371,8 @@ private[delta] object DeltaOperationMetrics {
     "numAddedFiles", // number of files added
     "numRemovedFiles", // number of files removed
     "numDeletedRows", // number of rows removed
-    "numCopiedRows" // number of rows copied in the process of deleting files
+    "numCopiedRows", // number of rows copied in the process of deleting files
+    "numOutputRows"
   )
 
   /** Deleting the entire table or partition would prevent row level metrics from being recorded */
