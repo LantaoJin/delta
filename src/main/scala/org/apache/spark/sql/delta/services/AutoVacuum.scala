@@ -22,7 +22,7 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.util.Random
 
-import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.{FileSystem, Path}
 
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.deploy.SparkHadoopUtil
@@ -33,7 +33,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.delta.{DeltaLog, DeltaTableUtils}
 import org.apache.spark.sql.delta.commands.VacuumCommand
 import org.apache.spark.sql.delta.services.DeltaTableMetadata._
-import org.apache.spark.sql.delta.services.ui.DeltaTab
+import org.apache.spark.sql.delta.services.ui.{DeltaTab, VacuumingInfo}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.execution.command.{CommandUtils, DDLUtils}
 import org.apache.spark.sql.internal.StaticSQLConf
@@ -100,27 +100,6 @@ class AutoVacuum(ctx: SparkContext) extends Logging {
 }
 
 /**
- * Vacuum a delta table periodically.
- */
-class VacuumTask(table: DeltaTableMetadata) extends Runnable with Logging {
-  private val spark = SparkSession.getDefaultSession.get
-
-  override def run(): Unit = {
-    val catalogTable = spark.sessionState.catalog.getTableMetadata(table.identifier)
-    if (DDLUtils.isTemporaryTable(catalogTable)) {
-      logInfo(s"Skip vacuum temporary table ${table.identifier.unquotedString}")
-      return
-    }
-    val deltaLog = DeltaLog.forTable(spark, catalogTable)
-    logInfo(s"Start vacuum ${table.identifier.unquotedString} retain ${table.retention} hours")
-    VacuumCommand.gc(spark, deltaLog, dryRun = false, Some(table.retention.toDouble),
-      safetyCheckEnabled = false)
-    CommandUtils.updateTableStats(spark, catalogTable)
-    logInfo(s"End vacuum ${table.identifier.unquotedString} retain ${table.retention} hours")
-  }
-}
-
-/**
  * Validate the table from [[DELTA_META_TABLE_IDENTIFIER]].
  * If it is a new delta table and with vacuum enabled, add it to vacuuming and vacuumPool.
  * If it is an expired delta table (dropped or convert back to parquet),
@@ -131,6 +110,9 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
   // visible for testing, delta entity -> vacuum task future
   private[sql] lazy val deltaTableToVacuumTask =
     new ConcurrentHashMap[DeltaTableMetadata, Option[ScheduledFuture[_]]]().asScala
+
+  private[sql] lazy val vacuumHistory =
+    new ConcurrentHashMap[DeltaTableMetadata, VacuumingInfo]().asScala
 
   private[sql] var lastUpdatedTime = "Waiting for update"
 
@@ -197,6 +179,7 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
       // It has been dropped or is not a delta table any more,
       // we should delete it from DELTA_META_TABLE
       deltaTableToVacuumTask.remove(meta).foreach(_.foreach(_.cancel(true)))
+      vacuumHistory.remove(meta)
       if (deleteDb) {
         val deltaMetaTable = deltaMetaTableIdentifier(conf)
         if (deleteFromMetadataTable(spark, meta)) {
@@ -235,6 +218,52 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
     DateTimeUtils.timestampToString(
       DateTimeUtils.fromJavaTimestamp(new java.sql.Timestamp(System.currentTimeMillis()))) + " " +
       DateTimeUtils.defaultTimeZone().getID
+  }
+
+  /**
+   * Vacuum a delta table periodically.
+   */
+  class VacuumTask(table: DeltaTableMetadata) extends Runnable with Logging {
+    private val spark = SparkSession.getDefaultSession.get
+
+    override def run(): Unit = {
+      val catalogTable = spark.sessionState.catalog.getTableMetadata(table.identifier)
+      if (DDLUtils.isTemporaryTable(catalogTable)) {
+        logInfo(s"Skip vacuum temporary table ${table.identifier.unquotedString}")
+        return
+      }
+      val deltaLog = DeltaLog.forTable(spark, catalogTable)
+      val sessionHadoopConf = spark.sessionState.newHadoopConf()
+      val fs = deltaLog.dataPath.getFileSystem(sessionHadoopConf)
+
+      val start = getCurrentTimestampString
+      val (quotaUsageBefore, sizeBefore, fileCountBefore) = statistics(fs, deltaLog)
+      val vacuumingInfoBefore = VacuumingInfo(table.db, table.tbl, quotaUsageBefore,
+        sizeBefore, -1L, fileCountBefore, -1L, start, null)
+      vacuumHistory(table) = vacuumingInfoBefore
+
+      logInfo(s"Start vacuum ${table.identifier.unquotedString} retain ${table.retention} hours")
+      VacuumCommand.gc(spark, deltaLog, dryRun = false, Some(table.retention.toDouble),
+        safetyCheckEnabled = false)
+      CommandUtils.updateTableStats(spark, catalogTable)
+      logInfo(s"End vacuum ${table.identifier.unquotedString} retain ${table.retention} hours")
+
+      val end = getCurrentTimestampString
+      val (quotaUsageAfter, sizeAfter, fileCountAfter) = statistics(fs, deltaLog)
+      val vacuumingInfoAfter = VacuumingInfo(table.db, table.tbl, quotaUsageAfter,
+        sizeBefore, sizeAfter, fileCountBefore, fileCountAfter, start, end)
+      vacuumHistory(table) = vacuumingInfoAfter
+    }
+
+    private def statistics(fs: FileSystem, deltaLog: DeltaLog): (Double, Long, Long) = {
+      val parentPath = deltaLog.dataPath.getParent
+      val parentSummary = fs.getContentSummary(parentPath)
+      val quotaUsage = parentSummary.getSpaceConsumed / parentSummary.getSpaceQuota * 100.0D
+      val summary = fs.getContentSummary(deltaLog.dataPath)
+      val size = summary.getLength
+      val fileCount = summary.getFileCount
+      (quotaUsage, size, fileCount)
+    }
   }
 }
 

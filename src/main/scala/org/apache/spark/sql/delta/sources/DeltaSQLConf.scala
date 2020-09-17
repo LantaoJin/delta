@@ -298,7 +298,7 @@ object DeltaSQLConf {
   val AUTO_VACUUM_INTERVAL = buildStaticConf("vacuum.schedule.interval")
     .doc("The interval hours of a vacuum task is scheduled. The default value is 24 hours.")
     .timeConf(TimeUnit.SECONDS)
-    .createWithDefault(24 * 3600)
+    .createWithDefault(12 * 3600)
 
   val VALIDATOR_INTERVAL = buildStaticConf("validator.schedule.interval")
     .doc("The interval of delta table validator thread is scheduled.")
@@ -308,5 +308,5 @@ object DeltaSQLConf {
   val DOUBLE_CHECK_INTERVAL = buildStaticConf("doubleChecker.schedule.interval")
     .doc("The interval of delta table double checker thread is scheduled.")
     .timeConf(TimeUnit.SECONDS)
-    .createWithDefault(6 * 3600) // 6 hours by default
+    .createWithDefault(3 * 3600) // 6 hours by default
 }

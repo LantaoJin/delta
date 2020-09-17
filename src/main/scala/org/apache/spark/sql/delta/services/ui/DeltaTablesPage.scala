@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-
 package org.apache.spark.sql.delta.services.ui
 
+import scala.collection.mutable
 import scala.xml.Node
 
 import javax.servlet.http.HttpServletRequest
@@ -30,9 +30,20 @@ private[ui] class DeltaTablesPage(parent: DeltaTab) extends WebUIPage("") with L
     parent.validate.deltaTableToVacuumTask.keySet.toSeq
   }
 
+  def vacuuming: Seq[VacuumingInfo] = {
+    parent.validate.vacuumHistory.values.filter(_.end == null).toSeq
+  }
+
+  def vacuumHistory: Seq[VacuumingInfo] = {
+    parent.validate.vacuumHistory.values.filter(_.end != null).toSeq
+  }
+
   override def render(request: HttpServletRequest): Seq[Node] = {
-    val content =
+    val content = mutable.ListBuffer[Node]()
+    content ++= new VacuumHistory(parent, vacuuming, "in vacuuming").toNodeSeq
+    content ++= new VacuumHistory(parent, vacuumHistory, "in vacuum history").toNodeSeq
+    content ++=
       new AllTables(parent, deltaTables.sortBy(_.db), parent.validate.lastUpdatedTime).toNodeSeq
-    UIUtils.headerSparkPage("Delta Tables", content, parent)
+    UIUtils.headerSparkPage("Delta Tables", content.toSeq, parent)
   }
 }
