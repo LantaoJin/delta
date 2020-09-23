@@ -18,6 +18,8 @@ package org.apache.spark.sql.delta.catalog
 
 import java.{util => ju}
 
+import org.apache.spark.sql.types.IntegerType
+
 // scalastyle:off import.ordering.noEmptyLine
 import scala.collection.JavaConverters._
 import scala.collection.mutable
@@ -101,9 +103,13 @@ case class DeltaTableV2(
   override def schema(): StructType = snapshot.schema
 
   override def partitioning(): Array[Transform] = {
-    snapshot.metadata.partitionColumns.map { col =>
+    (snapshot.metadata.partitionColumns.map { col =>
       new IdentityTransform(new FieldReference(Seq(col)))
-    }.toArray
+    } ++
+    snapshot.metadata.bucketSpec.map { spec =>
+      new BucketTransform(LiteralValue(spec.numBuckets, IntegerType),
+        spec.bucketColumnNames.map(FieldReference(_)))
+    }).toArray
   }
 
   override def properties(): ju.Map[String, String] = {
@@ -182,6 +188,7 @@ private class WriteIntoDeltaBuilder(
           if (forceOverwrite) SaveMode.Overwrite else SaveMode.Append,
           new DeltaOptions(options.toMap, session.sessionState.conf, metrics),
           Nil,
+          None,
           log.snapshot.metadata.configuration,
           data).run(session)
 

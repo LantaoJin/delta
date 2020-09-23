@@ -87,7 +87,8 @@ abstract class DeltaNotSupportedDDLBase extends QueryTest
     assert(outputStream.toString.contains("The request is ignored"))
   }
 
-  test("bucketing is not supported for delta tables") {
+  // we support bucketing delta table
+  ignore("bucketing is not supported for delta tables") {
     withTable("tbl") {
       assertUnsupported(
         s"""

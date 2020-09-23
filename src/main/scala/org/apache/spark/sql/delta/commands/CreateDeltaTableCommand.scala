@@ -125,6 +125,7 @@ case class CreateDeltaTableCommand(
             mode = mode,
             options,
             partitionColumns = table.partitionColumnNames,
+            bucket = table.bucketSpec,
             configuration = table.properties,
             data = data).write(txn, sparkSession)
 
@@ -208,7 +209,8 @@ case class CreateDeltaTableCommand(
       description = table.comment.orNull,
       schemaString = schemaString,
       partitionColumns = table.partitionColumnNames,
-      configuration = table.properties)
+      configuration = table.properties,
+      bucketSpec = table.bucketSpec)
   }
 
   private def assertPathEmpty(
