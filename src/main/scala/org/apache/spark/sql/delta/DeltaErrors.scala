@@ -1063,7 +1063,7 @@ object DeltaErrors
          |
          |  SparkSession.builder()
          |    .option("spark.sql.extensions", "${classOf[DeltaSparkSessionExtension].getName}")
-         |    .option("$catalogImplConfig", "${classOf[DeltaCatalog].getName}"
+         |    .option("$catalogImplConfig", "${classOf[DeltaCatalog].getName}")
          |    ...
          |    .build()
       """.stripMargin,
