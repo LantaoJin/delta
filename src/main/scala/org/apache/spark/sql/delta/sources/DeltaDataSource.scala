@@ -132,6 +132,7 @@ class DeltaDataSource
       mode = mode,
       new DeltaOptions(parameters, sqlContext.sparkSession.sessionState.conf),
       partitionColumns = partitionColumns,
+      bucket = None,
       configuration = Map.empty,
       data = data).run(sqlContext.sparkSession)
 

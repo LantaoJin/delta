@@ -468,6 +468,53 @@ class SQLQuerySuite extends QueryTest
     }
   }
 
+  test("test insert bucket table") {
+    withSQLConf(DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED.key -> "true") {
+      withTable("target1", "target2", "target3") {
+        withTempView("test") {
+          spark.range(50).map(x => (x, x, x)).toDF("id", "num", "name")
+            .createOrReplaceTempView("test")
+          sql(
+            s"""
+               |CREATE TABLE target1 USING parquet
+               |CLUSTERED BY (id, num)
+               |INTO 10 BUCKETS
+               |AS SELECT * FROM test
+               |""".stripMargin)
+          sql(
+            """
+              |CONVERT TO DELTA target1
+              |""".stripMargin)
+          checkAnswer(sql("SELECT * FROM target1"), sql("SELECT * FROM test"))
+          sql("INSERT INTO target1 SELECT * FROM test")
+          checkAnswer(sql("SELECT * FROM target1"),
+            sql("SELECT * FROM test").collect() ++ sql("SELECT * FROM test").collect())
+
+          sql(
+            s"""
+               |CREATE TABLE target2 USING delta
+               |CLUSTERED BY (id, num)
+               |INTO 10 BUCKETS
+               |AS SELECT * FROM test
+               |""".stripMargin)
+          checkAnswer(sql("SELECT * FROM target2"), sql("SELECT * FROM test"))
+          sql("INSERT INTO target2 SELECT * FROM test")
+          checkAnswer(sql("SELECT * FROM target2"),
+            sql("SELECT * FROM test").collect() ++ sql("SELECT * FROM test").collect())
+
+          sql(
+            s"""
+               |CREATE TABLE target3(id int, num int, name int) USING delta
+               |CLUSTERED BY (id, num)
+               |INTO 10 BUCKETS
+               |""".stripMargin)
+          sql("INSERT INTO target3 SELECT * FROM test")
+          checkAnswer(sql("SELECT * FROM target3"), sql("SELECT * FROM test"))
+        }
+      }
+    }
+  }
+
   test("convert an empty table to delta") {
     def verifyUpdateDelete(tableName: String): Unit = {
       sql(

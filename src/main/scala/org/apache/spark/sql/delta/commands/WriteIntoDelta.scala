@@ -18,7 +18,7 @@ package org.apache.spark.sql.delta.commands
 
 // scalastyle:off import.ordering.noEmptyLine
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.catalog.CatalogTable
+import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogTable}
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.{Action, AddFile}
 import org.apache.spark.sql.delta.schema.ImplicitMetadataOperation
@@ -48,6 +48,7 @@ case class WriteIntoDelta(
     mode: SaveMode,
     options: DeltaOptions,
     partitionColumns: Seq[String],
+    bucket: Option[BucketSpec],
     configuration: Map[String, String],
     data: DataFrame,
     catalogTable: Option[CatalogTable] = None,
@@ -85,7 +86,7 @@ case class WriteIntoDelta(
       }
     }
     val rearrangeOnly = options.rearrangeOnly
-    updateMetadata(txn, data, partitionColumns, configuration, isOverwriteOperation, rearrangeOnly)
+    updateMetadata(txn, data, partitionColumns, bucket, configuration, isOverwriteOperation, rearrangeOnly)
 
     // Validate partition predicates
     val replaceWhere = options.replaceWhere

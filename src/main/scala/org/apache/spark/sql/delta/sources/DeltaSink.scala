@@ -81,6 +81,7 @@ class DeltaSink(
       txn,
       data,
       partitionColumns,
+      None,
       configuration = Map.empty,
       outputMode == OutputMode.Complete())
 

@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.delta.schema
 
+import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.Metadata
 import org.apache.spark.sql.delta.metering.DeltaLogging
@@ -51,11 +52,12 @@ trait ImplicitMetadataOperation extends DeltaLogging {
       txn: OptimisticTransaction,
       data: Dataset[_],
       partitionColumns: Seq[String],
+      bucketSpec: Option[BucketSpec],
       configuration: Map[String, String],
       isOverwriteMode: Boolean,
       rearrangeOnly: Boolean = false): Unit = {
     updateMetadata(
-      data.sparkSession, txn, data.schema, partitionColumns,
+      data.sparkSession, txn, data.schema, partitionColumns, bucketSpec,
       configuration, isOverwriteMode, rearrangeOnly)
   }
 
@@ -64,6 +66,7 @@ trait ImplicitMetadataOperation extends DeltaLogging {
       txn: OptimisticTransaction,
       schema: StructType,
       partitionColumns: Seq[String],
+      bucketSpec: Option[BucketSpec],
       configuration: Map[String, String],
       isOverwriteMode: Boolean,
       rearrangeOnly: Boolean): Unit = {
@@ -101,7 +104,8 @@ trait ImplicitMetadataOperation extends DeltaLogging {
         Metadata(
           schemaString = dataSchema.json,
           partitionColumns = normalizedPartitionCols,
-          configuration = configuration))
+          configuration = configuration,
+          bucketSpec = bucketSpec))
     } else if (isOverwriteMode && canOverwriteSchema && (isNewSchema || isPartitioningChanged)) {
       // Can define new partitioning in overwrite mode
       val newMetadata = txn.metadata.copy(
