@@ -164,7 +164,7 @@ class Snapshot(
         throw DeltaErrors.actionNotFoundException("protocol", version)
       }
       logMissingActionWarning("protocol")
-      _computedState = _computedState.copy(protocol = Protocol(spark.sessionState.conf, None))
+      _computedState = _computedState.copy(protocol = Protocol(spark, None))
     }
     if (_computedState.metadata == null) {
       recordDeltaEvent(
