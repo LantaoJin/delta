@@ -225,8 +225,11 @@ class DeltaCatalog(val spark: SparkSession) extends DelegatingCatalogExtension
       case IdentityTransform(FieldReference(Seq(col))) =>
         identityCols += col
 
-      case BucketTransform(numBuckets, FieldReference(Seq(col))) =>
-        bucketSpec = Some(BucketSpec(numBuckets, col :: Nil, Nil))
+      case BucketTransform(numBuckets, fieldReferences) =>
+        val bucketColumns = fieldReferences.collect {
+          case FieldReference(parts) => parts.mkString(".")
+        }
+        bucketSpec = Some(BucketSpec(numBuckets, bucketColumns, Nil))
 
       case transform =>
         throw DeltaErrors.operationNotSupportedException(s"Partitioning by expressions")
