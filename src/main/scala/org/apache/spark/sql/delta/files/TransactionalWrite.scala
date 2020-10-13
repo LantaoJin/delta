@@ -142,7 +142,8 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
         Map.empty,
         output)
 
-      val physicalPlan = DeltaInvariantCheckerExec(queryExecution.executedPlan, constraints)
+      val physicalPlan =
+        DeltaInvariantCheckerExec(queryExecution.executedPlan, constraints, spark)
 
       val executionId = spark.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       logInfo(s"Physical plan of $executionId before execution:\n ${physicalPlan.toString()}")
