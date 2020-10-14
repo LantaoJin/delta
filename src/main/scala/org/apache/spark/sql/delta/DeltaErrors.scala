@@ -974,6 +974,10 @@ object DeltaErrors
       """.stripMargin,
       cause = Some(originalException))
   }
+
+  def rollbackToInvalidVersion(version: Long): Throwable = {
+    new AnalysisException(s"Rollback to invalid version $version.")
+  }
 }
 
 /** The basic class for all Tahoe commit conflict exceptions. */

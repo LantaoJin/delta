@@ -81,6 +81,7 @@ statement
     | CONVERT TO DELTA table=qualifiedName
         (PARTITIONED BY '(' colTypeList ')')?                           #convert
     | CONVERT TO PARQUET table=qualifiedName                            #convertBack
+    | ROLLBACK table=qualifiedName AT version=INTEGER_VALUE             #rollback
     | .*?                                                               #passThrough
     ;
 
@@ -128,6 +129,7 @@ nonReserved
     | DESC | DESCRIBE | LIMIT | DETAIL
     | GENERATE | FOR | TABLE
     | PARQUET
+    | ROLLBACK | AT
     ;
 
 // Define how the keywords above should appear in a user's SQL statement.
@@ -154,6 +156,8 @@ RUN: 'RUN';
 TO: 'TO';
 VACUUM: 'VACUUM';
 PARQUET: 'PARQUET';
+ROLLBACK: 'ROLLBACK';
+AT: 'AT';
 
 STRING
     : '\'' ( ~('\''|'\\') | ('\\' .) )* '\''

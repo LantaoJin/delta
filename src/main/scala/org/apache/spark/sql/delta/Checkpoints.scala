@@ -27,7 +27,9 @@ import org.apache.spark.sql.delta.storage.LogStore
 import org.apache.spark.sql.delta.util.DeltaFileOperations
 import org.apache.spark.sql.delta.util.FileNames._
 import org.apache.spark.sql.delta.util.JsonUtils
+import org.apache.hadoop.fs.Options.Rename
 import org.apache.hadoop.fs.Path
+import org.apache.hadoop.hdfs.DistributedFileSystem
 import org.apache.hadoop.mapred.{JobConf, TaskAttemptContextImpl, TaskAttemptID}
 import org.apache.hadoop.mapreduce.{Job, TaskType}
 
@@ -117,16 +119,18 @@ trait Checkpoints extends DeltaLogging {
   val LAST_CHECKPOINT = new Path(logPath, "_last_checkpoint")
 
   /** Creates a checkpoint at the current log version. */
-  def checkpoint(): Unit = recordDeltaOperation(this, "delta.checkpoint") {
-    val checkpointMetaData = checkpoint(snapshot)
+  def checkpoint(
+      overwrite: Boolean = false): Unit = recordDeltaOperation(this, "delta.checkpoint") {
+    val checkpointMetaData = checkpoint(snapshot, overwrite)
     val json = JsonUtils.toJson(checkpointMetaData)
     store.write(LAST_CHECKPOINT, Iterator(json), overwrite = true)
 
     doLogCleanup()
   }
 
-  protected def checkpoint(snapshotToCheckpoint: Snapshot): CheckpointMetaData = {
-    Checkpoints.writeCheckpoint(spark, this, snapshotToCheckpoint)
+  protected def checkpoint(
+      snapshotToCheckpoint: Snapshot, overwrite: Boolean): CheckpointMetaData = {
+    Checkpoints.writeCheckpoint(spark, this, snapshotToCheckpoint, overwrite)
   }
 
   /** Returns information about the most recent checkpoint. */
@@ -214,7 +218,8 @@ object Checkpoints extends DeltaLogging {
   private[delta] def writeCheckpoint(
       spark: SparkSession,
       deltaLog: DeltaLog,
-      snapshot: Snapshot): CheckpointMetaData = {
+      snapshot: Snapshot,
+      overwrite: Boolean): CheckpointMetaData = {
     import SingleAction._
 
     val (factory, serConf) = {
@@ -287,10 +292,26 @@ object Checkpoints extends DeltaLogging {
       val dest = new Path(path)
       val fs = dest.getFileSystem(spark.sessionState.newHadoopConf)
       var renameDone = false
+
       try {
-        if (fs.rename(src, dest)) {
-          renameDone = true
-        } else {
+        renameDone =
+          if (overwrite) {
+            fs match {
+              case dfs: DistributedFileSystem =>
+                try {
+                  dfs.rename(src, dest, Rename.OVERWRITE)
+                  true
+                } catch {
+                  case _: Exception => false
+                }
+              case _ =>
+                fs.delete(dest, false)
+                fs.rename(src, dest)
+            }
+          } else {
+            fs.rename(src, dest)
+          }
+        if (!renameDone) {
           // There should be only one writer writing the checkpoint file, so there must be
           // something wrong here.
           throw new IllegalStateException(s"Cannot rename $src to $dest")

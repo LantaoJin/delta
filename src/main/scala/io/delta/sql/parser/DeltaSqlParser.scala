@@ -256,6 +256,15 @@ class DeltaSqlAstBuilder extends DeltaSqlBaseBaseVisitor[AnyRef] {
         throw new ParseException(s"DataType $dtStr is not supported.", ctx)
     }
   }
+
+  override def visitRollback(ctx: RollbackContext): LogicalPlan = withOrigin(ctx) {
+    val version =
+      if (ctx.INTEGER_VALUE() != null) Option(ctx.INTEGER_VALUE.getText.toLong) else None
+    if (version.isDefined && version.get < 0) {
+      throw new ParseException("Version must be equal or greater than 0.", ctx)
+    }
+    RollbackCommand(visitTableIdentifier(ctx.table), version)
+  }
 }
 
 // scalastyle:off line.size.limit

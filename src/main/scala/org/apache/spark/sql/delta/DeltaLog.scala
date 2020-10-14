@@ -285,6 +285,12 @@ class DeltaLog private(
     }
   }
 
+  private[delta] def setCurrentSnapshot(newSnapshot: Snapshot): Unit = {
+    readChecksum(newSnapshot.version)
+    currentSnapshot.uncache()
+    currentSnapshot = newSnapshot
+  }
+
   /* ---------------------------------------- *
    |  Log Directory Management and Retention  |
    * ---------------------------------------- */
