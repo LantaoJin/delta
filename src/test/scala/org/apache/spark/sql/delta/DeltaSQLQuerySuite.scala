@@ -16,8 +16,13 @@
 
 package org.apache.spark.sql.delta
 
-import org.apache.spark.sql.delta.sources.DeltaSQLConf
+import java.io.FileNotFoundException
+
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
+import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog}
+import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform}
+import org.apache.spark.sql.delta.catalog.DeltaCatalog
+import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 
@@ -133,6 +138,96 @@ class DeltaSQLQuerySuite extends QueryTest
 //          sql("SHOW PARTITIONS test1"),
 //          Row("date=0") :: Row("date=1") :: Nil
 //        )
+      }
+    }
+  }
+
+  private def catalog: TableCatalog = {
+    spark.sessionState.catalogManager.currentCatalog.asInstanceOf[DeltaCatalog]
+  }
+
+  private def checkPartitions(name: String, partitionNames: String*) = {
+    val table = catalog.loadTable(Identifier.of(Array("default"), name))
+    assert(table.partitioning === partitionNames.map(p => IdentityTransform(FieldReference(p))))
+  }
+
+  test("test convert a partitioned table") {
+    withTable("part1", "part2", "part3", "part4") {
+      withSQLConf(DeltaSQLConf.USE_SCHEMA_FROM_EXISTS_TABLE.key -> "false") {
+        sql(
+          """
+            |CREATE TABLE part1 (id int, col1 string)
+            |USING parquet
+            |PARTITIONED BY (col1)
+            |""".stripMargin)
+        val e1 = intercept[FileNotFoundException] {
+          sql(
+            """
+              |CONVERT TO DELTA part1
+              |""".stripMargin)
+        }.getMessage
+        assert(e1.contains("No file found in the directory"))
+        sql(
+          """
+            |INSERT INTO part1 VALUES (1, "1")
+            |""".stripMargin)
+        val e2 = intercept[AnalysisException] {
+          sql(
+            """
+              |CONVERT TO DELTA part1
+              |""".stripMargin)
+        }.getMessage
+        assert(e2.contains("Expecting 0 partition column(s)"))
+        sql(
+          """
+            |CONVERT TO DELTA part1 PARTITIONED BY (col1 STRING)
+            |""".stripMargin)
+        checkPartitions("part1", "col1")
+      }
+      withSQLConf(DeltaSQLConf.USE_SCHEMA_FROM_EXISTS_TABLE.key -> "true") {
+        sql(
+          """
+            |CREATE TABLE part2 (id int, col1 string)
+            |USING parquet
+            |PARTITIONED BY (col1)
+            |""".stripMargin)
+        sql(
+          """
+            |INSERT INTO part2 VALUES (1, "1")
+            |""".stripMargin)
+        sql(
+          """
+            |CONVERT TO DELTA part2
+            |""".stripMargin)
+        checkPartitions("part2", "col1")
+
+        sql(
+          """
+            |CREATE TABLE part3 (id int, col1 string, col2 string)
+            |USING parquet
+            |PARTITIONED BY (col1, col2)
+            |""".stripMargin)
+        sql(
+          """
+            |INSERT INTO part3 VALUES (1, "1", "a")
+            |""".stripMargin)
+        sql(
+          """
+            |CONVERT TO DELTA part3
+            |""".stripMargin)
+        checkPartitions("part3", "col1", "col2")
+
+        sql(
+          """
+            |CREATE TABLE part4 (id int, col1 string)
+            |USING parquet
+            |PARTITIONED BY (col1)
+            |""".stripMargin)
+        sql(
+          """
+            |CONVERT TO DELTA part4
+            |""".stripMargin)
+        checkPartitions("part4", "col1")
       }
     }
   }

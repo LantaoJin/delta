@@ -72,8 +72,8 @@ abstract class ConvertToDeltaCommandBase(
     partitionSchema: Option[StructType],
     deltaPath: Option[String]) extends RunnableCommand with DeltaCommand {
 
-  lazy val partitionColNames : Seq[String] = partitionSchema.map(_.fieldNames.toSeq).getOrElse(Nil)
-  lazy val partitionFields : Seq[StructField] = partitionSchema.map(_.fields.toSeq).getOrElse(Nil)
+  var partitionColNames: Seq[String] = Nil
+  var partitionFields: Seq[StructField] = Nil
   val timestampPartitionPattern = "yyyy-MM-dd HH:mm:ss[.S]"
 
   override def run(spark: SparkSession): Seq[Row] = {
@@ -357,6 +357,22 @@ abstract class ConvertToDeltaCommandBase(
         }
       }
 
+      partitionColNames = partitionSchema.map(_.fieldNames.toSeq).getOrElse {
+        if (spark.sessionState.conf.getConf(DeltaSQLConf.USE_SCHEMA_FROM_EXISTS_TABLE) &&
+            convertProperties.catalogTable.isDefined) {
+          convertProperties.catalogTable.get.partitionSchema.fieldNames.toSeq
+        } else {
+          Nil
+        }
+      }
+      partitionFields = partitionSchema.map(_.fields.toSeq).getOrElse {
+        if (spark.sessionState.conf.getConf(DeltaSQLConf.USE_SCHEMA_FROM_EXISTS_TABLE) &&
+            convertProperties.catalogTable.isDefined) {
+          convertProperties.catalogTable.get.partitionSchema.fields.toSeq
+        } else {
+          Nil
+        }
+      }
       val schema = constructTableSchema(spark, dataSchema, partitionFields)
       val metadata = Metadata(
         schemaString = schema.json,

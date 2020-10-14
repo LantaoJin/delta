@@ -839,7 +839,9 @@ object DeltaErrors
   }
 
   def emptyDirectoryException(directory: String): Throwable = {
-    new FileNotFoundException(s"No file found in the directory: $directory.")
+    new FileNotFoundException(s"No file found in the directory: $directory. " +
+      s"If you are converting a partitioned table, please add 'PARTITIONED BY' in command, " +
+      s"or set ${DeltaSQLConf.USE_SCHEMA_FROM_EXISTS_TABLE.key} to true")
   }
 
   def alterTableSetLocationSchemaMismatchException(
