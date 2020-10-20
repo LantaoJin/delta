@@ -286,22 +286,32 @@ class DoubleCheckerTask(conf: SparkConf, validate: ValidateTask) extends Runnabl
         .filter(_.startsWith("p_"))
         .filter(_.endsWith("_t")).foreach { db =>
         logInfo(s"Begin to double check the delta tables in $db")
-        catalog.getTablesByName(catalog.listTables(db))
+        try {
+          catalog.getTablesByName(catalog.listTables(db))
             .filter(DDLUtils.isDeltaTable).filterNot(DDLUtils.isTemporaryTable).foreach { table =>
-          val defaultRetentionHours = conf.get(DeltaSQLConf.AUTO_VACUUM_RETENTION_HOURS)
-          val metadata = DeltaTableMetadata(
-            table.identifier.database.getOrElse(""),
-            table.identifier.table,
-            table.owner,
-            CatalogUtils.URIToString(table.location),
-            vacuum = true,
-            retention = defaultRetentionHours)
+            try {
+              val defaultRetentionHours = conf.get(DeltaSQLConf.AUTO_VACUUM_RETENTION_HOURS)
+              val metadata = DeltaTableMetadata(
+                table.identifier.database.getOrElse(""),
+                table.identifier.table,
+                table.owner,
+                CatalogUtils.URIToString(table.location),
+                vacuum = true,
+                retention = defaultRetentionHours)
 
-          if (!DeltaTableMetadata.metadataTableExists(spark, metadata)) {
-            logInfo(s"Found $metadata is missing in list, insert into meta table.")
-            validate.enableVacuum(metadata)
-            DeltaTableMetadata.insertIntoMetadataTable(spark, metadata)
+              if (!DeltaTableMetadata.metadataTableExists(spark, metadata)) {
+                logInfo(s"Found $metadata is missing in list, insert into meta table.")
+                validate.enableVacuum(metadata)
+                DeltaTableMetadata.insertIntoMetadataTable(spark, metadata)
+              }
+            } catch {
+              case e: Throwable =>
+                logWarning(s"Catch an exception when double check table $table", e)
+            }
           }
+        } catch {
+          case e: Throwable =>
+            logWarning(s"Catch an exception when double check db $db", e)
         }
       }
     } catch {
