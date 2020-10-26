@@ -18,12 +18,10 @@ package org.apache.spark.sql.delta.commands
 
 import java.io.FileNotFoundException
 
-import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.{Row, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
-import org.apache.spark.sql.delta.commands.{DeltaCommand, VacuumCommand}
 import org.apache.spark.sql.delta.util.FileNames
 import org.apache.spark.sql.delta.util.FileNames.{deltaFile, isDeltaFile}
 import org.apache.spark.sql.delta.{DeltaErrors, DeltaLog, DeltaTableIdentifier, DeltaTableUtils, OptimisticTransaction}

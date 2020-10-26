@@ -41,6 +41,7 @@ import org.apache.spark.sql.connector.expressions.{BucketTransform, FieldReferen
 import org.apache.spark.sql.connector.write.{LogicalWriteInfo, V1WriteBuilder, WriteBuilder}
 import org.apache.spark.sql.execution.datasources.{DataSource, PartitioningUtils}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.InsertableRelation
 import org.apache.spark.sql.types.{StructField, StructType}
@@ -76,7 +77,8 @@ class DeltaCatalog(val spark: SparkSession) extends DelegatingCatalogExtension
       partitions: Array[Transform],
       properties: util.Map[String, String],
       sourceQuery: Option[LogicalPlan],
-      operation: TableCreationModes.CreationMode): Table = {
+      operation: TableCreationModes.CreationMode,
+      metrics: Map[String, SQLMetric] = Map.empty): Table = {
     // These two keys are properties in data source v2 but not in v1, so we have to filter
     // them out. Otherwise property consistency checks will fail.
     val tableProperties = properties.asScala.filterKeys {
@@ -120,7 +122,8 @@ class DeltaCatalog(val spark: SparkSession) extends DelegatingCatalogExtension
       operation.mode,
       sourceQuery,
       operation,
-      tableByPath = isByPath).run(spark)
+      tableByPath = isByPath,
+      metrics).run(spark)
 
     loadTable(ident)
   }
@@ -299,6 +302,7 @@ class DeltaCatalog(val spark: SparkSession) extends DelegatingCatalogExtension
 
     private var asSelectQuery: Option[DataFrame] = None
     private var writeOptions: Map[String, String] = properties.asScala.toMap
+    private var writeMetrics: Map[String, SQLMetric] = Map.empty
 
     override def commitStagedChanges(): Unit = {
       createDeltaTable(
@@ -307,7 +311,8 @@ class DeltaCatalog(val spark: SparkSession) extends DelegatingCatalogExtension
         partitions,
         writeOptions.asJava,
         asSelectQuery.map(_.queryExecution.analyzed),
-        operation)
+        operation,
+        writeMetrics)
     }
 
     override def name(): String = ident.name()
@@ -333,6 +338,11 @@ class DeltaCatalog(val spark: SparkSession) extends DelegatingCatalogExtension
         new InsertableRelation {
           override def insert(data: DataFrame, overwrite: Boolean): Unit = {
             asSelectQuery = Option(data)
+          }
+          override def insert(
+              data: DataFrame, overwrite: Boolean, metrics: Map[String, SQLMetric]): Unit = {
+            asSelectQuery = Option(data)
+            writeMetrics = metrics
           }
         }
       }

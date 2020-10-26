@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
 
 /**
@@ -48,7 +49,8 @@ case class CreateDeltaTableCommand(
     mode: SaveMode,
     query: Option[LogicalPlan],
     operation: TableCreationModes.CreationMode = TableCreationModes.Create,
-    tableByPath: Boolean = false)
+    tableByPath: Boolean = false,
+    writeMetrics: Map[String, SQLMetric])
   extends RunnableCommand
   with DeltaLogging {
 
@@ -94,7 +96,8 @@ case class CreateDeltaTableCommand(
     val tableLocation = new Path(tableWithLocation.location)
     val fs = tableLocation.getFileSystem(sparkSession.sessionState.newHadoopConf())
     val deltaLog = DeltaLog.forTable(sparkSession, tableLocation)
-    val options = new DeltaOptions(table.storage.properties, sparkSession.sessionState.conf)
+    val options =
+      new DeltaOptions(table.storage.properties, sparkSession.sessionState.conf, writeMetrics)
     recordDeltaOperation(deltaLog, "delta.ddl.createTable") {
       val txn = deltaLog.startTransaction()
 
