@@ -86,7 +86,8 @@ case class WriteIntoDelta(
       }
     }
     val rearrangeOnly = options.rearrangeOnly
-    updateMetadata(txn, data, partitionColumns, bucket, configuration, isOverwriteOperation, rearrangeOnly)
+    updateMetadata(txn, data, partitionColumns, bucket,
+      configuration, isOverwriteOperation, rearrangeOnly)
 
     // Validate partition predicates
     val replaceWhere = options.replaceWhere

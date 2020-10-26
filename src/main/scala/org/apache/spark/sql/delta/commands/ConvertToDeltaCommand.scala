@@ -206,7 +206,7 @@ abstract class ConvertToDeltaCommandBase(
         spark, Seq(qualifiedDir), conf).where("!isDir")
     fileListResultDf.cache()
 
-    def fileListResult = fileListResultDf.toLocalIterator()
+    def fileListResult = fileListResultDf.collectAsIterator()
 
     var numFiles = 0L
     var dataSchema: StructType = StructType(Seq())
@@ -220,7 +220,7 @@ abstract class ConvertToDeltaCommandBase(
         } else {
           val schemaBatchSize =
             spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_IMPORT_BATCH_SIZE_SCHEMA_INFERENCE)
-          fileListResult.asScala.grouped(schemaBatchSize).foreach { batch =>
+          fileListResult.grouped(schemaBatchSize).foreach { batch =>
             numFiles += batch.size
             // Obtain a union schema from all files.
             // Here we explicitly mark the inferred schema nullable.
@@ -248,7 +248,7 @@ abstract class ConvertToDeltaCommandBase(
       val statsBatchSize =
         spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_IMPORT_BATCH_SIZE_STATS_COLLECTION)
 
-      val addFilesIter = fileListResult.asScala.grouped(statsBatchSize).flatMap { batch =>
+      val addFilesIter = fileListResult.grouped(statsBatchSize).flatMap { batch =>
         val adds = batch.map(createAddFile(_, txn.deltaLog.dataPath, fs, spark.sessionState.conf))
         adds.toIterator
       }
