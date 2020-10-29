@@ -296,6 +296,10 @@ class DeltaLog private(
         val (checkpoints, deltas) = newFiles.partition(f => isCheckpointFile(f.getPath))
         if (deltas.isEmpty) {
           lastUpdateTimestamp = clock.getTimeMillis()
+          if (currentSnapshot.version <= 0) {
+            logInfo(s"Uncache state while deltas is empty and snapshot version <= 0")
+            currentSnapshot.uncache()
+          }
           return currentSnapshot
         }
 
@@ -354,16 +358,14 @@ class DeltaLog private(
         currentSnapshot.uncache()
         currentSnapshot = newSnapshot
       } catch {
-        case f: FileNotFoundException =>
-          val message = s"No delta log found for the Delta table at $logPath"
-          logInfo(message)
-          // When the state is empty, this is expected. The log will be lazily created when needed.
-          // When the state is not empty, it's a real issue and we can't continue to execution.
-          if (currentSnapshot.version != -1) {
-            val e = new FileNotFoundException(message)
-            e.setStackTrace(f.getStackTrace)
+        case e: FileNotFoundException =>
+          if (Option(e.getMessage).exists(_.contains("reconstruct state at version"))) {
             throw e
           }
+          val message = s"No delta log found for the Delta table at $logPath"
+          logInfo(message)
+          currentSnapshot.uncache()
+          currentSnapshot = new InitialSnapshot(logPath, this)
       }
       lastUpdateTimestamp = clock.getTimeMillis()
       currentSnapshot

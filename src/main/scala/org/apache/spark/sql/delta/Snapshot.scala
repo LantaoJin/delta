@@ -407,6 +407,14 @@ class InitialSnapshot(
     override val deltaLog: DeltaLog,
     override val metadata: Metadata)
   extends Snapshot(logPath, -1, None, Nil, -1, deltaLog, -1) {
+
+  def this(logPath: Path, deltaLog: DeltaLog) = this(
+    logPath,
+    deltaLog,
+    Metadata(configuration = DeltaConfigs.mergeGlobalConfigs(
+      SparkSession.active.sessionState.conf, Map.empty, Protocol()))
+  )
+
   override val state: Dataset[SingleAction] = emptyActions
   override protected lazy val materializedState: Snapshot.State = {
     Snapshot.State(Protocol(), metadata, Nil, 0L, 0L, 0L, 0L, 0L, 0L)
