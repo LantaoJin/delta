@@ -156,10 +156,6 @@ abstract class ConvertToDeltaCommandBase(
       sessionCatalog: SessionCatalog): Unit = {
     val newCatalog = catalogTable.copy(
       provider = Some("delta"),
-      // TODO: Schema changes unfortunately doesn't get reflected in the HiveMetaStore. Should be
-      // fixed in Apache Spark
-      schema = new StructType(),
-      partitionColumnNames = catalogTable.partitionColumnNames,
       bucketSpec = catalogTable.bucketSpec,
       properties = Map.empty,
       // TODO: Serde information also doesn't get removed
@@ -656,7 +652,7 @@ abstract class ConvertToDeltaCommandBase(
       ds
     }
 
-    override def getFiles: Iterator[SerializableFileStatus] = list.toLocalIterator().asScala
+    override def getFiles: Iterator[SerializableFileStatus] = list.collectAsIterator()
 
     override def close(): Unit = list.unpersist()
   }

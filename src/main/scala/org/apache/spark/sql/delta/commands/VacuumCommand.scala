@@ -274,7 +274,7 @@ trait VacuumCommandImpl extends DeltaCommand {
    * Attempts to delete the list of candidate files. Returns the number of files deleted.
    */
   protected def delete(diff: Dataset[String], fs: FileSystem): Long = {
-    val fileResultSet = diff.toLocalIterator().asScala
+    val fileResultSet = diff.collectAsIterator()
     fileResultSet.map(p => stringToPath(p)).count(f => tryDeleteNonRecursive(fs, f))
   }
 
