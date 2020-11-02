@@ -237,21 +237,33 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
       val fs = deltaLog.dataPath.getFileSystem(sessionHadoopConf)
 
       val start = getCurrentTimestampString
+      val currentLastDDLTime = catalogTable.properties(DDLUtils.DDL_TIME).toLong
       val (quotaUsageBefore, sizeBefore, fileCountBefore) = statistics(fs, deltaLog)
-      val vacuumingInfoBefore = VacuumingInfo(table.db, table.tbl, quotaUsageBefore,
-        sizeBefore, -1L, fileCountBefore, -1L, start, null)
-      vacuumHistory(table) = vacuumingInfoBefore
+      if (sizeBefore > 0 || fileCountBefore > 0) {
+        // only vacuum the tables changed between twice vacuuming or first look
+        if (vacuumHistory.get(table).exists(_.lastDDLTime == currentLastDDLTime)) {
+          logInfo(s"Skip vacuum table ${table.identifier.unquotedString} " +
+            s"since lastDDLTime $currentLastDDLTime not changed")
+        } else {
+          val vacuumingInfoBefore = VacuumingInfo(table.db, table.tbl, quotaUsageBefore,
+            sizeBefore, -1L, fileCountBefore, -1L, start, null, currentLastDDLTime)
+          vacuumHistory(table) = vacuumingInfoBefore
 
-      logInfo(s"Start vacuum ${table.identifier.unquotedString} retain ${table.retention} hours")
-      VacuumCommand.gc(spark, deltaLog, dryRun = false, Some(table.retention.toDouble),
-        safetyCheckEnabled = false)
-      CommandUtils.updateTableStats(spark, catalogTable)
-      logInfo(s"End vacuum ${table.identifier.unquotedString} retain ${table.retention} hours")
-
+          logInfo(s"Start vacuum ${table.identifier.unquotedString} " +
+            s"retain ${table.retention} hours")
+          VacuumCommand.gc(spark, deltaLog, dryRun = false, Some(table.retention.toDouble),
+            safetyCheckEnabled = false)
+          CommandUtils.updateTableStats(spark, catalogTable)
+          logInfo(s"End vacuum ${table.identifier.unquotedString} " +
+            s"retain ${table.retention} hours")
+        }
+      } else {
+        logInfo(s"Skip vacuum empty table ${table.identifier.unquotedString}")
+      }
       val end = getCurrentTimestampString
       val (quotaUsageAfter, sizeAfter, fileCountAfter) = statistics(fs, deltaLog)
       val vacuumingInfoAfter = VacuumingInfo(table.db, table.tbl, quotaUsageAfter,
-        sizeBefore, sizeAfter, fileCountBefore, fileCountAfter, start, end)
+        sizeBefore, sizeAfter, fileCountBefore, fileCountAfter, start, end, currentLastDDLTime)
       vacuumHistory(table) = vacuumingInfoAfter
     }
 
@@ -262,7 +274,7 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
       val summary = fs.getContentSummary(deltaLog.dataPath)
       val size = summary.getLength
       val fileCount = summary.getFileCount
-      (quotaUsage, size, fileCount)
+      (if (quotaUsage > 0.0D) quotaUsage else 0.0D, size, fileCount)
     }
   }
 }

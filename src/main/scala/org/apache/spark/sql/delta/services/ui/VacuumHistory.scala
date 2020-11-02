@@ -27,56 +27,90 @@ case class VacuumingInfo(
     databaseQuotaUsage: Double,
     sizeBefore: Long, sizeAfter: Long,
     fileCountBefore: Long, fileCountAfter: Long,
-    start: String, end: String)
+    start: String, end: String, lastDDLTime: Long)
 
 class VacuumHistory(
     parent: DeltaTab,
     vacuuming: Seq[VacuumingInfo],
-    title: String) {
-
+    title: String,
+    complete: Boolean) {
 
   def header: Seq[String] =
-    Seq(
-      "database",
-      "table",
-      "dbQuotaUsage",
-      "sizeBefore",
-      "sizeAfter",
-      "filesBefore",
-      "filesAfter",
-      "start",
-      "end")
+    if (complete) {
+      Seq(
+        "database",
+        "table",
+        "dbQuotaUsage",
+        "sizeBefore",
+        "sizeAfter",
+        "filesBefore",
+        "filesAfter",
+        "start",
+        "end")
+    } else {
+      Seq(
+        "database",
+        "table",
+        "dbQuotaUsage",
+        "sizeBefore",
+        "filesBefore",
+        "start")
+    }
 
   def row(v: VacuumingInfo): Seq[Node] = {
-    <tr>
-      <td>
-        {v.db}
-      </td>
-      <td>
-        {v.tbl}
-      </td>
-      <td>
-        {v.databaseQuotaUsage}%
-      </td>
-      <td>
-        {Utils.bytesToString(v.sizeBefore)}
-      </td>
-      <td>
-        {Utils.bytesToString(v.sizeAfter)}
-      </td>
-      <td>
-        {v.fileCountBefore}
-      </td>
-      <td>
-        {v.fileCountAfter}
-      </td>
-      <td>
-        {v.start}
-      </td>
-      <td>
-        {v.end}
-      </td>
-    </tr>
+    if (complete) {
+      <tr>
+        <td>
+          {v.db}
+        </td>
+        <td>
+          {v.tbl}
+        </td>
+        <td>
+          {v.databaseQuotaUsage}%
+        </td>
+        <td>
+          {Utils.bytesToString(v.sizeBefore)}
+        </td>
+        <td>
+          {Utils.bytesToString(v.sizeAfter)}
+        </td>
+        <td>
+          {v.fileCountBefore}
+        </td>
+        <td>
+          {v.fileCountAfter}
+        </td>
+        <td>
+          {v.start}
+        </td>
+        <td>
+          {v.end}
+        </td>
+      </tr>
+    } else {
+      <tr>
+        <td>
+          {v.db}
+        </td>
+        <td>
+          {v.tbl}
+        </td>
+        <td>
+          {v.databaseQuotaUsage}%
+        </td>
+        <td>
+          {Utils.bytesToString(v.sizeBefore)}
+        </td>
+        <td>
+          {v.fileCountBefore}
+        </td>
+        <td>
+          {v.start}
+        </td>
+      </tr>
+    }
+
   }
 
   def toNodeSeq: Seq[Node] = {
