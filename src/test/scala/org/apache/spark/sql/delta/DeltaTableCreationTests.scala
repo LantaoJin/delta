@@ -657,7 +657,7 @@ trait DeltaTableCreationTests
     }
   }
 
-  testQuietly("reject creating a delta table pointing to non-delta files") {
+  ignore("reject creating a delta table pointing to non-delta files") {
     withTempPath { dir =>
       withTable("delta_test") {
         val path = dir.getCanonicalPath

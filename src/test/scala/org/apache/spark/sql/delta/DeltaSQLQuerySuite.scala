@@ -16,8 +16,9 @@
 
 package org.apache.spark.sql.delta
 
-import java.io.FileNotFoundException
+import java.io.{File, FileNotFoundException}
 
+import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog}
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform}
@@ -25,6 +26,7 @@ import org.apache.spark.sql.delta.catalog.DeltaCatalog
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
+import org.apache.spark.util.Utils
 
 class DeltaSQLQuerySuite extends QueryTest
     with SharedSparkSession with DeltaSQLCommandTest with SQLTestUtils {
@@ -228,6 +230,57 @@ class DeltaSQLQuerySuite extends QueryTest
             |CONVERT TO DELTA part4
             |""".stripMargin)
         checkPartitions("part4", "col1")
+      }
+    }
+  }
+
+  test("temporary view may break the rule of full scan") {
+    withTable("delta_table") {
+      sql(
+        s"""
+           |CREATE TABLE delta_table
+           |USING delta AS SELECT 1 AS key, 1 AS value
+           """.stripMargin)
+
+      sql("create temporary view temp_view as select key from delta_table")
+      val e1 = intercept[AnalysisException] (
+        sql("UPDATE temp_view v SET key=2")
+      ).getMessage
+      assert(e1.contains("Expect a full scan of Delta sources, but found a partial scan."))
+    }
+  }
+
+  test("CTAS a delta table with the existing non-empty directory") {
+    withTable("tab1") {
+      val tableLoc = new File(spark.sessionState.catalog.defaultTablePath(TableIdentifier("tab1")))
+      try {
+        // create an empty hidden file
+        tableLoc.mkdir()
+        val hiddenGarbageFile = new File(tableLoc.getCanonicalPath, ".garbage")
+        hiddenGarbageFile.createNewFile()
+        sql(s"CREATE TABLE tab1 USING DELTA AS SELECT 1, 'a'")
+        checkAnswer(spark.table("tab1"), Row(1, "a"))
+      } finally {
+        waitForTasksToFinish()
+        Utils.deleteRecursively(tableLoc)
+      }
+    }
+  }
+
+  test("create a managed table with the existing non-empty directory") {
+    withTable("tab1") {
+      val tableLoc = new File(spark.sessionState.catalog.defaultTablePath(TableIdentifier("tab1")))
+      try {
+        // create an empty hidden file
+        tableLoc.mkdir()
+        val hiddenGarbageFile = new File(tableLoc.getCanonicalPath, ".garbage")
+        hiddenGarbageFile.createNewFile()
+        sql(s"CREATE TABLE tab1 (col1 int, col2 string) USING DELTA")
+        sql("INSERT INTO tab1 VALUES (1, 'a')")
+        checkAnswer(spark.table("tab1"), Row(1, "a"))
+      } finally {
+        waitForTasksToFinish()
+        Utils.deleteRecursively(tableLoc)
       }
     }
   }

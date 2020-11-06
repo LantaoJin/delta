@@ -110,7 +110,7 @@ case class CreateDeltaTableCommand(
           // We may have failed a previous write. The retry should still succeed even if we have
           // garbage data
           if (txn.readVersion > -1 || !fs.exists(deltaLog.logPath)) {
-            assertPathEmpty(sparkSession, tableWithLocation)
+            makePathEmpty(sparkSession, tableWithLocation)
           }
         }
         // We are either appending/overwriting with saveAsTable or creating a new table with CTAS or
@@ -141,7 +141,7 @@ case class CreateDeltaTableCommand(
             // When creating a managed table, the table path should not exist or is empty, or
             // users would be surprised to see the data, or see the data directory being dropped
             // after the table is dropped.
-            assertPathEmpty(sparkSession, tableWithLocation)
+            makePathEmpty(sparkSession, tableWithLocation)
           }
 
           // This is either a new table, or, we never defined the schema of the table. While it is
@@ -150,7 +150,7 @@ case class CreateDeltaTableCommand(
           val noExistingMetadata = txn.readVersion == -1 || txn.metadata.schema.isEmpty
           if (noExistingMetadata) {
             assertTableSchemaDefined(fs, tableLocation, tableWithLocation, sparkSession)
-            assertPathEmpty(sparkSession, tableWithLocation)
+            makePathEmpty(sparkSession, tableWithLocation)
             // This is a user provided schema.
             // Doesn't come from a query, Follow nullability invariants.
             val newMetadata = getProvidedMetadata(table, table.schema.json)
@@ -216,7 +216,7 @@ case class CreateDeltaTableCommand(
       bucketSpec = table.bucketSpec)
   }
 
-  private def assertPathEmpty(
+  private def makePathEmpty(
       sparkSession: SparkSession,
       tableWithLocation: CatalogTable): Unit = {
     val path = new Path(tableWithLocation.location)
@@ -225,8 +225,10 @@ case class CreateDeltaTableCommand(
     // we intentionally diverge from this behavior w.r.t regular datasource tables (that silently
     // overwrite any previous data)
     if (fs.exists(path) && fs.listStatus(path).nonEmpty) {
-      throw new AnalysisException(s"Cannot create table ('${tableWithLocation.identifier}')." +
-        s" The associated location ('${tableWithLocation.location}') is not empty.")
+//      throw new AnalysisException(s"Cannot create table ('${tableWithLocation.identifier}')." +
+//        s" The associated location ('${tableWithLocation.location}') is not empty.")
+      // we overwrite any previous data since our users have no permission to clean data in HDFS
+      fs.delete(path, true)
     }
   }
 
