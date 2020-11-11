@@ -83,7 +83,7 @@ case class VacuumTableCommand(
         throw DeltaErrors.tableOnlySupportedException("VACUUM with AUTO RUN")
       }
     } else {
-      val res = VacuumCommand.gc(sparkSession, deltaLog, dryRun, horizonHours).collect()
+      val res = VacuumCommand.gc(sparkSession, deltaLog, dryRun, horizonHours)._1.collect()
       table.foreach { t =>
         val catalogTable = sparkSession.sessionState.catalog.getTableMetadata(t)
         CommandUtils.updateTableStats(sparkSession, catalogTable)

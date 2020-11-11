@@ -93,7 +93,7 @@ object VacuumCommand extends VacuumCommandImpl with Serializable {
       dryRun: Boolean = true,
       retentionHours: Option[Double] = None,
       clock: Clock = new SystemClock,
-      safetyCheckEnabled: Boolean = true): DataFrame = {
+      safetyCheckEnabled: Boolean = true): (DataFrame, Long) = {
     recordDeltaOperation(deltaLog, "delta.gc") {
 
       val path = deltaLog.dataPath
@@ -107,7 +107,7 @@ object VacuumCommand extends VacuumCommandImpl with Serializable {
       if (snapshot.version == 0) { // just convert to delta. skip GC.
         val basePath = fs.makeQualified(path).toString
         logWarning(s"No need to vacuum $basePath since the SNAPSHOT version now is 0")
-        return spark.createDataset(Seq(basePath)).toDF("path")
+        return (spark.createDataset(Seq(basePath)).toDF("path"), 0L)
       }
 
       require(snapshot.version >= 0, "No state defined for this table. Is this really " +
@@ -227,7 +227,7 @@ object VacuumCommand extends VacuumCommandImpl with Serializable {
           logInfo(s"Found $numFiles files and directories in a total of " +
             s"$dirCounts directories that are safe to delete.")
 
-          return diff.map(f => stringToPath(f).toString).toDF("path")
+          return (diff.map(f => stringToPath(f).toString).toDF("path"), numFiles)
         }
         logInfo(s"Deleting untracked files and empty directories in $path")
 
@@ -244,7 +244,7 @@ object VacuumCommand extends VacuumCommandImpl with Serializable {
         logConsole(s"Deleted $filesDeleted files and directories in a total " +
           s"of $dirCounts directories.")
 
-        spark.createDataset(Seq(basePath)).toDF("path")
+        (spark.createDataset(Seq(basePath)).toDF("path"), filesDeleted)
       } finally {
         allFilesAndDirs.unpersist()
       }
