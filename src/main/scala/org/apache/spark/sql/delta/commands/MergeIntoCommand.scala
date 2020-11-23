@@ -549,7 +549,7 @@ object MergeIntoCommand {
    * to make this accumulator become an internal accumulator, so that it will not be tracked by
    * Spark UI.
    */
-  val TOUCHED_FILES_ACCUM_NAME = "internal.metrics.MergeIntoDelta.touchedFiles"
+  val TOUCHED_FILES_ACCUM_NAME = "external.heavy.touchedFiles"
 
   val ROW_ID_COL = "_row_id_"
   val FILE_NAME_COL = "_file_name_"

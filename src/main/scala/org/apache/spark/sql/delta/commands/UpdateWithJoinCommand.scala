@@ -140,7 +140,7 @@ case class UpdateWithJoinCommand(
 
     // Accumulator to collect all the distinct touched files
     val touchedFilesAccum = new SetAccumulator[String]()
-    spark.sparkContext.register(touchedFilesAccum, "UpdateWithJoin.touchedFiles")
+    spark.sparkContext.register(touchedFilesAccum, MergeIntoCommand.TOUCHED_FILES_ACCUM_NAME)
 
     // UDFs to records touched files names and add them to the accumulator
     val recordTouchedFileName = udf { (fileName: String) => {
