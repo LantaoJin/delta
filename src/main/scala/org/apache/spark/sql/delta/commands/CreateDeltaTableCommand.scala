@@ -159,7 +159,7 @@ case class CreateDeltaTableCommand(
                 options,
                 partitionColumns = table.partitionColumnNames,
                 bucket = table.bucketSpec,
-                configuration = table.properties,
+                configuration = table.properties + ("comment" -> table.comment.orNull),
                 data = data)
             val actions = withStatusCode("DELTA", "Writing for CTAS") {
               writer.write(txn, sparkSession)
@@ -218,7 +218,6 @@ case class CreateDeltaTableCommand(
             // Truncate the table
             val operationTimestamp = System.currentTimeMillis()
             val removes = txn.filterFiles().map(_.removeWithTimestamp(operationTimestamp))
-
             val op = getOperation(txn.metadata, isManagedTable, None)
             txn.commit(removes, op)
         }
