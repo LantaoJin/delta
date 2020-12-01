@@ -604,6 +604,13 @@ object DeltaErrors
     new AnalysisException(s"Subqueries are not supported in the $op (condition = ${cond.sql}).")
   }
 
+  def NotInWithoutIsNotNullNotSupportedException(op: String): Throwable = {
+    new AnalysisException(s"NOT IN subquery without IS NOT NULL is not supported in $op. " +
+      s"Try to add 'expr IS NOT NULL' in WHERE clause of subquery, such as " +
+      s"'UPDATE/DELETE .. WHERE a NOT IN (SELECT c FROM t2 WHERE c IS NOT NULL)'. " +
+      s"Or try to use 'NOT EXISTS' instead of 'NOT IN' in UPDATE/DELETE if it could.")
+  }
+
   def multiColumnInPredicateNotSupportedException(operation: String): Throwable = {
     new AnalysisException(
       s"Multi-column In predicates are not supported in the $operation condition.")
@@ -618,9 +625,19 @@ object DeltaErrors
     new AnalysisException(s"Nested field is not supported in the $operation (field = $field).")
   }
 
-  def inSubqueryNotSupportedException(operation: String): Throwable = {
+  def moreThanOneSubqueryNotSupportedException(operation: String): Throwable = {
     new AnalysisException(
-      s"In subquery is not supported in the $operation condition.")
+      s"More than one sub-queries are not supported in the $operation.")
+  }
+
+  def subqueriesWithDisjunctiveNotSupportedException(operation: String): Throwable = {
+    new AnalysisException(
+      s"Multiple subqueries with disjunctive are not supported in the $operation.")
+  }
+
+  def InOrUncorrelatedSubquerySupportedOnlyException(operation: String): Throwable = {
+    new AnalysisException(
+      s"In or uncorrelated subquery is supported only in the $operation.")
   }
 
   def convertMetastoreMetadataMismatchException(

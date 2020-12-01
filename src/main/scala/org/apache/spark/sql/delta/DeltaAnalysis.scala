@@ -24,7 +24,11 @@ import org.apache.spark.sql.delta.schema.SchemaUtils
 import org.apache.spark.sql.delta.util.AnalysisHelper
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.{GetColumnByOrdinal, UnresolvedAttribute, UnresolvedExtractValue, caseInsensitiveResolution, withPosition}
+import org.apache.spark.sql.catalyst.expressions.SubExprUtils.{containsOuter, stripOuterReferences}
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
+import org.apache.spark.sql.catalyst.optimizer.BooleanSimplification
+import org.apache.spark.sql.catalyst.plans.LeftAnti
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.toPrettySQL
@@ -38,7 +42,8 @@ import org.apache.spark.sql.types.{DataType, StructField, StructType}
  * INSERT INTO.
  */
 class DeltaAnalysis(session: SparkSession, conf: SQLConf)
-  extends Rule[LogicalPlan] with AnalysisHelper with DeltaLogging {
+  extends Rule[LogicalPlan] with AnalysisHelper with PredicateHelper
+    with ConstraintHelper with DeltaLogging {
 
   private def resolver = session.sessionState.conf.resolver
 
@@ -88,16 +93,24 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
 
     case d @ DeleteFromTable(table, condition, None) if d.childrenResolved =>
       // rewrites Delta from V2 to V1
-      val newTarget = table.transformUp { case DeltaRelation(lr) => lr }
-      val indices = newTarget.collect {
+      val newTable = table.transformUp { case DeltaRelation(lr) => lr }
+      val indices = newTable.collect {
         case DeltaFullTable(index) => index
       }
       if (indices.isEmpty) {
         // Not a Delta table at all, do not transform
         d
       } else if (indices.size == 1 && indices(0).deltaLog.snapshot.version > -1) {
+        // rewrite subquery
+        condition.foreach { c =>
+          val (rewrite, target, newConditions, source) = rewriteSubquery("DELETE", table, c)
+          if (rewrite) {
+            return DeleteFromTable(target, newConditions, source)
+          }
+        }
+
         // It is a well-defined Delta table with a schema
-        DeltaDelete(newTarget, condition)
+        DeltaDelete(newTable, condition)
       } else {
         // Not a well-defined Delta table
         throw DeltaErrors.notADeltaSourceException("DELETE", Some(d))
@@ -118,7 +131,10 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
 
         val resolvedDeleteCondition =
           condition.map(resolveExpressionTopDown(_, d)).flatMap(inferredConditions)
-        val actions = DeltaMergeIntoDeleteClause(resolvedDeleteCondition)
+        resolvedDeleteCondition.foreach(checkCondition(_, "cross tables delete"))
+
+        val actions = DeltaMergeIntoDeleteClause(
+          resolvedDeleteCondition.flatMap(extractPredicatesOnlyInTarget(target, _)))
         source match {
           case _: Join =>
             // if the source contains Join, we should fill the join criteria
@@ -136,15 +152,23 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
       }
 
     case u @ UpdateTable(table, assignments, condition, None) if u.childrenResolved =>
+      // rewrite subquery
+      condition.foreach { c =>
+        val (rewrite, target, newConditions, source) = rewriteSubquery("UPDATE", table, c)
+        if (rewrite) {
+          return UpdateTable(target, assignments, newConditions, source)
+        }
+      }
+
       val (cols, expressions) = assignments.map(a =>
         a.key.asInstanceOf[NamedExpression] -> a.value).unzip
       // rewrites Delta from V2 to V1
       val newTable = table.transformUp { case DeltaRelation(lr) => lr }
-        newTable.collectLeaves().headOption match {
-          case Some(DeltaFullTable(index)) =>
-          case o =>
-            throw DeltaErrors.notADeltaSourceException("UPDATE", o)
-        }
+      newTable.collectLeaves().headOption match {
+        case Some(DeltaFullTable(index)) =>
+        case o =>
+          throw DeltaErrors.notADeltaSourceException("UPDATE", o)
+      }
       DeltaUpdateTable(newTable, cols, expressions, condition)
 
     case u @ UpdateTable(target, assignments, condition, Some(source)) if u.childrenResolved &&
@@ -161,6 +185,7 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
       val values = resolvedAssignments.map(_.value)
       val resolvedUpdateCondition =
         condition.map(resolveExpressionTopDown(_, u)).flatMap(inferredConditions)
+      resolvedUpdateCondition.foreach(checkCondition(_, "cross tables update"))
 
       if (resolvedUpdateCondition.isEmpty && values.forall(_.foldable)) {
         // If join condition is empty and SET expressions are all foldable,
@@ -364,14 +389,6 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
     func.map(wrapper)
   }
 
-  private def splitConjunctivePredicates(condition: Expression): Seq[Expression] = {
-    condition match {
-      case And(cond1, cond2) =>
-        splitConjunctivePredicates(cond1) ++ splitConjunctivePredicates(cond2)
-      case other => other :: Nil
-    }
-  }
-
   private def replaceConstraints(
       constraints: Set[Expression],
       source: Expression,
@@ -435,12 +452,14 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
    */
   private def extractPredicatesOnlyInSource(
       source: LogicalPlan, predicates: Expression): Option[Expression] = {
-    val (predicatesInSourceOnly, predicatesContainsNonSource) =
-      splitConjunctivePredicates(predicates).partition {
-        case expr: Expression => expr.references.subsetOf(source.outputSet)
-        case _ => false
-      }
-    predicatesInSourceOnly.reduceLeftOption(And)
+    splitConjunctivePredicates(predicates).filter(_.references.subsetOf(source.outputSet))
+      .reduceLeftOption(And)
+  }
+
+  private def extractPredicatesOnlyInTarget(
+      target: LogicalPlan, predicates: Expression): Option[Expression] = {
+    splitConjunctivePredicates(predicates).filter(_.references.subsetOf(target.outputSet))
+      .reduceLeftOption(And)
   }
 
   private def projectionForSource(
@@ -504,6 +523,316 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
     } catch {
       case a: AnalysisException if !throws => expr
     }
+  }
+
+
+  private def dedupSubqueryOnSelfJoin(
+      outerPlan: LogicalPlan,
+      subplan: LogicalPlan,
+      valuesOpt: Option[Seq[Expression]],
+      condition: Option[Expression] = None): LogicalPlan = {
+    // SPARK-21835: It is possibly that the two sides of the join have conflicting attributes,
+    // the produced join then becomes unresolved and break structural integrity. We should
+    // de-duplicate conflicting attributes.
+    // SPARK-26078: it may also happen that the subquery has conflicting attributes with the outer
+    // values. In this case, the resulting join would contain trivially true conditions (eg.
+    // id#3 = id#3) which cannot be de-duplicated after. In this method, if there are conflicting
+    // attributes in the join condition, the subquery's conflicting attributes are changed using
+    // a projection which aliases them and resolves the problem.
+    val outerReferences = valuesOpt.map(values =>
+      AttributeSet(values.flatMap(_.references))).getOrElse(AttributeSet.empty)
+    val outerRefs = outerPlan.outputSet ++ outerReferences
+    val duplicates = outerRefs.intersect(subplan.outputSet)
+    if (duplicates.nonEmpty) {
+      condition.foreach { e =>
+        val conflictingAttrs = e.references.intersect(duplicates)
+        if (conflictingAttrs.nonEmpty) {
+          throw new AnalysisException("Found conflicting attributes " +
+            s"${conflictingAttrs.mkString(",")} in the condition joining outer plan:\n  " +
+            s"$outerPlan\nand subplan:\n  $subplan")
+        }
+      }
+      val rewrites = AttributeMap(duplicates.map { dup =>
+        dup -> Alias(dup, dup.toString)()
+      }.toSeq)
+      val aliasedExpressions = subplan.output.map { ref =>
+        rewrites.getOrElse(ref, ref)
+      }
+      Project(aliasedExpressions, subplan)
+    } else {
+      subplan
+    }
+  }
+
+  /**
+   * This is copy from PullupCorrelatedPredicates
+   * Returns the correlated predicates and a updated plan that removes the outer references.
+   */
+  private def pullOutCorrelatedPredicates(
+    sub: LogicalPlan,
+    outer: Seq[LogicalPlan]): (LogicalPlan, Seq[Expression]) = {
+    val predicateMap = scala.collection.mutable.Map.empty[LogicalPlan, Seq[Expression]]
+
+    /** Determine which correlated predicate references are missing from this plan. */
+    def missingReferences(p: LogicalPlan): AttributeSet = {
+      val localPredicateReferences = p.collect(predicateMap)
+        .flatten
+        .map(_.references)
+        .reduceOption(_ ++ _)
+        .getOrElse(AttributeSet.empty)
+      localPredicateReferences -- p.outputSet
+    }
+
+    // Simplify the predicates before pulling them out.
+    val transformed = BooleanSimplification(sub) transformUp {
+      case f @ Filter(cond, child) =>
+        val (correlated, local) =
+          splitConjunctivePredicates(cond).partition(containsOuter)
+
+        // Rewrite the filter without the correlated predicates if any.
+        correlated match {
+          case Nil => f
+          case xs if local.nonEmpty =>
+            val newFilter = Filter(local.reduce(And), child)
+            predicateMap += newFilter -> xs
+            newFilter
+          case xs =>
+            predicateMap += child -> xs
+            child
+        }
+      case p @ Project(expressions, child) =>
+        val referencesToAdd = missingReferences(p)
+        if (referencesToAdd.nonEmpty) {
+          Project(expressions ++ referencesToAdd, child)
+        } else {
+          p
+        }
+      case a @ Aggregate(grouping, expressions, child) =>
+        val referencesToAdd = missingReferences(a)
+        if (referencesToAdd.nonEmpty) {
+          Aggregate(grouping ++ referencesToAdd, expressions ++ referencesToAdd, child)
+        } else {
+          a
+        }
+      case p =>
+        p
+    }
+
+    // Make sure the inner and the outer query attributes do not collide.
+    // In case of a collision, change the subquery plan's output to use
+    // different attribute by creating alias(s).
+    val baseConditions = predicateMap.values.flatten.toSeq
+    val (newPlan, newCond) = if (outer.nonEmpty) {
+      val outputSet = outer.map(_.outputSet).reduce(_ ++ _)
+      val duplicates = transformed.outputSet.intersect(outputSet)
+      val (plan, deDuplicatedConditions) = if (duplicates.nonEmpty) {
+        val aliasMap = AttributeMap(duplicates.map { dup =>
+          dup -> Alias(dup, dup.toString)()
+        }.toSeq)
+        val aliasedExpressions = transformed.output.map { ref =>
+          aliasMap.getOrElse(ref, ref)
+        }
+        val aliasedProjection = Project(aliasedExpressions, transformed)
+        val aliasedConditions = baseConditions.map(_.transform {
+          case ref: Attribute => aliasMap.getOrElse(ref, ref).toAttribute
+        })
+        (aliasedProjection, aliasedConditions)
+      } else {
+        (transformed, baseConditions)
+      }
+      (plan, stripOuterReferences(deDuplicatedConditions))
+    } else {
+      (transformed, stripOuterReferences(baseConditions))
+    }
+    (newPlan, newCond)
+  }
+
+  def getValidCondition(newCond: Seq[Expression], oldCond: Seq[Expression]): Seq[Expression] = {
+    if (newCond.isEmpty) oldCond else newCond
+  }
+
+  def getJoinCondition(
+      conds: Seq[Expression], left: LogicalPlan, right: LogicalPlan): Seq[Expression] = {
+    conds.filter(c => c.references.intersect(left.outputSet).nonEmpty &&
+      c.references.intersect(right.outputSet).nonEmpty)
+  }
+
+  def checkCondition(cond: Expression, conditionName: String): Unit = {
+    if (!cond.deterministic) {
+      throw DeltaErrors.nonDeterministicNotSupportedException(
+        s"$conditionName condition of DELETE operation", cond)
+    }
+    if (cond.find(_.isInstanceOf[AggregateExpression]).isDefined) {
+      throw DeltaErrors.aggsNotSupportedException(
+        s"$conditionName condition of DELETE operation", cond)
+    }
+    if (SubqueryExpression.hasSubquery(cond)) {
+      throw DeltaErrors.subqueryNotSupportedException(
+        s"$conditionName condition of DELETE operation", cond)
+    }
+  }
+
+  def rewriteSubquery(op: String, table: LogicalPlan, condition: Expression)
+      : (Boolean, LogicalPlan, Option[Expression], Option[LogicalPlan]) = {
+    val flattenPredicates = flattenToDisjunctivePredicates(condition)
+    val (dnfWithSubquery, dnfWithoutSubquery) =
+      flattenPredicates.partition(SubqueryExpression.hasSubquery)
+    if (dnfWithSubquery.length > 1) {
+      throw DeltaErrors.moreThanOneSubqueryNotSupportedException(op)
+    }
+    val predicates = splitConjunctivePredicates(dnfWithSubquery.head)
+    if (predicates.exists { p =>
+      // IN or correlated sub-query are supported only
+      SubqueryExpression.hasSubquery(p) &&
+        !SubqueryExpression.hasInOrCorrelatedExistsSubquery(p)
+    }) {
+      throw DeltaErrors.InOrUncorrelatedSubquerySupportedOnlyException(op)
+    }
+    val (cnfWithSubquery, cnfWithoutSubquery) =
+      predicates.partition(SubqueryExpression.hasInOrCorrelatedExistsSubquery)
+    if (cnfWithSubquery.nonEmpty) {
+      // handle in or correlated sub-query
+      if (cnfWithSubquery.length > 1) {
+        throw DeltaErrors.moreThanOneSubqueryNotSupportedException(op)
+      }
+
+      val correlatedSubquery = getCorrelatedSubquery(table, cnfWithSubquery)
+      correlatedSubquery match {
+        case ScalarSubquery(sub, children, _) if children.nonEmpty =>
+          (true, table, ((children ++ cnfWithoutSubquery).reduceLeftOption(And)
+            ++ dnfWithoutSubquery.reduceLeftOption(Or)).reduceLeftOption(Or), Some(sub))
+        case Exists(sub, children, _) if children.nonEmpty =>
+          (true, table, ((children ++ cnfWithoutSubquery).reduceLeftOption(And)
+            ++ dnfWithoutSubquery.reduceLeftOption(Or)).reduceLeftOption(Or), Some(sub))
+        case ListQuery(sub, children, _, _) if children.nonEmpty =>
+          (true, table, ((children ++ cnfWithoutSubquery).reduceLeftOption(And)
+            ++ dnfWithoutSubquery.reduceLeftOption(Or)).reduceLeftOption(Or), Some(sub))
+        case InSubquery(values, ListQuery(sub, children, _, _)) if children.nonEmpty =>
+          val newSub = dedupSubqueryOnSelfJoin(table, sub, Some(values))
+          val inConditions = values.zip(newSub.output).map(EqualTo.tupled)
+          val subJoinConditions = getJoinCondition(children, table, sub)
+          (true, table,
+            ((inConditions ++ subJoinConditions ++ cnfWithoutSubquery).reduceLeftOption(And)
+            ++ dnfWithoutSubquery.reduceLeftOption(Or)).reduceLeftOption(Or), Some(sub))
+        case InSubquery(values, ListQuery(sub, children, _, _)) =>
+          val newSub = dedupSubqueryOnSelfJoin(table, sub, Some(values))
+          val inConditions = values.zip(newSub.output).map(EqualTo.tupled)
+          val subJoinConditions = getJoinCondition(children, table, sub)
+          (true, table,
+            ((inConditions ++ subJoinConditions ++ cnfWithoutSubquery).reduceLeftOption(And)
+            ++ dnfWithoutSubquery.reduceLeftOption(Or)).reduceLeftOption(Or), Some(newSub))
+        case Not(InSubquery(values, ListQuery(sub, _, _, _))) =>
+          val newSub = dedupSubqueryOnSelfJoin(table, sub, Some(values))
+          val joinConditions = values.zip(newSub.output).map(EqualTo.tupled)
+          val find = newSub.find {
+            case Filter(cond, _) =>
+              val constraints = splitConjunctivePredicates(cond)
+              val exprs = constraints.flatMap(inferIsNotNullConstraints).collect {
+                case IsNotNull(Cast(expr, _, _)) => expr
+                case IsNotNull(expr) => expr
+              }
+              newSub.output.intersect(exprs).nonEmpty
+            case _ => false
+          }
+          if (find.isEmpty) {
+            throw DeltaErrors.NotInWithoutIsNotNullNotSupportedException(op)
+          }
+          val newSource = Join(table, newSub,
+            LeftAnti, joinConditions.reduceLeftOption(And), JoinHint.NONE)
+
+          // generate a newTable which with new exprId
+          val newTable = table.transformUp {
+            case ds @ DataSourceV2Relation(_, output, _, _, _) =>
+              val newOutput = output.map { a => a.withExprId(NamedExpression.newExprId) }
+              ds.copy(output = newOutput)
+          }
+          // coordinately, the join condition should use the new exprId
+          val newJoinConditions = values.map { expr =>
+            expr transformDown {
+              case a: AttributeReference => newTable.output.find(_.name == a.name).getOrElse(a)
+            }
+          }.zip(values).map(EqualTo.tupled)
+          val newDnfWithoutSubquery = dnfWithoutSubquery.map { expr =>
+            expr.transformDown { case a: AttributeReference =>
+              newTable.output.find(_.name == a.name).getOrElse(a)
+            }
+          }.reduceLeftOption(Or)
+          (true, newTable,
+            ((newJoinConditions ++ cnfWithoutSubquery).reduceLeftOption(And)
+              ++ newDnfWithoutSubquery).reduceLeftOption(Or), Some(newSource))
+        case Not(Exists(sub, children, _)) if children.nonEmpty =>
+          val newSource = Join(table, sub,
+            LeftAnti, children.reduceLeftOption(And), JoinHint.NONE)
+          // generate a newTable which with new exprId
+          val newTable = table.transformUp {
+            case ds @ DataSourceV2Relation(_, output, _, _, _) =>
+              val newOutput = output.map { a => a.withExprId(NamedExpression.newExprId) }
+              ds.copy(output = newOutput)
+          }
+          val joinConditions = getJoinCondition(children, table, sub)
+
+          // coordinately, the join condition should use the new exprId
+          val newJoinConditions = (joinConditions.map { cond =>
+            cond transformDown {
+              case c: AttributeReference if sub.output.exists {
+                case a: AttributeReference => a.sameRef(c)
+              } => newTable.output.find(_.name == c.name).getOrElse(c)
+            }
+          } ++ cnfWithoutSubquery).reduceLeftOption(And)
+          val newDnfWithoutSubquery = dnfWithoutSubquery.map { expr =>
+            expr.transformDown { case a: AttributeReference =>
+              newTable.output.find(_.name == a.name).getOrElse(a)
+            }
+          }.reduceLeftOption(Or)
+          (true, newTable,
+            (newJoinConditions ++ newDnfWithoutSubquery).reduceLeftOption(Or), Some(newSource))
+        case _ =>
+          throw DeltaErrors.subqueryNotSupportedException(op, correlatedSubquery)
+      }
+    } else {
+      (false, table, None, None)
+    }
+  }
+
+  private def getCorrelatedSubquery(table: LogicalPlan, withSubquery: Seq[Expression]) = {
+    val outerPlans = table.children
+    val correlatedSubquery = withSubquery.head transformDown {
+      case ScalarSubquery(sub, children, exprId) if children.nonEmpty =>
+        val (newPlan, newCond) = pullOutCorrelatedPredicates(sub, outerPlans)
+        ScalarSubquery(newPlan, getValidCondition(newCond, children), exprId)
+      case Exists(sub, children, exprId) if children.nonEmpty =>
+        val (newPlan, newCond) = pullOutCorrelatedPredicates(sub, outerPlans)
+        Exists(newPlan, getValidCondition(newCond, children), exprId)
+      case ListQuery(sub, children, exprId, childOutputs) if children.nonEmpty =>
+        val (newPlan, newCond) = pullOutCorrelatedPredicates(sub, outerPlans)
+        ListQuery(newPlan, getValidCondition(newCond, children), exprId, childOutputs)
+    }
+    correlatedSubquery
+  }
+
+  /**
+   * Infer the Attribute-specific IsNotNull constraints from the null intolerant child expressions
+   * of constraints.
+   */
+  private def inferIsNotNullConstraints(constraint: Expression): Seq[Expression] =
+    constraint match {
+      // When the root is IsNotNull, we can push IsNotNull through the child null intolerant
+      // expressions
+      case IsNotNull(expr) => scanNullIntolerantAttribute(expr).map(IsNotNull(_))
+      // Constraints always return true for all the inputs. That means, null will never be returned.
+      // Thus, we can infer `IsNotNull(constraint)`, and also push IsNotNull through the child
+      // null intolerant expressions.
+      case _ => scanNullIntolerantAttribute(constraint).map(IsNotNull(_))
+    }
+
+  /**
+   * Recursively explores the expressions which are null intolerant and returns all attributes
+   * in these expressions.
+   */
+  private def scanNullIntolerantAttribute(expr: Expression): Seq[Attribute] = expr match {
+    case a: Attribute => Seq(a)
+    case _: NullIntolerant => expr.children.flatMap(scanNullIntolerantAttribute)
+    case _ => Seq.empty[Attribute]
   }
 }
 
