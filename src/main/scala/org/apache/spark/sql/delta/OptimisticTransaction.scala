@@ -527,6 +527,9 @@ trait OptimisticTransactionImpl extends TransactionalWrite with SQLMetricsReport
           "commitAttemptNumber" -> attemptNumber))
       }
 
+      // Check log exists before writing, since some command like CONVERT TO PARQUET
+      // may drop the log directory in the same time.
+      deltaLog.checkLogDirectoryExist()
       deltaLog.store.write(
         deltaFile(deltaLog.logPath, attemptVersion),
         actions.map(_.json).toIterator)
