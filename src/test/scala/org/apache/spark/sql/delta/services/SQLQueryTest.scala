@@ -18,6 +18,8 @@ package org.apache.spark.sql.delta.services
 
 import java.util.concurrent.TimeUnit
 
+import scala.collection.mutable.ArrayBuffer
+
 import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent, SparkListenerJobStart}
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -1643,10 +1645,24 @@ class SQLQuerySuite extends QueryTest
 
   test("should not apply union optimization when the filter is partition filter") {
     def containsUnion(sparkPlanInfo: SparkPlanInfo): Boolean = {
-      sparkPlanInfo.nodeName match {
-        case "Union" => true
-        case _ if sparkPlanInfo.children.isEmpty => false
-        case _ => sparkPlanInfo.children.forall(containsUnion)
+      if (sparkPlanInfo.nodeName.equals("Union")) {
+        val children = new ArrayBuffer[SparkPlanInfo]()
+        sparkPlanInfo.children.foreach { child =>
+          if (child.nodeName.equals("WholeStageCodegen")) {
+            children ++= child.children
+          } else {
+            children += child
+          }
+        }
+        if (children.exists(c => c.nodeName.equals("Filter"))) {
+          true
+        } else {
+          sparkPlanInfo.children.forall(containsUnion)
+        }
+      } else if (sparkPlanInfo.children.isEmpty) {
+        false
+      } else {
+        sparkPlanInfo.children.forall(containsUnion)
       }
     }
     var planRewrittenByUnion = false
@@ -1673,6 +1689,8 @@ class SQLQuerySuite extends QueryTest
         sql("INSERT INTO target values (1, 1, 1), (2, 2, 2), (3, 3, 3)")
         sql("CONVERT TO DELTA target")
 
+        // reset
+        planRewrittenByUnion = false
         spark.sparkContext.addSparkListener(listener)
         sql(
           """
@@ -1728,6 +1746,49 @@ class SQLQuerySuite extends QueryTest
         sql("UPDATE temp_view v SET key=2")
       ).getMessage
       assert(e1.contains("Expect a full scan of Delta sources, but found a partial scan."))
+    }
+  }
+
+  test("scalar-subquery in update set") {
+    withTable("source", "target") {
+      sql("CREATE TABLE source(a int, b int) USING parquet")
+      sql("INSERT INTO TABLE source VALUES (2, 2)")
+      sql("CREATE TABLE target(a int, b int) USING parquet")
+      sql("INSERT INTO TABLE target VALUES (1, 2)")
+      sql("CONVERT TO DELTA target")
+      sql(
+        """
+          |UPDATE target t
+          |SET t.a = (SELECT max(s.a) FROM source s)
+          |""".stripMargin)
+      checkAnswer(spark.table("target"), Row(2, 2) :: Nil)
+      sql(
+        """
+          |UPDATE target t
+          |SET t.a =
+          | (SELECT sum(s1.a * s2.a)
+          |   FROM source s1 inner join source s2 ON s1.a = s2.a
+          |   WHERE 1=1
+          |  AND s1.b = t.b
+          | )
+          |""".stripMargin)
+      checkAnswer(spark.table("target"), Row(4, 2) :: Nil)
+      val e = intercept[AnalysisException](
+        sql(
+          """
+            |UPDATE t
+            |FROM target t, source s
+            |SET t.a = ( SELECT max(s.a) FROM source s WHERE s.b = t.b )
+            |WHERE t.b = s.b
+            |""".stripMargin)
+      ).getMessage()
+      assert(e.contains("Subqueries are not supported in the UpdateWithJoinTable"))
+      sql(
+        """
+          |DELETE FROM target t
+          |WHERE t.a = (SELECT max(s.a * 2) FROM source s)
+          |""".stripMargin)
+      checkAnswer(spark.table("target"), Nil)
     }
   }
 }

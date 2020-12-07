@@ -28,8 +28,8 @@ import org.apache.spark.sql.internal.SQLConf
 class PreprocessTableUpdateDelete(
     spark: SparkSession) extends Rule[LogicalPlan] with UpdateExpressionsSupport {
 
-  def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperatorsDown {
-    case DeltaUpdateTable(table, updateColumns, updateExpressions, condition) =>
+  def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
+    case u @ DeltaUpdateTable(table, updateColumns, updateExpressions, condition) if u.resolved =>
       condition.foreach(checkCondition(_, "update"))
       val index = EliminateSubqueryAliases(table) match {
         case DeltaFullTable(tahoeFileIndex) => tahoeFileIndex
@@ -43,8 +43,8 @@ class PreprocessTableUpdateDelete(
         table.output, resolveNameParts, updateExpressions, conf.resolver)
       UpdateCommand(index, table, alignedUpdateExprs, condition)
 
-    case UpdateWithJoinTable(target, source, updateColumns, updateExpressions, condition,
-         updateClause) =>
+    case u @ UpdateWithJoinTable(target, source, updateColumns, updateExpressions, condition,
+         updateClause) if u.resolved =>
       condition.foreach(checkCondition(_, "update"))
       val index = EliminateSubqueryAliases(target) match {
         case DeltaFullTable(tahoeFileIndex) => tahoeFileIndex
@@ -64,18 +64,16 @@ class PreprocessTableUpdateDelete(
 
       UpdateWithJoinCommand(source, target, index, condition, update)
 
-    case DeltaDelete(table, condition) =>
+    case d @ DeltaDelete(table, condition) if d.resolved =>
       val index = EliminateSubqueryAliases(table) match {
         case DeltaFullTable(tahoeFileIndex) =>
           tahoeFileIndex
         case o =>
           throw DeltaErrors.notADeltaSourceException("DELETE", Some(o))
       }
-      val command = DeleteCommand(index, table, condition)
-      spark.sessionState.analyzer.checkAnalysis(command)
-      command
+      DeleteCommand(index, table, condition)
 
-    case DeleteWithJoinTable(target, source, condition, delete) =>
+    case d @ DeleteWithJoinTable(target, source, condition, delete) if d.resolved =>
       condition.foreach(checkCondition(_, "delete"))
       val index = EliminateSubqueryAliases(target) match {
         case DeltaFullTable(tahoeFileIndex) =>
@@ -83,9 +81,7 @@ class PreprocessTableUpdateDelete(
         case o =>
           throw DeltaErrors.notADeltaSourceException("DELETE", Some(o))
       }
-      val command = DeleteWithJoinCommand(source, target, index, condition, delete)
-      spark.sessionState.analyzer.checkAnalysis(command)
-      command
+      DeleteWithJoinCommand(source, target, index, condition, delete)
   }
 
   private def checkCondition(cond: Expression, conditionName: String): Unit = {
