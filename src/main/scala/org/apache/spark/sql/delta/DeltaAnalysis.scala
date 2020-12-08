@@ -130,7 +130,7 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
         // It is a well-defined Delta table with a schema
 
         val resolvedDeleteCondition =
-          condition.map(resolveExpressionTopDown(_, d)).flatMap(inferredConditions)
+          condition.map(resolveExpressionTopDown(_, d)).flatMap(inferConditions)
         resolvedDeleteCondition.foreach(checkCondition(_, "cross tables delete"))
 
         val actions = DeltaMergeIntoDeleteClause(
@@ -151,7 +151,7 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
         throw DeltaErrors.notADeltaSourceException("DELETE", Some(d))
       }
 
-    case u @ UpdateTable(table, assignments, condition, None) if u.childrenResolved =>
+    case u @ UpdateTable(table, assignments, condition, None) if u.resolved =>
       // rewrite subquery
       condition.foreach { c =>
         val (rewrite, target, newConditions, source) = rewriteSubquery("UPDATE", table, c)
@@ -160,7 +160,7 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
         }
       }
 
-      val (cols, expressions) = assignments.map(a =>
+      val (columns, values) = assignments.map(a =>
         a.key.asInstanceOf[NamedExpression] -> a.value).unzip
       // rewrites Delta from V2 to V1
       val newTable = table.transformUp { case DeltaRelation(lr) => lr }
@@ -169,9 +169,9 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
         case o =>
           throw DeltaErrors.notADeltaSourceException("UPDATE", o)
       }
-      DeltaUpdateTable(newTable, cols, expressions, condition)
+      DeltaUpdateTable(newTable, columns, values, condition)
 
-    case u @ UpdateTable(target, assignments, condition, Some(source)) if u.childrenResolved &&
+    case u @ UpdateTable(target, assignments, condition, Some(source)) if u.resolved &&
         target.outputSet.intersect(source.outputSet).isEmpty =>
       // rewrites Delta from V2 to V1
       val newTarget = target.transformUp { case DeltaRelation(lr) => lr }
@@ -180,35 +180,38 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
         case o =>
           throw DeltaErrors.notADeltaSourceException("UPDATE", o)
       }
-      val resolvedAssignments = resolveAssignments(assignments, u)
-      val columns = resolvedAssignments.map(_.key.asInstanceOf[NamedExpression])
-      val values = resolvedAssignments.map(_.value)
-      val resolvedUpdateCondition =
-        condition.map(resolveExpressionTopDown(_, u)).flatMap(inferredConditions)
-      resolvedUpdateCondition.foreach(checkCondition(_, "cross tables update"))
+      val (columns, values) = assignments.map(a =>
+        a.key.asInstanceOf[NamedExpression] -> a.value).unzip
+      values.foreach { e =>
+        if (SubqueryExpression.hasCorrelatedSubquery(e)) {
+          throw DeltaErrors.subqueryNotSupportedException("UpdateWithJoinTable", e)
+        }
+      }
+      val inferredCondition = condition.flatMap(inferConditions)
+      inferredCondition.foreach(checkCondition(_, "cross tables update"))
 
-      if (resolvedUpdateCondition.isEmpty && values.forall(_.foldable)) {
+      if (inferredCondition.isEmpty && values.forall(_.foldable)) {
         // If join condition is empty and SET expressions are all foldable,
         // skip join and fallback to simple update
         logInfo(s"Update conditions are empty with foldable SET clause, fallback to simple update")
-        DeltaUpdateTable(newTarget, columns, values, resolvedUpdateCondition)
+        DeltaUpdateTable(newTarget, columns, values, inferredCondition)
       } else {
-        val updateActions = DeltaUpdateTable.toActionFromAssignments(resolvedAssignments)
-        val actions = DeltaMergeIntoUpdateClause(resolvedUpdateCondition, updateActions)
+        val updateActions = DeltaUpdateTable.toActionFromAssignments(assignments)
+        val actions = DeltaMergeIntoUpdateClause(inferredCondition, updateActions)
         source match {
           case _: Join =>
             // if the source contains Join, we should fill the join criteria
-            val withFilter = extractPredicatesOnlyInSource(source, resolvedUpdateCondition.get)
+            val withFilter = extractPredicatesOnlyInSource(source, inferredCondition.get)
               .map(Filter(_, source)).getOrElse(source)
             val withProject =
-              projectionForSource(withFilter, resolvedUpdateCondition, columns, values)
+              projectionForSource(withFilter, inferredCondition, columns, values)
             UpdateWithJoinTable(
-              newTarget, withProject, columns, values, resolvedUpdateCondition, actions)
+              newTarget, withProject, columns, values, inferredCondition, actions)
           case _ =>
             val withProject =
-              projectionForSource(source, resolvedUpdateCondition, columns, values)
+              projectionForSource(source, inferredCondition, columns, values)
             UpdateWithJoinTable(
-              newTarget, withProject, columns, values, resolvedUpdateCondition, actions)
+              newTarget, withProject, columns, values, inferredCondition, actions)
         }
       }
 
@@ -407,7 +410,7 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
    * For e.g., if an operator has constraints of the form (`a = 5`, `a = b`), this returns an
    * constraints (`a = 5`, `a = b`, `b = 5`)
    */
-  private def inferredConditions(condition: Expression): Option[Expression] = {
+  private def inferConditions(condition: Expression): Option[Expression] = {
     val constraints = splitConjunctivePredicates(condition).toSet
     var inferredConstraints = constraints
     // IsNotNull should be constructed by `constructIsNotNullConstraints`.
@@ -677,10 +680,21 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
     val flattenPredicates = flattenToDisjunctivePredicates(condition)
     val (dnfWithSubquery, dnfWithoutSubquery) =
       flattenPredicates.partition(SubqueryExpression.hasSubquery)
+    if (dnfWithSubquery.isEmpty) {
+      return (false, table, None, None)
+    }
     if (dnfWithSubquery.length > 1) {
       throw DeltaErrors.moreThanOneSubqueryNotSupportedException(op)
     }
     val predicates = splitConjunctivePredicates(dnfWithSubquery.head)
+    if (predicates.exists { e =>
+      // non correlate scalar subquery
+      e.find {
+        case s: ScalarSubquery => s.children.isEmpty
+        case _ => false
+      }.isDefined }) {
+      return (false, table, None, None)
+    }
     if (predicates.exists { p =>
       // IN or correlated sub-query are supported only
       SubqueryExpression.hasSubquery(p) &&

@@ -21,7 +21,6 @@ import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
 import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.internal.SQLConf
 
 /**
  * Preprocesses the [[DeltaUpdateTable]] logical plan before converting it to [[UpdateCommand]].
@@ -30,7 +29,7 @@ import org.apache.spark.sql.internal.SQLConf
  * into account that the specified SET clause may only update some columns or nested fields of
  * columns.
  */
-case class PreprocessTableUpdate(conf: SQLConf)
+object PreprocessTableUpdate
   extends Rule[LogicalPlan] with UpdateExpressionsSupport {
 
   override def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperators {

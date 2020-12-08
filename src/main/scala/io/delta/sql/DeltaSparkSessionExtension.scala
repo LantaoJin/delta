@@ -81,13 +81,13 @@ class DeltaSparkSessionExtension extends (SparkSessionExtensions => Unit) {
       new DeltaUnsupportedOperationsCheck(session)
     }
     extensions.injectPostHocResolutionRule { session =>
-      new PreprocessTableUpdate(session.sessionState.conf)
+      PreprocessTableUpdate
     }
     extensions.injectPostHocResolutionRule { session =>
-      new PreprocessTableMerge(session.sessionState.conf)
+      PreprocessTableMerge
     }
     extensions.injectPostHocResolutionRule { session =>
-      new PreprocessTableDelete(session.sessionState.conf)
+      PreprocessTableDelete
     }
   }
 }

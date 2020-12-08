@@ -195,38 +195,6 @@ class DeltaSubQuerySuite extends QueryTest
     }
   }
 
-  test("Uncorrelated sub-query in where") {
-    withTable("source", "target") {
-      sql("CREATE TABLE source(a int, b int) USING parquet")
-      sql("INSERT INTO source values (1, 10), (2, 20), (3, 30)")
-      sql("CREATE TABLE target USING delta AS SELECT * FROM source")
-      val df3 = sql(
-        """
-          |SELECT * FROM target t
-          |WHERE t.a = (SELECT max(s.a) FROM source s)
-          |""".stripMargin)
-      checkAnswer(df3, Row(3, 30) :: Nil)
-      val e = intercept[AnalysisException] {
-        sql(
-          """
-            |DELETE FROM target t
-            |WHERE t.a = (SELECT max(s.a) FROM source s)
-            |""".stripMargin)
-      }.getMessage()
-      assert(e.contains("In or uncorrelated subquery is supported only in"))
-      val e2 = intercept[AnalysisException] {
-        sql(
-          """
-            |UPDATE target t
-            |SET t.b = 0
-            |WHERE t.a = (SELECT max(s.a) FROM source s)
-            |""".stripMargin)
-      }.getMessage()
-      assert(e2.contains("In or uncorrelated subquery is supported only in"))
-    }
-  }
-
-
   test("cross table update/delete with sub-query in where is not supported") {
     withTable("source", "source2", "target") {
       sql("CREATE TABLE source(a int, b int) USING parquet")
@@ -393,227 +361,282 @@ class DeltaSubQuerySuite extends QueryTest
   }
 
   test("More than one subquery in where") {
-    sql(
-      """
-        |CREATE TEMPORARY VIEW S1 AS SELECT * FROM VALUES
-        |  (null, null), (4, 4), (5, 5), (8, 8), (9, 9), (11, 11) AS s1(a, b)
-        |""".stripMargin)
-    sql(
-      """
-        |CREATE TEMPORARY VIEW S2 AS SELECT * FROM VALUES
-        |  (7, 7), (8, 8), (11, 11), (null, null) AS s2(c, d)
-        |""".stripMargin)
-    val where1 =
-      """
-        |WHERE a IN (SELECT c FROM s2) AND a IN (10, 11, 12)
-        |""".stripMargin
-    val where2 =
-      """
-        |WHERE a IN (SELECT c FROM s2) AND b IN (10, 11, 12)
-        |""".stripMargin
-    val where3 =
-      """
-        |WHERE a IN (SELECT c FROM s2) AND b IN (SELECT d FROM s2)
-        |""".stripMargin
-    Seq(where1, where2)
-      .foreach(checkNestedInSubquery(_, "s1"))
-    Seq(where3)
-      .foreach(checkNestedInSubquery(_, "s1", supported = false))
+    withTempView("S1", "S2") {
+      sql(
+        """
+          |CREATE TEMPORARY VIEW S1 AS SELECT * FROM VALUES
+          |  (null, null), (4, 4), (5, 5), (8, 8), (9, 9), (11, 11) AS s1(a, b)
+          |""".stripMargin)
+      sql(
+        """
+          |CREATE TEMPORARY VIEW S2 AS SELECT * FROM VALUES
+          |  (7, 7), (8, 8), (11, 11), (null, null) AS s2(c, d)
+          |""".stripMargin)
+      val where1 =
+        """
+          |WHERE a IN (SELECT c FROM s2) AND a IN (10, 11, 12)
+          |""".stripMargin
+      val where2 =
+        """
+          |WHERE a IN (SELECT c FROM s2) AND b IN (10, 11, 12)
+          |""".stripMargin
+      val where3 =
+        """
+          |WHERE a IN (SELECT c FROM s2) AND b IN (SELECT d FROM s2)
+          |""".stripMargin
+      Seq(where1, where2)
+        .foreach(checkNestedInSubquery(_, "s1"))
+      Seq(where3)
+        .foreach(checkNestedInSubquery(_, "s1", supported = false))
+    }
   }
 
   test("NOT IN subqueries in where") {
-    sql(
-      """
-        |CREATE TEMPORARY VIEW S1 AS SELECT * FROM VALUES
-        |  (null, null), (4, 4), (5, 5), (8, 8), (9, 9), (11, 11) AS s1(a, b)
-        |""".stripMargin)
-    sql(
-      """
-        |CREATE TEMPORARY VIEW S2 AS SELECT * FROM VALUES
-        |  (7, 7), (8, 8), (11, 11), (null, null) AS s2(c, d)
-        |""".stripMargin)
-    val where11 =
-      """
-        |WHERE NOT (a NOT IN (SELECT c
-        |                      FROM s2));
-        |""".stripMargin
-    val where12 =
-      """
-        |WHERE NOT (a > 5
-        |            OR a IN (SELECT c
-        |                     FROM s2))
-        |""".stripMargin
-    val where13 =
-      """
-        |WHERE NOT (a > 5
-        |            OR a IN (SELECT c
-        |                     FROM s2 WHERE c IS NOT NULL))
-        |""".stripMargin
-    val where14 =
-      """
-        |WHERE NOT (a > 5
-        |            OR a NOT IN (SELECT c
-        |                         FROM s2))
-        |""".stripMargin
-    val where15 =
-      """
-        |WHERE NOT (a > 5
-        |            AND a IN (SELECT c
-        |                      FROM s2))
-        |""".stripMargin
-    val where16 =
-      """
-        |WHERE NOT (a > 5
-        |            AND a IN (SELECT c
-        |                      FROM s2 WHERE c IS NOT NULL))
-        |""".stripMargin
-    val where17 =
-      """
-        |WHERE NOT (a > 5
-        |            AND a NOT IN (SELECT c
-        |                          FROM   s2))
-        |""".stripMargin
-    Seq(where11, where13, where14, where16, where17)
-      .foreach(checkNestedInSubquery(_, "s1"))
-    Seq(where12, where15)
-      .foreach(checkNestedInSubquery(_, "s1", supported = false))
+    withTempView("S1", "S2") {
+      sql(
+        """
+          |CREATE TEMPORARY VIEW S1 AS SELECT * FROM VALUES
+          |  (null, null), (4, 4), (5, 5), (8, 8), (9, 9), (11, 11) AS s1(a, b)
+          |""".stripMargin)
+      sql(
+        """
+          |CREATE TEMPORARY VIEW S2 AS SELECT * FROM VALUES
+          |  (7, 7), (8, 8), (11, 11), (null, null) AS s2(c, d)
+          |""".stripMargin)
+      val where11 =
+        """
+          |WHERE NOT (a NOT IN (SELECT c
+          |                      FROM s2));
+          |""".stripMargin
+      val where12 =
+        """
+          |WHERE NOT (a > 5
+          |            OR a IN (SELECT c
+          |                     FROM s2))
+          |""".stripMargin
+      val where13 =
+        """
+          |WHERE NOT (a > 5
+          |            OR a IN (SELECT c
+          |                     FROM s2 WHERE c IS NOT NULL))
+          |""".stripMargin
+      val where14 =
+        """
+          |WHERE NOT (a > 5
+          |            OR a NOT IN (SELECT c
+          |                         FROM s2))
+          |""".stripMargin
+      val where15 =
+        """
+          |WHERE NOT (a > 5
+          |            AND a IN (SELECT c
+          |                      FROM s2))
+          |""".stripMargin
+      val where16 =
+        """
+          |WHERE NOT (a > 5
+          |            AND a IN (SELECT c
+          |                      FROM s2 WHERE c IS NOT NULL))
+          |""".stripMargin
+      val where17 =
+        """
+          |WHERE NOT (a > 5
+          |            AND a NOT IN (SELECT c
+          |                          FROM   s2))
+          |""".stripMargin
+      Seq(where11, where13, where14, where16, where17)
+        .foreach(checkNestedInSubquery(_, "s1"))
+      Seq(where12, where15)
+        .foreach(checkNestedInSubquery(_, "s1", supported = false))
+    }
   }
 
   test("Nested NOT IN subqueries in where") {
-    sql(
-      """
-        |CREATE TEMPORARY VIEW EMP AS SELECT * FROM VALUES
-        |  (100, "emp 1", 10),
-        |  (200, "emp 2", NULL),
-        |  (300, "emp 3", 20),
-        |  (400, "emp 4", 30),
-        |  (500, "emp 5", NULL),
-        |  (600, "emp 6", 100),
-        |  (800, "emp 8", 70)
-        |AS EMP(id, emp_name, dept_id)
-        |""".stripMargin)
-    sql(
-      """
-        |CREATE TEMPORARY VIEW DEPT AS SELECT * FROM VALUES
-        |  (10, "dept 1", "CA"),
-        |  (20, "dept 2", "NY"),
-        |  (30, "dept 3", "TX"),
-        |  (40, "dept 4 - unassigned", "OR"),
-        |  (50, "dept 5 - unassigned", "NJ"),
-        |  (70, "dept 7", "FL")
-        |AS DEPT(dept_id, dept_name, state)
-        |""".stripMargin)
-    sql(
-      """
-        |CREATE TEMPORARY VIEW BONUS AS SELECT * FROM VALUES
-        |  ("emp 1", 10.00D),
-        |  ("emp 1", 20.00D),
-        |  ("emp 2", 300.00D),
-        |  ("emp 2", 100.00D),
-        |  ("emp 3", 300.00D),
-        |  ("emp 4", 100.00D),
-        |  ("emp 5", 1000.00D),
-        |  ("emp 6 - no dept", 500.00D)
-        |AS BONUS(emp_name, bonus_amt)
-        |""".stripMargin)
-    sql(
-      """
-        |CREATE TEMPORARY VIEW ADDRESS AS SELECT * FROM VALUES
-        |  (100, "emp 1", "addr1"),
-        |  (200, null, "addr2"),
-        |  (null, "emp 3", "addr3"),
-        |  (null, null, "addr4"),
-        |  (600, "emp 6", "addr6"),
-        |  (800, "emp 8", "addr8")
-        |AS ADDRESS(id, emp_name, address)
-        |""".stripMargin)
-    val where1 =
-      """
-        |WHERE id = 600
-        |       OR id = 500
-        |       OR dept_id NOT IN (SELECT dept_id
-        |                          FROM   emp)
-        |""".stripMargin
-    val where2 =
-      """
-        |WHERE id = 800
-        |       OR (dept_id IS NOT NULL
-        |           AND dept_id NOT IN (SELECT dept_id
-        |                                FROM   emp))
-        |""".stripMargin
-    val where3 =
-      """
-        |WHERE id = 100
-        |       OR dept_id NOT IN (SELECT dept_id
-        |                           FROM   emp
-        |                           WHERE dept_id IS NOT NULL)
-        |""".stripMargin
-    val where4 =
-      """
-        |WHERE id = 200
-        |       OR (dept_id IS NOT NULL
-        |       AND dept_id + 100 NOT IN (SELECT dept_id
-        |                           FROM   emp
-        |                           WHERE dept_id IS NOT NULL))
-        |""".stripMargin
-    val where5 = // Multiple subqueries with disjunctive
-      """
-        |WHERE emp_name IN (SELECT emp_name
-        |                    FROM   bonus)
-        |        OR (dept_id IS NOT NULL
-        |            AND dept_id NOT IN (SELECT dept_id
-        |                                FROM   dept))
-        |""".stripMargin
-    val where6 = // Multiple subqueries with disjunctive
-      """
-        |WHERE EXISTS (SELECT emp_name
-        |               FROM   bonus
-        |               WHERE  target.emp_name = bonus.emp_name)
-        |       OR (dept_id IS NOT NULL
-        |           AND dept_id NOT IN (SELECT dept_id
-        |                               FROM   dept))
-        |""".stripMargin
-    val where7 =
-      """
-        |WHERE dept_id = 10
-        |OR (id, emp_name) NOT IN (SELECT id, emp_name FROM address)
-        |""".stripMargin
-    val where8 =
-      """
-        |WHERE dept_id = 10
-        |        OR (( id, emp_name ) NOT IN (SELECT id,
-        |                                             emp_name
-        |                                      FROM   address
-        |                                      WHERE  id IS NOT NULL
-        |                                             AND emp_name IS NOT NULL)
-        |        AND id > 400 )
-        |""".stripMargin
-    val where9 =
-      """
-        |WHERE dept_id = 10
-        |       OR emp_name NOT IN (SELECT emp_name
-        |                                  FROM   address
-        |                                  WHERE  id IS NOT NULL
-        |                                  AND emp_name IS NOT NULL
-        |                                  AND target.id = address.id)
-        |""".stripMargin
-    val where10 = // Multiple subqueries with disjunctive
-      """
-        |WHERE id NOT IN (SELECT id
-        |                         FROM   address
-        |                         WHERE  id IS NOT NULL
-        |                         AND emp_name IS NOT NULL
-        |                         AND id >= 400)
-        |       OR emp_name NOT IN (SELECT emp_name
-        |                                  FROM   address
-        |                                  WHERE  id IS NOT NULL
-        |                                  AND emp_name IS NOT NULL
-        |                                  AND target.id = address.id
-        |                                  AND id < 400)
-        |""".stripMargin
-    Seq(where3, where4, where8, where9)
-      .foreach(checkNestedInSubquery(_, "emp"))
-    Seq(where1, where2, where5, where6, where7, where10)
-      .foreach(checkNestedInSubquery(_, "emp", supported = false))
+    withTempView("EMP", "DEPT", "BONUS", "ADDRESS") {
+      sql(
+        """
+          |CREATE TEMPORARY VIEW EMP AS SELECT * FROM VALUES
+          |  (100, "emp 1", 10),
+          |  (200, "emp 2", NULL),
+          |  (300, "emp 3", 20),
+          |  (400, "emp 4", 30),
+          |  (500, "emp 5", NULL),
+          |  (600, "emp 6", 100),
+          |  (800, "emp 8", 70)
+          |AS EMP(id, emp_name, dept_id)
+          |""".stripMargin)
+      sql(
+        """
+          |CREATE TEMPORARY VIEW DEPT AS SELECT * FROM VALUES
+          |  (10, "dept 1", "CA"),
+          |  (20, "dept 2", "NY"),
+          |  (30, "dept 3", "TX"),
+          |  (40, "dept 4 - unassigned", "OR"),
+          |  (50, "dept 5 - unassigned", "NJ"),
+          |  (70, "dept 7", "FL")
+          |AS DEPT(dept_id, dept_name, state)
+          |""".stripMargin)
+      sql(
+        """
+          |CREATE TEMPORARY VIEW BONUS AS SELECT * FROM VALUES
+          |  ("emp 1", 10.00D),
+          |  ("emp 1", 20.00D),
+          |  ("emp 2", 300.00D),
+          |  ("emp 2", 100.00D),
+          |  ("emp 3", 300.00D),
+          |  ("emp 4", 100.00D),
+          |  ("emp 5", 1000.00D),
+          |  ("emp 6 - no dept", 500.00D)
+          |AS BONUS(emp_name, bonus_amt)
+          |""".stripMargin)
+      sql(
+        """
+          |CREATE TEMPORARY VIEW ADDRESS AS SELECT * FROM VALUES
+          |  (100, "emp 1", "addr1"),
+          |  (200, null, "addr2"),
+          |  (null, "emp 3", "addr3"),
+          |  (null, null, "addr4"),
+          |  (600, "emp 6", "addr6"),
+          |  (800, "emp 8", "addr8")
+          |AS ADDRESS(id, emp_name, address)
+          |""".stripMargin)
+      val where1 =
+        """
+          |WHERE id = 600
+          |       OR id = 500
+          |       OR dept_id NOT IN (SELECT dept_id
+          |                          FROM   emp)
+          |""".stripMargin
+      val where2 =
+        """
+          |WHERE id = 800
+          |       OR (dept_id IS NOT NULL
+          |           AND dept_id NOT IN (SELECT dept_id
+          |                                FROM   emp))
+          |""".stripMargin
+      val where3 =
+        """
+          |WHERE id = 100
+          |       OR dept_id NOT IN (SELECT dept_id
+          |                           FROM   emp
+          |                           WHERE dept_id IS NOT NULL)
+          |""".stripMargin
+      val where4 =
+        """
+          |WHERE id = 200
+          |       OR (dept_id IS NOT NULL
+          |       AND dept_id + 100 NOT IN (SELECT dept_id
+          |                           FROM   emp
+          |                           WHERE dept_id IS NOT NULL))
+          |""".stripMargin
+      val where5 = // Multiple subqueries with disjunctive
+        """
+          |WHERE emp_name IN (SELECT emp_name
+          |                    FROM   bonus)
+          |        OR (dept_id IS NOT NULL
+          |            AND dept_id NOT IN (SELECT dept_id
+          |                                FROM   dept))
+          |""".stripMargin
+      val where6 = // Multiple subqueries with disjunctive
+        """
+          |WHERE EXISTS (SELECT emp_name
+          |               FROM   bonus
+          |               WHERE  target.emp_name = bonus.emp_name)
+          |       OR (dept_id IS NOT NULL
+          |           AND dept_id NOT IN (SELECT dept_id
+          |                               FROM   dept))
+          |""".stripMargin
+      val where7 =
+        """
+          |WHERE dept_id = 10
+          |OR (id, emp_name) NOT IN (SELECT id, emp_name FROM address)
+          |""".stripMargin
+      val where8 =
+        """
+          |WHERE dept_id = 10
+          |        OR (( id, emp_name ) NOT IN (SELECT id,
+          |                                             emp_name
+          |                                      FROM   address
+          |                                      WHERE  id IS NOT NULL
+          |                                             AND emp_name IS NOT NULL)
+          |        AND id > 400 )
+          |""".stripMargin
+      val where9 =
+        """
+          |WHERE dept_id = 10
+          |       OR emp_name NOT IN (SELECT emp_name
+          |                                  FROM   address
+          |                                  WHERE  id IS NOT NULL
+          |                                  AND emp_name IS NOT NULL
+          |                                  AND target.id = address.id)
+          |""".stripMargin
+      val where10 = // Multiple subqueries with disjunctive
+        """
+          |WHERE id NOT IN (SELECT id
+          |                         FROM   address
+          |                         WHERE  id IS NOT NULL
+          |                         AND emp_name IS NOT NULL
+          |                         AND id >= 400)
+          |       OR emp_name NOT IN (SELECT emp_name
+          |                                  FROM   address
+          |                                  WHERE  id IS NOT NULL
+          |                                  AND emp_name IS NOT NULL
+          |                                  AND target.id = address.id
+          |                                  AND id < 400)
+          |""".stripMargin
+      Seq(where3, where4, where8, where9)
+        .foreach(checkNestedInSubquery(_, "emp"))
+      Seq(where1, where2, where5, where6, where7, where10)
+        .foreach(checkNestedInSubquery(_, "emp", supported = false))
+    }
+  }
+
+  test("scalar-subquery in update set") {
+    withTable("source", "target") {
+      sql("CREATE TABLE source(a int, b int) USING parquet")
+      sql("INSERT INTO TABLE source VALUES (2, 2)")
+      sql("CREATE TABLE target(a int, b int) USING parquet")
+      sql("INSERT INTO TABLE target VALUES (1, 2)")
+      sql("CONVERT TO DELTA target")
+      sql(
+        """
+          |UPDATE target t
+          |SET t.a = (SELECT max(s.a) FROM source s)
+          |""".stripMargin)
+      checkAnswer(spark.table("target"), Row(2, 2) :: Nil)
+      sql(
+        """
+          |UPDATE target t
+          |SET t.a =
+          | (SELECT sum(s1.a * s2.a)
+          |   FROM source s1 inner join source s2 ON s1.a = s2.a
+          |   WHERE 1=1
+          |  AND s1.b = t.b
+          | )
+          |""".stripMargin)
+      checkAnswer(spark.table("target"), Row(4, 2) :: Nil)
+      val e = intercept[AnalysisException](
+        sql(
+          """
+            |UPDATE t
+            |FROM target t, source s
+            |SET t.a = ( SELECT max(s.a) FROM source s WHERE s.b = t.b )
+            |WHERE t.b = s.b
+            |""".stripMargin)
+      ).getMessage()
+      assert(e.contains("Subqueries are not supported in the UpdateWithJoinTable"))
+      sql(
+        """
+          |UPDATE target t
+          |SET t.b = (SELECT max(s.a * 2) FROM source s)
+          |""".stripMargin)
+      checkAnswer(spark.table("target"), Row(4, 4) :: Nil)
+      sql(
+        """
+          |DELETE FROM target t
+          |WHERE t.a = (SELECT max(s.a * 2) FROM source s)
+          |""".stripMargin)
+      checkAnswer(spark.table("target"), Nil)
+    }
   }
 }

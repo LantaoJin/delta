@@ -25,7 +25,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.sql.test.SharedSparkSession
 
 trait DeltaDDLUsingPathTests extends QueryTest
@@ -107,7 +107,7 @@ trait DeltaDDLUsingPathTests extends QueryTest
     }
     assert(ex.getMessage.contains("/path/to/delta` is not a Delta table"))
 
-    withSQLConf(SQLConf.RUN_SQL_ON_FILES.key -> "false") {
+    withStaticSQLConf(StaticSQLConf.RUN_SQL_ON_FILES.key -> "false") {
       val ex = intercept[AnalysisException] {
         spark.table(s"delta.`/path/to/delta`")
       }
