@@ -1829,7 +1829,6 @@ class SQLQuerySuite extends QueryTest
       spark.sparkContext.listenerBus.waitUntilEmpty(TimeUnit.SECONDS.toMillis(10))
       spark.sparkContext.removeSparkListener(listener)
       checkAnswer(spark.table("target"), Row(1, 1, 3, 4) :: Row(2, 3, 4, 5) :: Nil)
-      Thread.sleep(50000)
       assert(isPushdown)
     }
   }
