@@ -154,13 +154,17 @@ case class UpdateWithJoinCommand(
       splitConjunctivePredicates(joinCondition).filter(_.references.subsetOf(target.outputSet))
     val dataSkippedFiles = deltaTxn.filterFiles(targetOnlyPredicates)
 
+    val targetUsedColumns = splitConjunctivePredicates(joinCondition)
+      .flatMap(_.references.intersect(target.outputSet)).map(_.name).toSet
+
     // Apply inner join to between source and target using the update condition to find matches
     // In addition, we attach two columns
     // - a monotonically increasing row id for target rows to later identify whether the same
     //     target row is modified by multiple user or not
     // - the target file name the row is from to later identify the files touched by matched rows
     val sourceDF = Dataset.ofRows(spark, source)
-    val targetDF = Dataset.ofRows(spark, buildTargetPlanWithFiles(deltaTxn, dataSkippedFiles))
+    val targetDF = Dataset.ofRows(spark,
+      buildTargetPlanWithFiles(deltaTxn, dataSkippedFiles, targetUsedColumns))
     val targetDFWithFilterPushdown = addFilterPushdown(targetDF, targetOnlyPredicates)
       .withColumn(ROW_ID_COL, monotonically_increasing_id())
       .withColumn(FILE_NAME_COL, input_file_name())
@@ -319,10 +323,11 @@ case class UpdateWithJoinCommand(
    * on this new plan.
    */
   private def buildTargetPlanWithFiles(
-    deltaTxn: OptimisticTransaction,
-    files: Seq[AddFile]): LogicalPlan = {
-    val plan = deltaTxn.deltaLog.createDataFrame(deltaTxn.snapshot, files, table = catalogTable)
-      .queryExecution.analyzed
+      deltaTxn: OptimisticTransaction,
+      files: Seq[AddFile],
+      targetUsedColumns: Set[String] = Set.empty): LogicalPlan = {
+    val plan = deltaTxn.deltaLog.createDataFrame(deltaTxn.snapshot, files,
+      table = catalogTable, projectedColumns = targetUsedColumns).queryExecution.analyzed
 
     // For each plan output column, find the corresponding target output column (by name) and
     // create an alias

@@ -1791,4 +1791,46 @@ class SQLQuerySuite extends QueryTest
       checkAnswer(spark.table("target"), Nil)
     }
   }
+
+  test("Apply projection pushdown to the inner join to avoid project all columns") {
+    def checkProjectionPushdown(physicalPlanDescription: String): Boolean = {
+      physicalPlanDescription.contains(
+        "ReadSchema: struct<a:int,c:int>"
+      )
+    }
+
+    var isPushdown = false
+    val listener = new SparkListener {
+      override def onOtherEvent(event: SparkListenerEvent): Unit = event match {
+        case e: SparkListenerSQLExecutionStart
+            if e.physicalPlanDescription.contains("CollectLimit") =>
+          if (!isPushdown) { // apply once
+            isPushdown = checkProjectionPushdown(e.physicalPlanDescription)
+          }
+        case _ => // Ignore
+      }
+    }
+
+    withTable("target", "source") {
+      sql("CREATE TABLE target(a int, b int, c int, d int) USING delta")
+      sql("INSERT INTO TABLE target VALUES (1, 2, 3, 4)")
+      sql("INSERT INTO TABLE target VALUES (2, 3, 4, 5)")
+      sql("CREATE TABLE source(a int, b int, c int, d int) USING parquet")
+      sql("INSERT INTO TABLE source VALUES (1, 2, 3, 5)")
+      sql("INSERT INTO TABLE source VALUES (1, 1, 1, 1)")
+      spark.sparkContext.addSparkListener(listener)
+      sql(
+        """
+          |UPDATE t
+          |FROM target t, source s
+          |SET t.b = s.b
+          |WHERE t.a = s.a and s.d = 1 and t.c = 3
+          |""".stripMargin)
+      spark.sparkContext.listenerBus.waitUntilEmpty(TimeUnit.SECONDS.toMillis(10))
+      spark.sparkContext.removeSparkListener(listener)
+      checkAnswer(spark.table("target"), Row(1, 1, 3, 4) :: Row(2, 3, 4, 5) :: Nil)
+      Thread.sleep(50000)
+      assert(isPushdown)
+    }
+  }
 }
