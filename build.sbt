@@ -176,8 +176,6 @@ packageBin in Compile := spPackage.value
 
 sparkComponents := Seq("sql")
 
-publishArtifact in Test := true
-
 /********************
  * Release settings *
  ********************/
