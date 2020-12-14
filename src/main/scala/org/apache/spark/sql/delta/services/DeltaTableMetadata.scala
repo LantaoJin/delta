@@ -30,7 +30,7 @@ case class DeltaTableMetadata(
     vacuum: Boolean, retention: Long) extends Ordered [DeltaTableMetadata] {
 
   private def this(db: String, tbl: String) {
-    this(db, tbl, "", "", false, 2L) // 2L is useless, but better use a value greater than 0
+    this(db, tbl, "", "", false, 12L) // 12L is useless, but better use a value greater than 0
   }
 
   override def hashCode: scala.Int = {
