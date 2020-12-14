@@ -322,14 +322,20 @@ class DeltaLog private(
       addFiles: Seq[AddFile],
       isStreaming: Boolean = false,
       actionTypeOpt: Option[String] = None,
-      table: Option[CatalogTable] = None): DataFrame = {
+      table: Option[CatalogTable] = None,
+      projectedColumns: Set[String] = Set.empty): DataFrame = {
     val actionType = actionTypeOpt.getOrElse(if (isStreaming) "streaming" else "batch")
     val fileIndex = new TahoeBatchFileIndex(spark, actionType, addFiles, this, dataPath, snapshot)
 
     val relation = HadoopFsRelation(
       fileIndex,
       partitionSchema = snapshot.metadata.partitionSchema,
-      dataSchema = snapshot.metadata.schema,
+      dataSchema =
+        if (projectedColumns.nonEmpty) {
+          StructType(snapshot.metadata.schema.filter(f => projectedColumns.contains(f.name)))
+        } else {
+          snapshot.metadata.schema
+        },
       bucketSpec = snapshot.metadata.bucketSpec,
       snapshot.fileFormat,
       snapshot.metadata.format.options)(spark)
