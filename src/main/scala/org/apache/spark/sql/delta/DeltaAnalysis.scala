@@ -51,8 +51,9 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
 
   override def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsDown {
     // INSERT INTO by ordinal
-    case a @ AppendData(DataSourceV2Relation(d: DeltaTableV2, _, _, _, _), query, _, false)
-      if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema()) =>
+    case a @ AppendData(DataSourceV2Relation(d: DeltaTableV2, _, _, _, _), query,
+        writeOptions, false)
+      if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema(), writeOptions) =>
       val projection = normalizeQueryColumns(query, d)
       if (projection != query) {
         a.copy(query = projection)
@@ -62,8 +63,8 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
 
     // INSERT OVERWRITE by ordinal
     case o @ OverwriteByExpression(
-    DataSourceV2Relation(d: DeltaTableV2, _, _, _, _), deleteExpr, query, _, false)
-      if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema()) =>
+    DataSourceV2Relation(d: DeltaTableV2, _, _, _, _), deleteExpr, query, writeOptions, false)
+      if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema(), writeOptions) =>
       val projection = normalizeQueryColumns(query, d)
       if (projection != query) {
         val aliases = AttributeMap(query.output.zip(projection.output).collect {
@@ -284,16 +285,19 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
   private def needsSchemaAdjustment(
       tableName: String,
       query: LogicalPlan,
-      schema: StructType): Boolean = {
+      schema: StructType,
+      writeOptions: Map[String, String]): Boolean = {
     val output = query.output
-    if (output.length < schema.length) {
-      throw DeltaErrors.notEnoughColumnsInInsert(tableName, output.length, schema.length)
+    val columnNames = writeOptions.get("insertColumns").map(_.split(",")).getOrElse(schema.names)
+    if (output.length < columnNames.length) {
+      throw DeltaErrors.notEnoughColumnsInInsert(tableName, output.length, columnNames.length)
     }
     // Now we should try our best to match everything that already exists, and leave the rest
     // for schema evolution to WriteIntoDelta
-    val existingSchemaOutput = output.take(schema.length)
-    existingSchemaOutput.map(_.name) != schema.map(_.name) ||
-      !SchemaUtils.isReadCompatible(schema.asNullable, existingSchemaOutput.toStructType)
+    val existingSchemaOutput = output.take(columnNames.length)
+    val filteredSchema = StructType(schema.filter(f => columnNames.toSet.contains(f.name)))
+    existingSchemaOutput.map(_.name) != columnNames.toSeq ||
+      !SchemaUtils.isReadCompatible(filteredSchema.asNullable, existingSchemaOutput.toStructType)
   }
 
   // Get cast operation for the level of strictness in the schema a user asked for
