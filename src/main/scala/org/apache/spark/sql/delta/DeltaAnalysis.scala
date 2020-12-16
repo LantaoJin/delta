@@ -163,6 +163,11 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
 
       val (columns, values) = assignments.map(a =>
         a.key.asInstanceOf[NamedExpression] -> a.value).unzip
+      values.foreach { e =>
+        if (SubqueryExpression.hasCorrelatedSubquery(e)) {
+          throw DeltaErrors.correlatedSubqueryNotSupportedException("UpdateTable", e)
+        }
+      }
       // rewrites Delta from V2 to V1
       val newTable = table.transformUp { case DeltaRelation(lr) => lr }
       newTable.collectLeaves().headOption match {
@@ -185,7 +190,7 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
         a.key.asInstanceOf[NamedExpression] -> a.value).unzip
       values.foreach { e =>
         if (SubqueryExpression.hasCorrelatedSubquery(e)) {
-          throw DeltaErrors.subqueryNotSupportedException("UpdateWithJoinTable", e)
+          throw DeltaErrors.correlatedSubqueryNotSupportedException("UpdateWithJoinTable", e)
         }
       }
       val inferredCondition = condition.flatMap(inferConditions)

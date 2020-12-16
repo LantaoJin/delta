@@ -604,6 +604,11 @@ object DeltaErrors
     new AnalysisException(s"Subqueries are not supported in the $op (condition = ${cond.sql}).")
   }
 
+  def correlatedSubqueryNotSupportedException(op: String, cond: Expression): Throwable = {
+    new AnalysisException(s"Correlated subqueries are not supported in the $op " +
+      s"(condition = ${cond.sql}).")
+  }
+
   def NotInWithoutIsNotNullNotSupportedException(op: String): Throwable = {
     new AnalysisException(s"NOT IN subquery without IS NOT NULL is not supported in $op. " +
       s"Try to add 'expr IS NOT NULL' in WHERE clause of subquery, such as " +
