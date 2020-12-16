@@ -368,7 +368,7 @@ class DeltaLog private(
     new HadoopFsRelation(
       fileIndex,
       partitionSchema = snapshotToUse.metadata.partitionSchema,
-      dataSchema = snapshotToUse.metadata.schema,
+      dataSchema = SchemaUtils.dropNullTypeColumns(snapshotToUse.metadata.schema),
       bucketSpec = catalogTable.flatMap(_.bucketSpec),
       snapshotToUse.fileFormat,
       snapshotToUse.metadata.format.options ++
