@@ -475,6 +475,11 @@ object DeltaErrors
     new AnalysisException(s"Subqueries are not supported in the $op (condition = ${cond.sql}).")
   }
 
+  def correlatedSubqueryNotSupportedException(op: String, cond: Expression): Throwable = {
+    new AnalysisException(s"Correlated subqueries are not supported in the $op " +
+      s"(condition = ${cond.sql}).")
+  }
+
   def multiColumnInPredicateNotSupportedException(operation: String): Throwable = {
     new AnalysisException(
       s"Multi-column In predicates are not supported in the $operation condition.")

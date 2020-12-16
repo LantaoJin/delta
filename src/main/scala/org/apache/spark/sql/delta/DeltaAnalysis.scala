@@ -36,6 +36,11 @@ class DeltaAnalysis(spark: SparkSession, conf: SQLConf)
       checkTargetTable(table)
       val (columns, values) = assignments.map(a =>
         a.key.asInstanceOf[NamedExpression] -> a.value).unzip
+      values.foreach { e =>
+        if (SubqueryExpression.hasCorrelatedSubquery(e)) {
+          throw DeltaErrors.correlatedSubqueryNotSupportedException("UpdateTable", e)
+        }
+      }
       val resolvedUpdateCondition = condition.map(resolveExpressionTopDown(_, u))
       DeltaUpdateTable(table, columns, values, resolvedUpdateCondition)
 
@@ -45,7 +50,7 @@ class DeltaAnalysis(spark: SparkSession, conf: SQLConf)
         a.key.asInstanceOf[NamedExpression] -> a.value).unzip
       values.foreach { e =>
         if (SubqueryExpression.hasCorrelatedSubquery(e)) {
-          throw DeltaErrors.subqueryNotSupportedException("UpdateWithJoinTable", e)
+          throw DeltaErrors.correlatedSubqueryNotSupportedException("UpdateWithJoinTable", e)
         }
       }
       val inferredCondition = condition.flatMap(inferConditions)

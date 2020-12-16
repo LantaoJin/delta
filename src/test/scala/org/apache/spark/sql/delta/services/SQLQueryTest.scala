@@ -1762,18 +1762,20 @@ class SQLQuerySuite extends QueryTest
           |SET t.a = (SELECT max(s.a) FROM source s)
           |""".stripMargin)
       checkAnswer(spark.table("target"), Row(2, 2) :: Nil)
-      sql(
-        """
-          |UPDATE target t
-          |SET t.a =
-          | (SELECT sum(s1.a * s2.a)
-          |   FROM source s1 inner join source s2 ON s1.a = s2.a
-          |   WHERE 1=1
-          |  AND s1.b = t.b
-          | )
-          |""".stripMargin)
-      checkAnswer(spark.table("target"), Row(4, 2) :: Nil)
-      val e = intercept[AnalysisException](
+      val e1 = intercept[AnalysisException](
+        sql(
+          """
+            |UPDATE target t
+            |SET t.a =
+            | (SELECT sum(s1.a * s2.a)
+            |   FROM source s1 inner join source s2 ON s1.a = s2.a
+            |   WHERE 1=1
+            |  AND s1.b = t.b
+            | )
+            |""".stripMargin)
+      ).getMessage()
+      assert(e1.contains("Correlated subqueries are not supported in the UpdateTable"))
+      val e2 = intercept[AnalysisException](
         sql(
           """
             |UPDATE t
@@ -1782,11 +1784,11 @@ class SQLQuerySuite extends QueryTest
             |WHERE t.b = s.b
             |""".stripMargin)
       ).getMessage()
-      assert(e.contains("Subqueries are not supported in the UpdateWithJoinTable"))
+      assert(e2.contains("Correlated subqueries are not supported in the UpdateWithJoinTable"))
       sql(
         """
           |DELETE FROM target t
-          |WHERE t.a = (SELECT max(s.a * 2) FROM source s)
+          |WHERE t.a = (SELECT max(s.a) FROM source s)
           |""".stripMargin)
       checkAnswer(spark.table("target"), Nil)
     }
