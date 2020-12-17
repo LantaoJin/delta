@@ -44,6 +44,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Expressi
 import org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.SQLMetric
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.{BaseRelation, InsertableRelation}
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.util.{Clock, SystemClock}
@@ -332,7 +333,9 @@ class DeltaLog private(
       partitionSchema = snapshot.metadata.partitionSchema,
       dataSchema =
         if (projectedColumns.nonEmpty) {
-          StructType(snapshot.metadata.schema.filter(f => projectedColumns.contains(f.name)))
+          val resolver = SQLConf.get.resolver
+          StructType(snapshot.metadata.schema.filter(f =>
+            projectedColumns.exists(c => resolver(c, f.name))))
         } else {
           snapshot.metadata.schema
         },

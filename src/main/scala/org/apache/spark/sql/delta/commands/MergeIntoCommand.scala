@@ -480,12 +480,15 @@ case class MergeIntoCommand(
 
     val outputDF =
       Dataset.ofRows(spark, joinedPlan).mapPartitions(processor.processPartition)(outputRowEncoder)
-    logDebug("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
+
+    // Add a InsertIntoDataSource node to reuse the processing on node InsertIntoDataSource.
+    val normalized = convertToInsertIntoDataSource(conf, target, outputDF.queryExecution.logical)
+    val normalizedDF = Dataset.ofRows(spark, normalized)
+    logInfo("writeAllChanges: join output plan:\n" + normalizedDF.queryExecution)
 
     // Write to Delta
     val options = new DeltaOptions(Map.empty[String, String], spark.sessionState.conf, metrics)
-    val newFiles = deltaTxn.writeFiles(
-      repartitionIfNeeded(spark, outputDF, deltaTxn.metadata.partitionColumns), Some(options))
+    val newFiles = deltaTxn.writeFiles(normalizedDF, Some(options))
     metrics("numTargetFilesAdded") += newFiles.size
     newFiles
   }

@@ -329,4 +329,15 @@ class DeltaSQLQuerySuite extends QueryTest
       assert(isPushdown)
     }
   }
+
+  test("update/delete condition should be case insensitive") {
+    withTable("target", "source") {
+      sql("create table source (a int , b string) using parquet")
+      sql("create table target (A int , B string) using delta")
+      sql("INSERT INTO target VALUES (1, 'test')")
+      // below statements don't throw exception.
+      sql("UPDATE t FROM target t, source s SET t.b = 'test' WHERE t.a = s.a")
+      sql("DELETE t FROM target t, source s WHERE t.a = s.a")
+    }
+  }
 }
