@@ -22,9 +22,10 @@ import java.util.concurrent.TimeUnit
 import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent}
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.catalog.CatalogTableType
 import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog}
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform}
-import org.apache.spark.sql.delta.catalog.DeltaCatalog
+import org.apache.spark.sql.delta.catalog.{DeltaCatalog, DeltaTableV2}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 import org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionStart
@@ -338,6 +339,47 @@ class DeltaSQLQuerySuite extends QueryTest
       // below statements don't throw exception.
       sql("UPDATE t FROM target t, source s SET t.b = 'test' WHERE t.a = s.a")
       sql("DELETE t FROM target t, source s WHERE t.a = s.a")
+    }
+  }
+
+  test("create temp table with using delta should set location in tmp directory") {
+    withTable("temp_delta1", "temp_delta2", "temp_delta3") {
+      sql(
+        """
+          |CREATE TEMPORARY TABLE temp_delta1 (id int, name string) using parquet
+          |""".stripMargin)
+      sql("CONVERT TO DELTA temp_delta1")
+      val table1 = catalog.loadTable(Identifier.of(Array("default"), "temp_delta1"))
+      assert(table1.properties().get("specific_type").equals("temporary"))
+      assert(table1.asInstanceOf[DeltaTableV2].catalogTable.get.location
+        .toASCIIString.contains("default.temp_delta1"))
+      assert(table1.asInstanceOf[DeltaTableV2].catalogTable.get.tableType
+        === CatalogTableType.TEMPORARY)
+
+      sql(
+        """
+          |CREATE TEMPORARY TABLE temp_delta2 (id int, name string) using delta
+          |""".stripMargin)
+      val table2 = catalog.loadTable(Identifier.of(Array("default"), "temp_delta2"))
+      assert(table2.properties().get("specific_type").equals("temporary"))
+      assert(table2.asInstanceOf[DeltaTableV2].catalogTable.get.location
+        .toASCIIString.contains("default.temp_delta2"))
+      assert(table2.asInstanceOf[DeltaTableV2].catalogTable.get.tableType
+        === CatalogTableType.TEMPORARY)
+      sql("INSERT INTO TABLE temp_delta2 VALUES (1, 'a')")
+      checkAnswer(spark.table("temp_delta2"), Row(1, "a") :: Nil)
+
+      sql(
+        """
+          |CREATE TEMPORARY TABLE temp_delta3 using delta AS SELECT * FROM temp_delta2
+          |""".stripMargin)
+      val table3 = catalog.loadTable(Identifier.of(Array("default"), "temp_delta3"))
+      assert(table3.properties().get("specific_type").equals("temporary"))
+      assert(table3.asInstanceOf[DeltaTableV2].catalogTable.get.tableType
+        === CatalogTableType.TEMPORARY)
+      assert(table3.asInstanceOf[DeltaTableV2].catalogTable.get.location
+        .toASCIIString.contains("default.temp_delta3"))
+      checkAnswer(spark.table("temp_delta3"), Row(1, "a") :: Nil)
     }
   }
 }

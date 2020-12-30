@@ -24,10 +24,10 @@ import org.apache.hadoop.fs.{FileSystem, Path}
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.analysis.CannotReplaceMissingTableException
-import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType}
+import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType, CatalogUtils}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.connector.catalog.Identifier
-import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog}
+import org.apache.spark.sql.execution.command.{DDLUtils, RunnableCommand}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
 
@@ -83,9 +83,16 @@ case class CreateDeltaTableCommand(
         tableType = existingTable.tableType)
     } else if (table.storage.locationUri.isEmpty) {
       // We are defining a new managed table
-      assert(table.tableType == CatalogTableType.MANAGED)
-      val loc = sparkSession.sessionState.catalog.defaultTablePath(table.identifier)
-      table.copy(storage = table.storage.copy(locationUri = Some(loc)))
+      if (table.properties.get(TableCatalog.PROP_TYPE).contains(CatalogUtils.TEMPORARY_TABLE)) {
+        val loc = sparkSession.sessionState.catalog.defaultTempTablePath(table.identifier)
+        table.copy(
+          storage = table.storage.copy(locationUri = Some(loc)),
+          tableType = CatalogTableType.TEMPORARY)
+      } else {
+        assert(table.tableType == CatalogTableType.MANAGED)
+        val loc = sparkSession.sessionState.catalog.defaultTablePath(table.identifier)
+        table.copy(storage = table.storage.copy(locationUri = Some(loc)))
+      }
     } else {
       // We are defining a new external table
       assert(table.tableType == CatalogTableType.EXTERNAL)
@@ -333,10 +340,14 @@ case class CreateDeltaTableCommand(
   private def updateCatalog(spark: SparkSession, table: CatalogTable): Unit = operation match {
     case _ if tableByPath => // do nothing with the metastore if this is by path
     case TableCreationModes.Create =>
-      spark.sessionState.catalog.createTable(
-        table,
-        ignoreIfExists = existingTableOpt.isDefined,
-        validateLocation = false)
+      if (DDLUtils.isTemporaryTable(table)) {
+        spark.sessionState.catalog.createTempTable(table, ignoreIfExists = false)
+      } else {
+        spark.sessionState.catalog.createTable(
+          table,
+          ignoreIfExists = existingTableOpt.isDefined,
+          validateLocation = false)
+      }
     case TableCreationModes.Replace if existingTableOpt.isDefined =>
       spark.sessionState.catalog.alterTable(table)
     case TableCreationModes.Replace =>
@@ -345,10 +356,14 @@ case class CreateDeltaTableCommand(
     case TableCreationModes.CreateOrReplace if existingTableOpt.isDefined =>
       spark.sessionState.catalog.alterTable(table)
     case TableCreationModes.CreateOrReplace =>
-      spark.sessionState.catalog.createTable(
-        table,
-        ignoreIfExists = false,
-        validateLocation = false)
+      if (DDLUtils.isTemporaryTable(table)) {
+        spark.sessionState.catalog.createTempTable(table, ignoreIfExists = false)
+      } else {
+        spark.sessionState.catalog.createTable(
+          table,
+          ignoreIfExists = false,
+          validateLocation = false)
+      }
   }
 
   /**
