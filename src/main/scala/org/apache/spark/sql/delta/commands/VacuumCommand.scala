@@ -93,7 +93,7 @@ object VacuumCommand extends VacuumCommandImpl with Serializable {
       dryRun: Boolean = true,
       retentionHours: Option[Double] = None,
       clock: Clock = new SystemClock,
-      safetyCheckEnabled: Boolean = true): (DataFrame, Long) = {
+      safetyCheckEnabled: Boolean = true): (DataFrame, Long, Long) = {
     recordDeltaOperation(deltaLog, "delta.gc") {
 
       val path = deltaLog.dataPath
@@ -107,7 +107,7 @@ object VacuumCommand extends VacuumCommandImpl with Serializable {
       if (snapshot.version == 0) { // just convert to delta. skip GC.
         val basePath = fs.makeQualified(path).toString
         logWarning(s"No need to vacuum $basePath since the SNAPSHOT version now is 0")
-        return (spark.createDataset(Seq(basePath)).toDF("path"), 0L)
+        return (spark.createDataset(Seq(basePath)).toDF("path"), 0L, 0L)
       }
 
       require(snapshot.version >= 0, "No state defined for this table. Is this really " +
@@ -174,7 +174,8 @@ object VacuumCommand extends VacuumCommandImpl with Serializable {
       try {
         allFilesAndDirs.cache()
 
-        val dirCounts = allFilesAndDirs.where('isDir).count() + 1 // +1 for the base path
+         //  val dirCounts = allFilesAndDirs.where('isDir).count() + 1 // +1 for the base path
+        val fileCounts = allFilesAndDirs.where(!'isDir).count() // +1 for the base path
 
         // The logic below is as follows:
         //   1. We take all the files and directories listed in our reservoir
@@ -220,14 +221,13 @@ object VacuumCommand extends VacuumCommandImpl with Serializable {
             specifiedRetentionMillis = retentionMillis,
             defaultRetentionMillis = deltaLog.defaultTombstoneRetentionMillis,
             minRetainedTimestamp = deleteBeforeTimestamp,
-            dirsPresentBeforeDelete = dirCounts,
+            dirsPresentBeforeDelete = 0, // set 0 to save computation
             objectsDeleted = numFiles)
 
           recordDeltaEvent(deltaLog, "delta.gc.stats", data = stats)
-          logInfo(s"Found $numFiles files and directories in a total of " +
-            s"$dirCounts directories that are safe to delete.")
+          logInfo(s"Found $numFiles files and directories that are safe to delete.")
 
-          return (diff.map(f => stringToPath(f).toString).toDF("path"), numFiles)
+          return (diff.map(f => stringToPath(f).toString).toDF("path"), numFiles, fileCounts)
         }
         logInfo(s"Deleting untracked files and empty directories in $path")
 
@@ -238,13 +238,12 @@ object VacuumCommand extends VacuumCommandImpl with Serializable {
           specifiedRetentionMillis = retentionMillis,
           defaultRetentionMillis = deltaLog.defaultTombstoneRetentionMillis,
           minRetainedTimestamp = deleteBeforeTimestamp,
-          dirsPresentBeforeDelete = dirCounts,
+          dirsPresentBeforeDelete = 0, // set 0 to save computation
           objectsDeleted = filesDeleted)
         recordDeltaEvent(deltaLog, "delta.gc.stats", data = stats)
-        logConsole(s"Deleted $filesDeleted files and directories in a total " +
-          s"of $dirCounts directories.")
+        logConsole(s"Deleted $filesDeleted files and directories")
 
-        (spark.createDataset(Seq(basePath)).toDF("path"), filesDeleted)
+        (spark.createDataset(Seq(basePath)).toDF("path"), filesDeleted, fileCounts)
       } finally {
         allFilesAndDirs.unpersist()
       }

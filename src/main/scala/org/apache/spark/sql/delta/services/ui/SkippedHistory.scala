@@ -14,64 +14,73 @@
  * limitations under the License.
  */
 
-
 package org.apache.spark.sql.delta.services.ui
 
 import scala.xml.Node
 
-import org.apache.spark.sql.delta.services.DeltaTableMetadata
 import org.apache.spark.ui.UIUtils
 
-class AllTables(
-    parent: DeltaTab,
-    deltaTables: Seq[DeltaTableMetadata],
-    lastUpdatedTime: String) {
+case class VacuumSkipped(
+    db: String, tbl: String,
+    var totalFiles: Long,
+    var skippedTime: String,
+    var reason: String) {
 
+  def update(totalFiles: Long, skippedTime: String, reason: String): Unit = {
+    if (totalFiles > 0L) {
+      this.totalFiles = totalFiles
+    }
+    this.totalFiles = totalFiles
+    this.skippedTime = skippedTime
+    this.reason = reason
+  }
+}
+
+class SkippedHistory(
+    parent: DeltaTab,
+    skipped: Seq[VacuumSkipped],
+    title: String) {
 
   def header: Seq[String] =
     Seq(
       "database",
       "table",
-      "maker",
-      "path",
-      "vacuum",
-      "retention")
+      "totalFiles",
+      "skipped time",
+      "reason or comment")
 
-  def row(meta: DeltaTableMetadata): Seq[Node] = {
+  def row(v: VacuumSkipped): Seq[Node] = {
     <tr>
       <td>
-        {meta.db}
+        {v.db}
       </td>
       <td>
-        {meta.tbl}
+        {v.tbl}
       </td>
       <td>
-        {meta.maker}
+        {if (v.totalFiles < 0) "NaN" else v.totalFiles.toString}
       </td>
       <td>
-        {meta.path}
+        {v.skippedTime}
       </td>
       <td>
-        {meta.vacuum.toString}
-      </td>
-      <td>
-        {meta.retention.toString + " hours"}
+        {v.reason}
       </td>
     </tr>
   }
 
   def toNodeSeq: Seq[Node] = {
     <div>
-      <span class="collapse-aggregated-deltaTables collapse-table"
-          onClick="collapseTable('collapse-aggregated-deltaTables','aggregated-deltaTables')">
+      <span class="collapse-aggregated-skipped collapse-table"
+            onClick="collapseTable('collapse-aggregated-skipped','aggregated-skipped')">
         <h4>
           <span class="collapse-table-arrow arrow-open"></span>
-          <a>{deltaTables.size} Delta Tables (Last Updated: {lastUpdatedTime})</a>
+          <a>{skipped.size} tables {title}</a>
         </h4>
       </span>
-      <div class="aggregated-deltaTables collapsible-table">
-        {UIUtils.listingTable[DeltaTableMetadata](
-          header, row, deltaTables, id = Some("delta-table"))}
+      <div class="aggregated-skipped collapsible-table">
+        {UIUtils.listingTable[VacuumSkipped](
+          header, row, skipped, id = Some(title))}
       </div>
     </div>
   }

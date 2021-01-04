@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-
 package org.apache.spark.sql.delta.services.ui
 
 import scala.xml.Node
@@ -23,6 +22,7 @@ import org.apache.spark.ui.UIUtils
 
 case class VacuumingInfo(
     db: String, tbl: String,
+    totalFiles: Long,
     filesDeleted: Long,
     start: String, end: String, lastDDLTime: Long)
 
@@ -37,6 +37,7 @@ class VacuumHistory(
       Seq(
         "database",
         "table",
+        "totalFiles",
         "filesDeleted",
         "start",
         "end")
@@ -57,7 +58,10 @@ class VacuumHistory(
           {v.tbl}
         </td>
         <td>
-          {v.filesDeleted}
+          {if (v.totalFiles < 0) "NaN" else v.totalFiles.toString}
+        </td>
+        <td>
+          {if (v.filesDeleted < 0) "NaN" else v.filesDeleted.toString}
         </td>
         <td>
           {v.start}
@@ -79,14 +83,26 @@ class VacuumHistory(
         </td>
       </tr>
     }
-
   }
 
   def toNodeSeq: Seq[Node] = {
+    val (name, table) = if (complete) {
+      ("collapse-aggregated-vacuumHistory", "aggregated-vacuumHistory")
+    } else {
+      ("collapse-aggregated-vacuuming", "aggregated-vacuuming")
+    }
     <div>
-      <h4>{vacuuming.size} tables {title}</h4>
-      {UIUtils.listingTable[VacuumingInfo](
-      header, row, vacuuming, id = Some(title))}
+      <span class={s"$name collapse-table"}
+            onClick={s"collapseTable('$name','$table')"}>
+        <h4>
+          <span class="collapse-table-arrow arrow-open"></span>
+          <a>{vacuuming.size} tables {title}</a>
+        </h4>
+      </span>
+      <div class={s"$table collapsible-table"}>
+        {UIUtils.listingTable[VacuumingInfo](
+          header, row, vacuuming, id = Some(title))}
+      </div>
     </div>
   }
 }
