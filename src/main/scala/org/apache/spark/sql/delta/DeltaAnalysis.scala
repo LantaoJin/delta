@@ -19,7 +19,6 @@ package org.apache.spark.sql.delta
 import scala.collection.JavaConverters._
 
 // scalastyle:off import.ordering.noEmptyLine
-import scala.util.control.NonFatal
 
 import org.apache.spark.sql.delta.DeltaErrors.{TemporallyUnstableInputException, TimestampEarlierThanCommitRetentionException}
 import org.apache.spark.sql.delta.catalog.DeltaTableV2
@@ -32,14 +31,16 @@ import org.apache.spark.sql.delta.sources.DeltaDataSource
 import org.apache.spark.sql.delta.util.AnalysisHelper
 import org.apache.hadoop.fs.Path
 
-import org.apache.spark.sql.{AnalysisException, CompactTableBase, SparkSession}
-import org.apache.spark.sql.catalyst.analysis.{GetColumnByOrdinal, UnresolvedAttribute, UnresolvedExtractValue, caseInsensitiveResolution, withPosition}
-import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTablePartition, CatalogUtils}
+import org.apache.spark.sql.{AnalysisException, CompactTableBase, SaveMode, SparkSession}
+import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.analysis.{CannotReplaceMissingTableException, EliminateSubqueryAliases, GetColumnByOrdinal, UnresolvedAttribute, UnresolvedExtractValue, UnresolvedRelation, UnresolvedTableValuedFunction, caseInsensitiveResolution, withPosition}
+import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTablePartition, CatalogTableType, CatalogUtils}
 import org.apache.spark.sql.catalyst.expressions.SubExprUtils.{containsOuter, stripOuterReferences}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
 import org.apache.spark.sql.catalyst.optimizer.BooleanSimplification
 import org.apache.spark.sql.catalyst.plans.LeftAnti
+import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.toPrettySQL
