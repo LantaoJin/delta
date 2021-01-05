@@ -93,5 +93,8 @@ class DeltaSparkSessionExtension extends (SparkSessionExtensions => Unit) {
     extensions.injectPlannerStrategy { session =>
       CompactDeltaTableStrategy
     }
+    extensions.injectOptimizerRule { session =>
+      new ActiveOptimisticTransactionRule(session)
+    }
   }
 }
