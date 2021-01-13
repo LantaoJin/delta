@@ -102,7 +102,7 @@ class DeltaAnalysis(spark: SparkSession, conf: SQLConf)
       }
 
     case m @ MergeIntoTableStatement(target, source, condition, matched, notMatched)
-        if m.resolved =>
+        if m.childrenResolved =>
       checkTargetTable(target)
       val matchedActions = matched.map {
         case update: UpdateAction =>
