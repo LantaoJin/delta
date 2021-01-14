@@ -95,7 +95,7 @@ object VacuumCommand extends VacuumCommandImpl {
       dryRun: Boolean = true,
       retentionHours: Option[Double] = None,
       clock: Clock = new SystemClock,
-      safetyCheckEnabled: Boolean = true): DataFrame = {
+      safetyCheckEnabled: Boolean = true): (DataFrame, Long) = {
     recordDeltaOperation(deltaLog, "delta.gc") {
 
       val path = deltaLog.dataPath
@@ -223,7 +223,7 @@ object VacuumCommand extends VacuumCommandImpl {
           logConsole(s"Found $numFiles files and directories in a total of " +
             s"$dirCounts directories that are safe to delete.")
 
-          return diff.map(f => stringToPath(f).toString).toDF("path")
+          return (diff.map(f => stringToPath(f).toString).toDF("path"), numFiles)
         }
         logInfo(s"Deleting untracked files and empty directories in $path")
 
@@ -240,7 +240,7 @@ object VacuumCommand extends VacuumCommandImpl {
         logConsole(s"Deleted $filesDeleted files and directories in a total " +
           s"of $dirCounts directories.")
 
-        spark.createDataset(Seq(basePath)).toDF("path")
+        (spark.createDataset(Seq(basePath)).toDF("path"), filesDeleted)
       } finally {
         allFilesAndDirs.unpersist()
       }

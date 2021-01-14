@@ -68,7 +68,7 @@ case class VacuumTableCommand(
         "VACUUM",
         DeltaTableIdentifier(path = Some(pathToVacuum.toString)))
     }
-    VacuumCommand.gc(sparkSession, deltaLog, dryRun, horizonHours).collect()
+    VacuumCommand.gc(sparkSession, deltaLog, dryRun, horizonHours)._1.collect()
   }
 
   private def updateMetaTable(

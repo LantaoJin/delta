@@ -23,7 +23,7 @@ import scala.collection.mutable
 import scala.util.Random
 
 import io.delta.sql.DeltaSparkSessionExtension
-import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.fs.Path
 
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.deploy.SparkHadoopUtil
@@ -106,6 +106,8 @@ class AutoVacuum(ctx: SparkContext) extends Logging {
  * remove it from vacuuming and vacuumPool.
  */
 class ValidateTask(conf: SparkConf) extends Runnable with Logging {
+
+  private val DDL_TIME = "transient_lastDdlTime"
 
   // visible for testing, delta entity -> vacuum task future
   private[sql] lazy val deltaTableToVacuumTask =
@@ -234,48 +236,46 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
         return
       }
       val deltaLog = DeltaLog.forTable(spark, catalogTable)
-      val sessionHadoopConf = spark.sessionState.newHadoopConf()
-      val fs = deltaLog.dataPath.getFileSystem(sessionHadoopConf)
 
       val start = getCurrentTimestampString
-      val currentLastDDLTime = catalogTable.properties(DDLUtils.DDL_TIME).toLong
-      val (quotaUsageBefore, sizeBefore, fileCountBefore) = statistics(fs, deltaLog)
-      if (sizeBefore > 0 || fileCountBefore > 0) {
+      val currentLastDDLTime = catalogTable.properties(DDL_TIME).toLong
+      val deleteBeforeTimestamp =
+        System.currentTimeMillis() - TimeUnit.HOURS.toMillis(table.retention)
+      if (deltaLog.snapshot.tombstones
+          .filter(r => r.delTimestamp < deleteBeforeTimestamp).count() > 0) {
         // only vacuum the tables changed between twice vacuuming or first look
         if (vacuumHistory.get(table).exists(_.lastDDLTime == currentLastDDLTime)) {
           logInfo(s"Skip vacuum table ${table.identifier.unquotedString} " +
-            s"since lastDDLTime $currentLastDDLTime not changed")
+          s"since lastDDLTime $currentLastDDLTime not changed")
         } else {
-          val vacuumingInfoBefore = VacuumingInfo(table.db, table.tbl, quotaUsageBefore,
-            sizeBefore, -1L, fileCountBefore, -1L, start, null, currentLastDDLTime)
+          var filesDeleted = 0L
+          val vacuumingInfoBefore = VacuumingInfo(table.db, table.tbl, filesDeleted,
+            start, null, currentLastDDLTime)
           vacuumHistory(table) = vacuumingInfoBefore
 
           logInfo(s"Start vacuum ${table.identifier.unquotedString} " +
             s"retain ${table.retention} hours")
-          VacuumCommand.gc(spark, deltaLog, dryRun = false, Some(table.retention.toDouble),
-            safetyCheckEnabled = false)
+          filesDeleted = VacuumCommand.gc(spark, deltaLog, dryRun = false,
+            Some(table.retention.toDouble), safetyCheckEnabled = false)._2
           CommandUtils.updateTableStats(spark, catalogTable)
           logInfo(s"End vacuum ${table.identifier.unquotedString} " +
             s"retain ${table.retention} hours")
+          val end = getCurrentTimestampString
+          val vacuumingInfoAfter = VacuumingInfo(table.db, table.tbl, filesDeleted,
+            start, end, currentLastDDLTime)
+          vacuumHistory(table) = vacuumingInfoAfter
         }
       } else {
-        logInfo(s"Skip vacuum empty table ${table.identifier.unquotedString}")
+        // todo try run for testing, this should be removed in future
+        val toBeDeleted = VacuumCommand.gc(spark, deltaLog, dryRun = true,
+          Some(table.retention.toDouble), safetyCheckEnabled = false)._2
+        if (toBeDeleted > 0) {
+          logError(s"Invalid skipping vacuum table ${table.identifier.unquotedString}, " +
+            s"found $toBeDeleted files to be deleted.")
+        } else {
+          logInfo(s"Skip vacuum table ${table.identifier.unquotedString} without tombstones")
+        }
       }
-      val end = getCurrentTimestampString
-      val (quotaUsageAfter, sizeAfter, fileCountAfter) = statistics(fs, deltaLog)
-      val vacuumingInfoAfter = VacuumingInfo(table.db, table.tbl, quotaUsageAfter,
-        sizeBefore, sizeAfter, fileCountBefore, fileCountAfter, start, end, currentLastDDLTime)
-      vacuumHistory(table) = vacuumingInfoAfter
-    }
-
-    private def statistics(fs: FileSystem, deltaLog: DeltaLog): (Double, Long, Long) = {
-      val parentPath = deltaLog.dataPath.getParent
-      val parentSummary = fs.getContentSummary(parentPath)
-      val quotaUsage = parentSummary.getSpaceConsumed / parentSummary.getSpaceQuota * 100.0D
-      val summary = fs.getContentSummary(deltaLog.dataPath)
-      val size = summary.getLength
-      val fileCount = summary.getFileCount
-      (if (quotaUsage > 0.0D) quotaUsage else 0.0D, size, fileCount)
     }
   }
 }

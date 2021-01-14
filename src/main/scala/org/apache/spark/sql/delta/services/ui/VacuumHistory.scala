@@ -19,13 +19,10 @@ package org.apache.spark.sql.delta.services.ui
 import scala.xml.Node
 
 import org.apache.spark.ui.UIUtils
-import org.apache.spark.util.Utils
 
 case class VacuumingInfo(
     db: String, tbl: String,
-    databaseQuotaUsage: Double,
-    sizeBefore: Long, sizeAfter: Long,
-    fileCountBefore: Long, fileCountAfter: Long,
+    filesDeleted: Long,
     start: String, end: String, lastDDLTime: Long)
 
 class VacuumHistory(
@@ -39,20 +36,13 @@ class VacuumHistory(
       Seq(
         "database",
         "table",
-        "dbQuotaUsage",
-        "sizeBefore",
-        "sizeAfter",
-        "filesBefore",
-        "filesAfter",
+        "filesDeleted",
         "start",
         "end")
     } else {
       Seq(
         "database",
         "table",
-        "dbQuotaUsage",
-        "sizeBefore",
-        "filesBefore",
         "start")
     }
 
@@ -66,19 +56,7 @@ class VacuumHistory(
           {v.tbl}
         </td>
         <td>
-          {v.databaseQuotaUsage}%
-        </td>
-        <td>
-          {Utils.bytesToString(v.sizeBefore)}
-        </td>
-        <td>
-          {Utils.bytesToString(v.sizeAfter)}
-        </td>
-        <td>
-          {v.fileCountBefore}
-        </td>
-        <td>
-          {v.fileCountAfter}
+          {v.filesDeleted}
         </td>
         <td>
           {v.start}
@@ -94,15 +72,6 @@ class VacuumHistory(
         </td>
         <td>
           {v.tbl}
-        </td>
-        <td>
-          {v.databaseQuotaUsage}%
-        </td>
-        <td>
-          {Utils.bytesToString(v.sizeBefore)}
-        </td>
-        <td>
-          {v.fileCountBefore}
         </td>
         <td>
           {v.start}
