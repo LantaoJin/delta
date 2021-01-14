@@ -34,7 +34,7 @@ import org.apache.spark.sql.catalyst.util.{DateTimeUtils, TimestampFormatter}
 import org.apache.spark.sql.delta.{DeltaLog, DeltaTableUtils}
 import org.apache.spark.sql.delta.commands.VacuumCommand
 import org.apache.spark.sql.delta.services.DeltaTableMetadata._
-import org.apache.spark.sql.delta.services.ui.{DeltaTab, VacuumingInfo}
+import org.apache.spark.sql.delta.services.ui.{DeltaTab, VacuumSkipped, VacuumingInfo}
 import org.apache.spark.sql.execution.command.{CommandUtils, DDLUtils}
 import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.util.{ThreadUtils, Utils}
@@ -120,6 +120,9 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
 
   private lazy val vacuumPool =
     ThreadUtils.newDaemonThreadPoolScheduledExecutor("delta-auto-vacuum-pool", 32)
+
+  private[sql] lazy val skipping =
+    new ConcurrentHashMap[DeltaTableMetadata, VacuumSkipped]().asScala
 
   override def run(): Unit = {
     val spark = SparkSession.active
@@ -245,36 +248,45 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
           .filter(r => r.delTimestamp < deleteBeforeTimestamp).count() > 0) {
         // only vacuum the tables changed between twice vacuuming or first look
         if (vacuumHistory.get(table).exists(_.lastDDLTime == currentLastDDLTime)) {
-          logInfo(s"Skip vacuum table ${table.identifier.unquotedString} " +
-          s"since lastDDLTime $currentLastDDLTime not changed")
+          val reason = s"lastDDLTime $currentLastDDLTime not changed"
+          logInfo(s"Skip vacuum table ${table.identifier.unquotedString} $reason")
+          updateSkippedHistory(start, reason)
         } else {
-          var filesDeleted = 0L
-          val vacuumingInfoBefore = VacuumingInfo(table.db, table.tbl, filesDeleted,
+          val vacuumingInfoBefore = VacuumingInfo(table.db, table.tbl, -1L, -1L,
             start, null, currentLastDDLTime)
           vacuumHistory(table) = vacuumingInfoBefore
 
           logInfo(s"Start vacuum ${table.identifier.unquotedString} " +
             s"retain ${table.retention} hours")
-          filesDeleted = VacuumCommand.gc(spark, deltaLog, dryRun = false,
-            Some(table.retention.toDouble), safetyCheckEnabled = false)._2
+          val (_, filesDeleted, fileCounts) = VacuumCommand.gc(spark, deltaLog, dryRun = false,
+            Some(table.retention.toDouble), safetyCheckEnabled = false)
           CommandUtils.updateTableStats(spark, catalogTable)
           logInfo(s"End vacuum ${table.identifier.unquotedString} " +
             s"retain ${table.retention} hours")
           val end = getCurrentTimestampString
-          val vacuumingInfoAfter = VacuumingInfo(table.db, table.tbl, filesDeleted,
+          val vacuumingInfoAfter = VacuumingInfo(table.db, table.tbl, fileCounts, filesDeleted,
             start, end, currentLastDDLTime)
           vacuumHistory(table) = vacuumingInfoAfter
         }
       } else {
         // todo try run for testing, this should be removed in future
-        val toBeDeleted = VacuumCommand.gc(spark, deltaLog, dryRun = true,
-          Some(table.retention.toDouble), safetyCheckEnabled = false)._2
+        val (_, toBeDeleted, fileCounts) = VacuumCommand.gc(spark, deltaLog, dryRun = true,
+          Some(table.retention.toDouble), safetyCheckEnabled = false)
         if (toBeDeleted > 0) {
-          logError(s"Invalid skipping vacuum table ${table.identifier.unquotedString}, " +
-            s"found $toBeDeleted files to be deleted.")
+          val reason = s"Found $toBeDeleted files to be deleted"
+          updateSkippedHistory(start, reason, fileCounts)
+          logError(s"Invalid skipping vacuum table ${table.identifier.unquotedString}, $reason")
         } else {
+          updateSkippedHistory(start, "Table without tombstones", fileCounts)
           logInfo(s"Skip vacuum table ${table.identifier.unquotedString} without tombstones")
         }
+      }
+    }
+
+    private def updateSkippedHistory(start: String, reason: String, fileCounts: Long = -1L) = {
+      skipping.get(table) match {
+        case Some(old) => old.update(fileCounts, start, reason)
+        case None => skipping(table) = VacuumSkipped(table.db, table.tbl, fileCounts, start, reason)
       }
     }
   }

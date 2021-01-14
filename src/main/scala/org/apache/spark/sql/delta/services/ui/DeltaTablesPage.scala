@@ -38,10 +38,15 @@ private[ui] class DeltaTablesPage(parent: DeltaTab) extends WebUIPage("") with L
     parent.validate.vacuumHistory.values.filter(_.end != null).toSeq
   }
 
+  def skippedHistory: Seq[VacuumSkipped] = {
+    parent.validate.skipping.values.toSeq
+  }
+
   override def render(request: HttpServletRequest): Seq[Node] = {
     val content = mutable.ListBuffer[Node]()
     content ++= new VacuumHistory(parent, vacuuming, "in vacuuming", false).toNodeSeq
     content ++= new VacuumHistory(parent, vacuumHistory, "in vacuum history", true).toNodeSeq
+    content ++= new SkippedHistory(parent, skippedHistory, "skipped vacuum history").toNodeSeq
     content ++=
       new AllTables(parent, deltaTables.sortBy(_.db), parent.validate.lastUpdatedTime).toNodeSeq
     UIUtils.headerSparkPage(request, "Delta Tables", content.toSeq, parent)

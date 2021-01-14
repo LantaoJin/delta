@@ -61,9 +61,17 @@ class AllTables(
 
   def toNodeSeq: Seq[Node] = {
     <div>
-      <h4>{deltaTables.size} Delta Tables (Last Updated: {lastUpdatedTime})</h4>
-      {UIUtils.listingTable[DeltaTableMetadata](
-      header, row, deltaTables, id = Some("delta-table"))}
+      <span class="collapse-aggregated-deltaTables collapse-table"
+          onClick="collapseTable('collapse-aggregated-deltaTables','aggregated-deltaTables')">
+        <h4>
+          <span class="collapse-table-arrow arrow-open"></span>
+          <a>{deltaTables.size} Delta Tables (Last Updated: {lastUpdatedTime})</a>
+        </h4>
+      </span>
+      <div class="aggregated-deltaTables collapsible-table">
+        {UIUtils.listingTable[DeltaTableMetadata](
+          header, row, deltaTables, id = Some("delta-table"))}
+      </div>
     </div>
   }
 }

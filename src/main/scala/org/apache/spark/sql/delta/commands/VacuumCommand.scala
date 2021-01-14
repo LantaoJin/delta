@@ -95,7 +95,7 @@ object VacuumCommand extends VacuumCommandImpl {
       dryRun: Boolean = true,
       retentionHours: Option[Double] = None,
       clock: Clock = new SystemClock,
-      safetyCheckEnabled: Boolean = true): (DataFrame, Long) = {
+      safetyCheckEnabled: Boolean = true): (DataFrame, Long, Long) = {
     recordDeltaOperation(deltaLog, "delta.gc") {
 
       val path = deltaLog.dataPath
@@ -170,7 +170,8 @@ object VacuumCommand extends VacuumCommandImpl {
       try {
         allFilesAndDirs.cache()
 
-        val dirCounts = allFilesAndDirs.where('isDir).count() + 1 // +1 for the base path
+         //  val dirCounts = allFilesAndDirs.where('isDir).count() + 1 // +1 for the base path
+        val fileCounts = allFilesAndDirs.where(!'isDir).count()
 
         // The logic below is as follows:
         //   1. We take all the files and directories listed in our reservoir
@@ -216,14 +217,13 @@ object VacuumCommand extends VacuumCommandImpl {
             specifiedRetentionMillis = retentionMillis,
             defaultRetentionMillis = deltaLog.tombstoneRetentionMillis,
             minRetainedTimestamp = deleteBeforeTimestamp,
-            dirsPresentBeforeDelete = dirCounts,
+            dirsPresentBeforeDelete = 0, // set 0 to save computation
             objectsDeleted = numFiles)
 
           recordDeltaEvent(deltaLog, "delta.gc.stats", data = stats)
-          logConsole(s"Found $numFiles files and directories in a total of " +
-            s"$dirCounts directories that are safe to delete.")
+          logInfo(s"Found $numFiles files and directories that are safe to delete.")
 
-          return (diff.map(f => stringToPath(f).toString).toDF("path"), numFiles)
+          return (diff.map(f => stringToPath(f).toString).toDF("path"), numFiles, fileCounts)
         }
         logInfo(s"Deleting untracked files and empty directories in $path")
 
@@ -234,13 +234,12 @@ object VacuumCommand extends VacuumCommandImpl {
           specifiedRetentionMillis = retentionMillis,
           defaultRetentionMillis = deltaLog.tombstoneRetentionMillis,
           minRetainedTimestamp = deleteBeforeTimestamp,
-          dirsPresentBeforeDelete = dirCounts,
+          dirsPresentBeforeDelete = 0, // set 0 to save computation
           objectsDeleted = filesDeleted)
         recordDeltaEvent(deltaLog, "delta.gc.stats", data = stats)
-        logConsole(s"Deleted $filesDeleted files and directories in a total " +
-          s"of $dirCounts directories.")
+        logConsole(s"Deleted $filesDeleted files and directories")
 
-        (spark.createDataset(Seq(basePath)).toDF("path"), filesDeleted)
+        (spark.createDataset(Seq(basePath)).toDF("path"), filesDeleted, fileCounts)
       } finally {
         allFilesAndDirs.unpersist()
       }
