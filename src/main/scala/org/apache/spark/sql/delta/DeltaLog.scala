@@ -731,11 +731,19 @@ class DeltaLog private(
           case _ =>
             Map.empty[String, String]
         }
+        // compatible with Delta0.8 + Spark3.0
+        val compatiblePartitionSchema = if (partitionSchema.nonEmpty) {
+            partitionSchema
+          } else if (snapshotToUse.metadata.partitionSchema.nonEmpty) {
+            snapshotToUse.metadata.partitionSchema
+          } else {
+            partitionSchema
+          }
         WriteIntoDelta(
           deltaLog = DeltaLog.this,
           mode = mode,
           new DeltaOptions(deltaOptions, spark.sessionState.conf),
-          partitionColumns = partitionSchema.map(_.name),
+          partitionColumns = compatiblePartitionSchema.map(_.name),
           bucket = bucketSpec,
           configuration = Map.empty,
           data = data,

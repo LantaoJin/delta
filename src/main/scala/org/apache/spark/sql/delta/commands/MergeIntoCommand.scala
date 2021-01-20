@@ -311,7 +311,7 @@ case class MergeIntoCommand(
 
     val insertDf = sourceDF.join(targetDF, new Column(condition), "leftanti").
       select(outputCols: _*)
-    val normalized = convertToInsertIntoDataSource(conf, target, insertDf.queryExecution.logical)
+    val normalized = convertToInsertIntoDataSource(deltaTxn.metadata, conf, insertDf)
     val normalizedDF = Dataset.ofRows(spark, normalized)
     val newFiles = deltaTxn.writeFiles(normalizedDF, metrics)
     metrics("numFilesBeforeSkipping") += deltaTxn.snapshot.numOfFiles
@@ -445,7 +445,7 @@ case class MergeIntoCommand(
       mapPartitions(processor.processPartition)(outputRowEncoder)
     logInfo("writeAllChanges: join output plan:\n" + outputDF.queryExecution)
 
-    val normalized = convertToInsertIntoDataSource(conf, target, outputDF.queryExecution.logical)
+    val normalized = convertToInsertIntoDataSource(deltaTxn.metadata, conf, outputDF)
     val normalizedDF = Dataset.ofRows(spark, normalized)
     // Write to Delta
     val newFiles = deltaTxn.writeFiles(normalizedDF, metrics) // todo

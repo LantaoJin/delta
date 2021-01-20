@@ -225,8 +225,7 @@ case class UpdateCommand(
     }
 
     // Add a InsertIntoDataSource node to reuse the processing on node InsertIntoDataSource.
-    val normalized = convertToInsertIntoDataSource(conf,
-      target, updatedDataFrame.queryExecution.logical)
+    val normalized = convertToInsertIntoDataSource(txn.metadata, conf, updatedDataFrame)
     val normalizedDF = Dataset.ofRows(spark, normalized)
     txn.writeFiles(normalizedDF, metrics)
   }

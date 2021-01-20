@@ -182,8 +182,7 @@ case class DeleteCommand(
             val filterCond = Not(EqualNullSafe(cond, Literal(true, BooleanType)))
             val updatedDF = targetDF.filter(new Column(filterCond))
 
-            val normalized = convertToInsertIntoDataSource(conf,
-              target, updatedDF.queryExecution.logical)
+            val normalized = convertToInsertIntoDataSource(txn.metadata, conf, updatedDF)
             val normalizedDF = Dataset.ofRows(sparkSession, normalized)
             val rewrittenFiles = withStatusCode(
               "DELTA", s"Rewriting ${filesToRewrite.size} files for DELETE operation") {

@@ -17,7 +17,8 @@
 package org.apache.spark.sql.delta.commands
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{AnalysisException, Column, DataFrame, Dataset, Row, SparkSession}
+
+import org.apache.spark.sql.{AnalysisException, Column, DataFrame, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.{Analyzer, EliminateSubqueryAliases, NoSuchTableException, UnresolvedRelation}
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
@@ -25,7 +26,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, Expression, SubqueryExpre
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.delta.{DeltaLog, OptimisticTransaction}
-import org.apache.spark.sql.delta.actions.{AddFile, RemoveFile}
+import org.apache.spark.sql.delta.actions.{AddFile, Metadata, RemoveFile}
 import org.apache.spark.sql.delta.commands.MergeIntoCommand.FILE_NAME_COL
 import org.apache.spark.sql.delta.commands.MergeIntoCommand.ROW_ID_COL
 import org.apache.spark.sql.delta.files.TahoeBatchFileIndex
@@ -225,25 +226,26 @@ trait DeltaCommand extends DeltaLogging {
   }
 
   protected def convertToInsertIntoDataSource(
-      conf: SQLConf, target: LogicalPlan, origin: LogicalPlan): LogicalPlan = {
+      metadata: Metadata, conf: SQLConf, data: DataFrame): LogicalPlan = {
+    val origin = data.queryExecution.logical
     try {
-      val targetRelation = target.collectFirst {
+      val targetRelation = origin.collectFirst {
         case r: LogicalRelation => r
       }
-      assert(targetRelation.size == 1)
-      val table = targetRelation.head.catalogTable.
-        getOrElse(throw new IllegalStateException("Table not exist!"))
-      val partitionAttrs = table.partitionColumnNames.map { col =>
+      if (targetRelation.isEmpty) {
+        throw new IllegalStateException("Table not exist!")
+      }
+      val partitionAttrs = metadata.partitionColumns.map { col =>
         origin.output.resolve(col :: Nil, conf.resolver).
           getOrElse(throw new AnalysisException(s"Cannot resolve column $col " +
-            s"in attributes ${target.output.map(_.name).mkString(",")}"))
+            s"in attributes ${origin.output.map(_.name).mkString(",")}"))
       }.map(_.toAttribute)
 
       InsertIntoDataSource(targetRelation.head, origin,
-        overwrite = false, Map.empty, partitionAttrs, table.bucketSpec)
+        overwrite = false, Map.empty, partitionAttrs, metadata.bucketSpec)
     } catch {
       case _: IllegalStateException =>
-        target
+        origin
     }
   }
 
