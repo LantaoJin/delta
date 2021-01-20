@@ -272,7 +272,7 @@ case class DeleteWithJoinCommand(
     }
 
     // Add a InsertIntoDataSource node to reuse the processing on node InsertIntoDataSource.
-    val normalized = convertToInsertIntoDataSource(conf, target, unionDF.queryExecution.logical)
+    val normalized = convertToInsertIntoDataSource(deltaTxn.metadata, conf, unionDF)
     val normalizedDF = Dataset.ofRows(spark, normalized)
     logInfo("writeAllChanges: join output plan:\n" + normalizedDF.queryExecution)
 

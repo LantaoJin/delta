@@ -302,31 +302,6 @@ trait DeltaCommand extends DeltaLogging {
   }
 
   protected def convertToInsertIntoDataSource(
-      conf: SQLConf, target: LogicalPlan, origin: LogicalPlan): LogicalPlan = {
-    try {
-      val targetRelation = target.collectFirst {
-        case r: LogicalRelation => r
-      }
-      if (targetRelation.isEmpty) {
-        throw new IllegalStateException("Table not exist!")
-      }
-      val table = targetRelation.head.catalogTable.
-        getOrElse(throw new IllegalStateException("Table not exist!"))
-      val partitionAttrs = table.partitionColumnNames.map { col =>
-        origin.output.resolve(col :: Nil, conf.resolver).
-          getOrElse(throw new AnalysisException(s"Cannot resolve column $col " +
-            s"in attributes ${target.output.map(_.name).mkString(",")}"))
-      }.map(_.toAttribute)
-
-      InsertIntoDataSource(targetRelation.head, origin,
-        overwrite = false, Map.empty, partitionAttrs, table.bucketSpec)
-    } catch {
-      case _: IllegalStateException =>
-        target
-    }
-  }
-
-  protected def convertToInsertIntoDataSource(
       metadata: Metadata, conf: SQLConf, data: DataFrame): LogicalPlan = {
     val origin = data.queryExecution.logical
     try {

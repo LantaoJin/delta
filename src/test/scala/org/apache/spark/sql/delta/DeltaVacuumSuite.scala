@@ -454,7 +454,7 @@ trait DeltaVacuumSuiteBase extends QueryTest
         Given("*** Garbage collecting Reservoir")
         val result = VacuumCommand.gc(spark, deltaLog, dryRun, retention, clock = clock)
         val qualified = expectedDf.map(p => fs.makeQualified(new Path(p)).toString)
-        checkDatasetUnorderly(result.as[String], qualified: _*)
+        checkDatasetUnorderly(result._1.as[String], qualified: _*)
       case ExecuteVacuumInScala(deltaTable, expectedDf, retention) =>
         Given("*** Garbage collecting Reservoir using Scala")
         val result = if (retention.isDefined) {

@@ -215,8 +215,7 @@ case class UpdateCommand(
     val options = new DeltaOptions(Map.empty[String, String], spark.sessionState.conf, metrics)
 
     // Add a InsertIntoDataSource node to reuse the processing on node InsertIntoDataSource.
-    val normalized = convertToInsertIntoDataSource(
-      conf, target, updatedDataFrame.queryExecution.logical)
+    val normalized = convertToInsertIntoDataSource(txn.metadata, conf, updatedDataFrame)
     val normalizedDF = Dataset.ofRows(spark, normalized)
     txn.writeFiles(normalizedDF, Some(options))
   }

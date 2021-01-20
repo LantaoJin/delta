@@ -1769,22 +1769,23 @@ abstract class MergeIntoSuiteBase
     }
   }
 
-  testMergeWithRepartition(
-    name = "partition on multiple columns",
-    partitionColumns = Seq("part1", "part2"),
-    srcRange = Range(80, 110),
-    expectLessFilesWithRepartition = true,
-    update("t.part2 = 1"),
-    insert("(id, part1, part2) VALUES (id, part1, part2)")
-  )
-
-  testMergeWithRepartition(
-    name = "insert only merge",
-    partitionColumns = Seq("part1"),
-    srcRange = Range(110, 150),
-    expectLessFilesWithRepartition = true,
-    insert("(id, part1, part2) VALUES (id, part1, part2)")
-  )
+  // we auto repartition all time
+//  testMergeWithRepartition(
+//    name = "partition on multiple columns",
+//    partitionColumns = Seq("part1", "part2"),
+//    srcRange = Range(80, 110),
+//    expectLessFilesWithRepartition = true,
+//    update("t.part2 = 1"),
+//    insert("(id, part1, part2) VALUES (id, part1, part2)")
+//  )
+//
+//  testMergeWithRepartition(
+//    name = "insert only merge",
+//    partitionColumns = Seq("part1"),
+//    srcRange = Range(110, 150),
+//    expectLessFilesWithRepartition = true,
+//    insert("(id, part1, part2) VALUES (id, part1, part2)")
+//  )
 
   testMergeWithRepartition(
     name = "non partitioned table",
