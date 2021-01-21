@@ -21,7 +21,8 @@ import java.util.Locale
 import scala.util.{Failure, Success, Try}
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{Row, SparkSession}
+
+import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
 import org.apache.spark.sql.catalyst.{QualifiedTableName, TableIdentifier}
 import org.apache.spark.sql.delta.services.{ConvertToParquetEvent, DeltaTableMetadata}
 import org.apache.spark.sql.delta.{DeltaErrors, DeltaLog, OptimisticTransaction}
@@ -30,8 +31,8 @@ import org.apache.spark.sql.types.StructType
 
 case class ConvertBackCommand(
     tableIdentifier: TableIdentifier,
-    partitionSchema: Option[StructType],
-    deltaPath: Option[String])
+    partitionSchema: Option[StructType], // always None
+    deltaPath: Option[String]) // always None
   extends ConvertToDeltaCommandBase(tableIdentifier, partitionSchema, deltaPath) {
 
   override def run(spark: SparkSession): Seq[Row] = {
@@ -47,11 +48,21 @@ case class ConvertBackCommand(
         throw DeltaErrors.missingProviderForConvertException(convertProperties.targetDir)
     }
 
-    if (convertProperties.catalogTable.isEmpty) {
-      throw DeltaErrors.unsupportedInHiveMetastoreException(convertProperties.targetDir)
+    val deltaLog = if (convertProperties.catalogTable.isDefined) {
+      DeltaLog.forTable(spark, convertProperties.catalogTable.get)
+    } else {
+      DeltaLog.forTable(spark, convertProperties.targetDir)
     }
 
-    val deltaLog = DeltaLog.forTable(spark, convertProperties.catalogTable.get)
+    try {
+      deltaLog.checkLogDirectoryExist()
+    } catch {
+      case e: Exception =>
+        throw new AnalysisException(s"'CONVERT TO PARQUET' is only supported on delta table, " +
+          s"failure caused by ${e.getMessage}")
+    }
+
+
     val txn = deltaLog.startTransaction()
     performConvertBack(spark, txn, convertProperties)
   }
@@ -69,59 +80,76 @@ case class ConvertBackCommand(
     if (!fs.exists(qualifiedPath)) {
       throw DeltaErrors.pathNotExistsException(qualifiedDir)
     }
-    txn.deltaLog.checkLogDirectoryExist()
 
     // 1. clean all untracked files by vacuum
     VacuumCommand.gc(spark, txn.deltaLog, dryRun = false, Some(0), safetyCheckEnabled = false)
 
-    val oldTable = convertProperties.catalogTable.get
-    val newTable = convertProperties.catalogTable.get
-      .copy(provider = Some("parquet"), tracksPartitionsInCatalog = true)
+    if (convertProperties.catalogTable.isDefined) {
+      val oldTable = convertProperties.catalogTable.get
+      // spark2.3 may convert back a spark3.0 delta table, but spark3.0 delta table
+      // doesn't store partition info in HiveMetaStore, so we read them from delta metadata
+      val compatiblePartitionSchema = if (oldTable.partitionSchema.nonEmpty) {
+        oldTable.partitionSchema
+      } else if (txn.metadata.partitionSchema.nonEmpty) {
+        txn.metadata.partitionSchema
+      } else {
+        oldTable.partitionSchema
+      }
+      val newTable = oldTable.copy(
+        provider = Some("parquet"),
+        partitionColumnNames = compatiblePartitionSchema.map(_.name),
+        tracksPartitionsInCatalog = true)
 
-    try {
-      // todo (lajin) step 3 should execute before step 2.
-      // but now we can not AddPartition to delta table, keep this as todo
-      // 2. change provider to parquet. after this, spark reads it as parquet table
-      spark.sessionState.catalog.alterTable(newTable)
-      // 3. write partition metadata to hive metastore
-      val partitionColumns = Try {
-        txn.deltaLog.snapshot.listPartitions(newTable)
-      } match {
-        case Success(value) => value
-        case Failure(exception) => Nil
-      }
-      if (partitionColumns.nonEmpty) {
-        val isRangePartitionedTable = false // todo (lajin)
-        if (isRangePartitionedTable) {
-          val namedPartitions = partitionColumns.map { p =>
-            val name = p.spec.values.head
-            ((Some(name), p.spec), None)
-          }
-          AlterTableAddRangePartitionCommand(newTable.identifier,
-            namedPartitions, ifNotExists = true).run(spark)
-        } else {
-          AlterTableAddPartitionCommand(newTable.identifier,
-            partitionColumns.map(p => (p.spec, None)), ifNotExists = true).run(spark)
+      try {
+        // todo (lajin) step 3 should execute before step 2.
+        // but now we can not AddPartition to delta table, keep this as todo
+        // 2. change provider to parquet. after this, spark reads it as parquet table
+        spark.sessionState.catalog.alterTable(newTable)
+        // 3. write partition metadata to hive metastore
+        val partitionColumns = Try {
+          txn.deltaLog.snapshot.listPartitions(newTable)
+        } match {
+          case Success(value) => value
+          case Failure(exception) => Nil
         }
+        if (partitionColumns.nonEmpty) {
+          val isRangePartitionedTable = false // todo (lajin)
+          if (isRangePartitionedTable) {
+            val namedPartitions = partitionColumns.map { p =>
+              val name = p.spec.values.head
+              ((Some(name), p.spec), None)
+            }
+            AlterTableAddRangePartitionCommand(newTable.identifier,
+              namedPartitions, ifNotExists = true).run(spark)
+          } else {
+            AlterTableAddPartitionCommand(newTable.identifier,
+              partitionColumns.map(p => (p.spec, None)), ifNotExists = true).run(spark)
+          }
+        }
+      } catch {
+        case e: Throwable =>
+          // rollback provider to delta
+          spark.sessionState.catalog.alterTable(oldTable)
+          throw e
       }
-    } catch {
-      case e: Throwable =>
-        // rollback provider to delta
-        spark.sessionState.catalog.alterTable(oldTable)
-        throw e
     }
 
     // 4. succeed to convert to parquet, safety delete delta log dir
     val store = txn.deltaLog.store
     store.delete(Seq(txn.deltaLog.logPath), recursive = true)
+    DeltaLog.invalidateCache(spark, txn.deltaLog.dataPath)
 
     // 5. clean cache and refresh
-    val qualified = QualifiedTableName(newTable.database, newTable.identifier.table)
-    spark.sessionState.catalog.invalidateCachedTable(qualified)
-    spark.catalog.refreshTable(newTable.identifier.quotedString)
-    CommandUtils.updateTableStats(spark, newTable)
+    if (convertProperties.catalogTable.isDefined) {
+      val newTable = spark.sessionState.catalog.getTableMetadata(
+        convertProperties.catalogTable.get.identifier)
+      val qualified = QualifiedTableName(newTable.database, newTable.identifier.table)
+      spark.sessionState.catalog.invalidateCachedTable(qualified)
+      spark.catalog.refreshTable(newTable.identifier.quotedString)
+      CommandUtils.updateTableStats(spark, newTable)
 
-    removeFromMetaTable(spark, convertProperties)
+      removeFromMetaTable(spark, convertProperties)
+    }
     Seq.empty[Row]
   }
 
