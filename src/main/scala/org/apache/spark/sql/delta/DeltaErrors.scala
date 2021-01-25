@@ -26,11 +26,11 @@ import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.schema.{Invariant, InvariantViolationException, SchemaUtils}
 import org.apache.spark.sql.delta.util.JsonUtils
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.{SparkConf, SparkEnv}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
@@ -690,6 +690,17 @@ object DeltaErrors
   def convertBackNonDeltaTablesException(ident: TableIdentifier, sourceName: String): Throwable = {
     new AnalysisException("CONVERT TO PARQUET only supports delta tables, but you are trying to " +
       s"convert a $sourceName source: $ident")
+  }
+
+  def convertPartitionIncompatibleException(
+      originTable: CatalogTable, metadataPartitionSchema: StructType): Throwable = {
+    new AnalysisException(s"Partition schema is incompatible when execute 'CONVERT TO PARQUET " +
+      s"${originTable.identifier.unquotedString}' via Spark ${org.apache.spark.SPARK_VERSION}. " +
+      s"The original table created by Spark ${originTable.createVersion} which its partition " +
+      s"schema stored in HMS is ${originTable.partitionSchema.catalogString}. But its partition " +
+      s"schema stored in HDFS metadata is ${metadataPartitionSchema.catalogString}. " +
+      s"To fix the problem, please execute 'CONVERT TO PARQUET " +
+      s"${originTable.identifier.unquotedString}' via Spark ${originTable.createVersion}")
   }
 
   def unsupportedInHiveMetastoreException(dir: String): Throwable = {
