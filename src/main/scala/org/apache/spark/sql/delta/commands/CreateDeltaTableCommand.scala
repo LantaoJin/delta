@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.analysis.CannotReplaceMissingTableException
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType, CatalogUtils}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog}
+import org.apache.spark.sql.delta.util.PartitionUtils
 import org.apache.spark.sql.execution.command.{DDLUtils, RunnableCommand}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
@@ -198,12 +199,20 @@ case class CreateDeltaTableCommand(
         }
       }
 
+      val dataSchema = StructType(tableWithLocation.schema.filterNot(f =>
+          tableWithLocation.partitionColumnNames.exists(p => conf.resolver(p, f.name))))
+      val partitionSchema = PartitionUtils.partitionColumnsSchema(tableWithLocation.schema,
+        tableWithLocation.partitionColumnNames, conf.caseSensitiveAnalysis)
+      val mergedSchema = PartitionUtils.mergeDataAndPartitionSchema(dataSchema, partitionSchema,
+        conf.caseSensitiveAnalysis)._1
       // We would have failed earlier on if we couldn't ignore the existence of the table
       // In addition, we just might using saveAsTable to append to the table, so ignore the creation
       // if it already exists.
       // Note that someone may have dropped and recreated the table in a separate location in the
       // meantime... Unfortunately we can't do anything there at the moment, because Hive sucks.
       val tableWithDefaultOptions = tableWithLocation.copy(
+        schema = mergedSchema, // schema order may be changed
+//        partitionColumnNames = Nil, // store partitionColumnNames to HMS to keep compatibility
         tracksPartitionsInCatalog = false) // delta table won't use catalog any more
       logInfo(s"Table is path-based table: $tableByPath. Update catalog with mode: $operation")
       updateCatalog(sparkSession, tableWithDefaultOptions)

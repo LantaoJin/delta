@@ -214,6 +214,9 @@ class Snapshot(
   /** Returns the data schema of the table, the schema of the columns written out to file. */
   def dataSchema: StructType = metadata.dataSchema
 
+  /** Returns the partition schema of the table. */
+  def partitionSchema: StructType = metadata.partitionSchema
+
   /** Number of columns to collect stats on for data skipping */
   lazy val numIndexedCols: Int = DeltaConfigs.DATA_SKIPPING_NUM_INDEXED_COLS.fromMetaData(metadata)
 

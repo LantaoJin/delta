@@ -270,7 +270,8 @@ case class Metadata(
   // The `schema` and `partitionSchema` methods should be vals or lazy vals, NOT
   // defs, because parsing StructTypes from JSON is extremely expensive and has
   // caused perf. problems here in the past:
-
+  // Notice, the schema order may be incompatible with Hive, the partition columns
+  // not always at the end.
   /** Returns the schema as a [[StructType]] */
   @JsonIgnore
   lazy val schema: StructType =

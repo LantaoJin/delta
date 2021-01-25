@@ -18,6 +18,7 @@ package org.apache.spark.sql.delta.catalog
 
 import java.{util => ju}
 
+import org.apache.spark.sql.delta.util.PartitionUtils
 import org.apache.spark.sql.types.IntegerType
 
 // scalastyle:off import.ordering.noEmptyLine
@@ -100,7 +101,9 @@ case class DeltaTableV2(
     }.getOrElse(deltaLog.update(stalenessAcceptable = true))
   }
 
-  override def schema(): StructType = snapshot.schema
+  override def schema(): StructType =
+    PartitionUtils.mergeDataAndPartitionSchema(snapshot.dataSchema, snapshot.partitionSchema,
+      spark.sessionState.conf.caseSensitiveAnalysis)._1
 
   override def partitioning(): Array[Transform] = {
     (snapshot.metadata.partitionColumns.map { col =>

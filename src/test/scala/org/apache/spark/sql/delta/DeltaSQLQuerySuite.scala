@@ -506,4 +506,29 @@ class DeltaSQLQuerySuite extends QueryTest
       DeltaLog.clearCache()
     }
   }
+
+  test("show create table with different partition order") {
+    withTable("test", "source") {
+      sql("create table source (id int, type int, date string) using parquet")
+      sql("insert into table source values (1, 1, 'a')")
+      sql("insert into table source values (2, 2, 'b')")
+      sql("insert into table source values (3, 1, 'b')")
+      sql("insert into table source values (4, 2, 'a')")
+      sql(
+        """
+          |create table test using delta partitioned by (date, type)
+          |as select * from source
+          |""".stripMargin)
+      val expected =
+        """CREATE TABLE `default`.`test` (
+          |  `id` INT,
+          |  `date` STRING,
+          |  `type` INT)
+          |USING delta
+          |PARTITIONED BY (date, type)
+          |""".stripMargin
+      assert(sql("show create table test").head(10).head.getString(0) == expected)
+
+    }
+  }
 }
