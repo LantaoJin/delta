@@ -204,8 +204,6 @@ case class CreateDeltaTableCommand(
       // Note that someone may have dropped and recreated the table in a separate location in the
       // meantime... Unfortunately we can't do anything there at the moment, because Hive sucks.
       val tableWithDefaultOptions = tableWithLocation.copy(
-        schema = new StructType(),
-        partitionColumnNames = Nil,
         tracksPartitionsInCatalog = false) // delta table won't use catalog any more
       logInfo(s"Table is path-based table: $tableByPath. Update catalog with mode: $operation")
       updateCatalog(sparkSession, tableWithDefaultOptions)

@@ -19,6 +19,8 @@ package org.apache.spark.sql.delta
 import java.io.{File, FileNotFoundException}
 import java.util.concurrent.TimeUnit
 
+import org.apache.hadoop.fs.Path
+
 import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent}
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -380,6 +382,128 @@ class DeltaSQLQuerySuite extends QueryTest
       assert(table3.asInstanceOf[DeltaTableV2].catalogTable.get.location
         .toASCIIString.contains("default.temp_delta3"))
       checkAnswer(spark.table("temp_delta3"), Row(1, "a") :: Nil)
+    }
+  }
+
+  private def append(deltaLog: DeltaLog, df: DataFrame, partitionBy: Seq[String] = Nil): Unit = {
+    val writer = df.write.format("delta").mode("append")
+    if (partitionBy.nonEmpty) {
+      writer.partitionBy(partitionBy: _*)
+    }
+    writer.save(deltaLog.dataPath.toString)
+  }
+
+  private def readDeltaTable(path: String): DataFrame = {
+    spark.read.format("delta").load(path)
+  }
+
+  private def readParquetTable(path: String): DataFrame = {
+    spark.read.format("parquet").load(path)
+  }
+
+  test("convert back a non-hive delta table") {
+    val tempDir = Utils.createTempDir()
+    val tempPath = tempDir.getCanonicalPath
+    val deltaLog = DeltaLog.forTable(spark, new Path(tempPath))
+    try {
+      append(deltaLog, Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"))
+      checkAnswer(readDeltaTable(tempPath),
+        Row(2, 2) :: Row(1, 4) :: Row(1, 1) :: Row(0, 3) :: Nil)
+      sql(s"CONVERT TO PARQUET delta.`$tempPath`")
+      checkAnswer(readParquetTable(tempPath),
+        Row(2, 2) :: Row(1, 4) :: Row(1, 1) :: Row(0, 3) :: Nil)
+    } finally {
+      Utils.deleteRecursively(tempDir)
+      DeltaLog.clearCache()
+    }
+  }
+
+  test("convert back a non-partition delta table") {
+    val tempDir = Utils.createTempDir()
+    val tempPath = tempDir.getCanonicalPath
+    val deltaLog = DeltaLog.forTable(spark, new Path(tempPath))
+    sql(
+      s"""
+         |create table test1 (key int, value int) using delta
+         |location '$tempPath'
+         |""".stripMargin)
+    try {
+      append(deltaLog, Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"))
+      checkAnswer(readDeltaTable(tempPath),
+        Row(2, 2) :: Row(1, 4) :: Row(1, 1) :: Row(0, 3) :: Nil)
+      checkAnswer(spark.table("test1"),
+        Row(2, 2) :: Row(1, 4) :: Row(1, 1) :: Row(0, 3) :: Nil)
+
+      sql(s"CONVERT TO PARQUET test1")
+      checkAnswer(readParquetTable(tempPath),
+        Row(2, 2) :: Row(1, 4) :: Row(1, 1) :: Row(0, 3) :: Nil)
+    } finally {
+      sql("drop table if exists test1")
+      Utils.deleteRecursively(tempDir)
+      DeltaLog.clearCache()
+    }
+  }
+
+  test("convert back a partition delta table") {
+    val tempDir = Utils.createTempDir()
+    val tempPath = tempDir.getCanonicalPath
+    val deltaLog = DeltaLog.forTable(spark, new Path(tempPath))
+    sql(
+      s"""
+         |create table test2 (key int, value int) using delta
+         |location '$tempPath'
+         |partitioned by (value)
+         |""".stripMargin)
+    try {
+      append(deltaLog, Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), Seq("VALUE"))
+      checkAnswer(readDeltaTable(tempPath),
+        Row(2, 2) :: Row(1, 4) :: Row(1, 1) :: Row(0, 3) :: Nil)
+      checkAnswer(spark.table("test2"),
+        Row(2, 2) :: Row(1, 4) :: Row(1, 1) :: Row(0, 3) :: Nil)
+
+      sql(s"CONVERT TO PARQUET test2")
+      checkAnswer(readParquetTable(tempPath),
+        Row(2, 2) :: Row(1, 4) :: Row(1, 1) :: Row(0, 3) :: Nil)
+    } finally {
+      sql("drop table if exists test2")
+      Utils.deleteRecursively(tempDir)
+      DeltaLog.clearCache()
+    }
+  }
+
+  test("convert back a partition delta table without hive partition info " +
+    "(simulate spark2.3 partition delta table") {
+    val tempDir = Utils.createTempDir()
+    val tempPath = tempDir.getCanonicalPath
+    val deltaLog = DeltaLog.forTable(spark, new Path(tempPath))
+    sql(
+      s"""
+         |create table test3 (key int, value int) using parquet
+         |partitioned by (value)
+         |location '$tempPath'
+         |""".stripMargin)
+    try {
+      // partitioned by 'value'
+      append(deltaLog, Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), Seq("value"))
+      checkAnswer(readDeltaTable(tempPath),
+        Row(2, 2) :: Row(1, 4) :: Row(1, 1) :: Row(0, 3) :: Nil)
+      val oldTable = spark.sessionState.catalog.getTableMetadata(TableIdentifier("test3"))
+      val newTable = oldTable.copy(provider = Some("delta"))
+      spark.sessionState.catalog.alterTable(newTable)
+      checkAnswer(spark.table("test3"),
+        Row(2, 2) :: Row(1, 4) :: Row(1, 1) :: Row(0, 3) :: Nil)
+      var e = intercept[AnalysisException] {
+        sql("SHOW PARTITIONS test3")
+      }.getMessage()
+      assert(e.contains("ShowPartitionsCommand not works on delta table"))
+
+      sql(s"CONVERT TO PARQUET test3")
+      checkAnswer(spark.table("test3"),
+        Row(2, 2) :: Row(1, 4) :: Row(1, 1) :: Row(0, 3) :: Nil)
+    } finally {
+      sql("drop table if exists test3")
+      Utils.deleteRecursively(tempDir)
+      DeltaLog.clearCache()
     }
   }
 }

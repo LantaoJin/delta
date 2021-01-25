@@ -34,6 +34,7 @@ import org.apache.spark.{SparkConf, SparkEnv}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.internal.SQLConf
@@ -836,6 +837,17 @@ object DeltaErrors
   def convertBackNonDeltaTablesException(ident: TableIdentifier, sourceName: String): Throwable = {
     new AnalysisException("CONVERT TO PARQUET only supports delta tables, but you are trying to " +
       s"convert a $sourceName source: $ident")
+  }
+
+  def convertPartitionIncompatibleException(
+      tableInHive: CatalogTable, metadataPartitionSchema: StructType): Throwable = {
+    new AnalysisException(s"Partition schema is incompatible when execute 'CONVERT TO PARQUET " +
+      s"${tableInHive.identifier.unquotedString}' via Spark ${org.apache.spark.SPARK_VERSION}. " +
+      s"The original table created by Spark ${tableInHive.createVersion} which its partition " +
+      s"schema stored in HMS is ${tableInHive.partitionSchema.catalogString}. But its partition " +
+      s"schema stored in HDFS metadata is ${metadataPartitionSchema.catalogString}. " +
+      s"To fix the problem, please execute 'CONVERT TO PARQUET " +
+      s"${tableInHive.identifier.unquotedString}' via Spark ${tableInHive.createVersion}")
   }
 
   def unsupportedInHiveMetastoreException(dir: String): Throwable = {
