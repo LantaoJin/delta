@@ -21,6 +21,7 @@ import java.util.concurrent.{ConcurrentHashMap, ScheduledFuture, TimeUnit}
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.util.Random
+import scala.util.control.NonFatal
 
 import org.apache.hadoop.fs.Path
 
@@ -178,6 +179,15 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
   }
 
   def invalidate(spark: SparkSession, meta: DeltaTableMetadata, deleteDb: Boolean = true): Unit = {
+    try {
+      val catalogTable = spark.sessionState.catalog.getTableMetadata(meta.identifier)
+      if (DDLUtils.isDeltaTable(catalogTable)) {
+        val dataPath = new Path(catalogTable.location)
+        DeltaLog.invalidateCache(spark, dataPath)
+      }
+    } catch {
+      case NonFatal(e) => // do nothing
+    }
     if (conf.get(DeltaSQLConf.AUTO_VACUUM_ENABLED)) {
       // It has been dropped or is not a delta table any more,
       // we should delete it from DELTA_META_TABLE

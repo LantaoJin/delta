@@ -869,6 +869,13 @@ object DeltaLog extends DeltaLogging {
     deltaLogCache.invalidateAll()
   }
 
+  def cached(spark: SparkSession, dataPath: Path): Boolean = {
+    val rawPath = new Path(dataPath, "_delta_log")
+    val fs = rawPath.getFileSystem(spark.sessionState.newHadoopConf())
+    val path = fs.makeQualified(rawPath)
+    deltaLogCache.getIfPresent(path) != null
+  }
+
   /**
    * Filters the given [[Dataset]] by the given `partitionFilters`, returning those that match.
    * @param files The active files in the DeltaLog state, which contains the partition value
