@@ -215,7 +215,7 @@ case class CreateDeltaTableCommand(
 //        partitionColumnNames = Nil, // store partitionColumnNames to HMS to keep compatibility
         tracksPartitionsInCatalog = false) // delta table won't use catalog any more
       logInfo(s"Table is path-based table: $tableByPath. Update catalog with mode: $operation")
-      updateCatalog(sparkSession, tableWithDefaultOptions)
+      updateCatalog(sparkSession, tableWithDefaultOptions, fs)
 
       Nil
     }
@@ -344,16 +344,29 @@ case class CreateDeltaTableCommand(
    * on the table operation, and whether we have reached here through legacy code or DataSourceV2
    * code paths.
    */
-  private def updateCatalog(spark: SparkSession, table: CatalogTable): Unit = operation match {
+  private def updateCatalog(
+      spark: SparkSession, table: CatalogTable, fs: FileSystem): Unit = operation match {
     case _ if tableByPath => // do nothing with the metastore if this is by path
     case TableCreationModes.Create =>
       if (DDLUtils.isTemporaryTable(table)) {
         spark.sessionState.catalog.createTempTable(table, ignoreIfExists = false)
       } else {
-        spark.sessionState.catalog.createTable(
-          table,
-          ignoreIfExists = existingTableOpt.isDefined,
-          validateLocation = false)
+        try {
+          spark.sessionState.catalog.createTable(
+            table,
+            ignoreIfExists = existingTableOpt.isDefined,
+            validateLocation = false)
+        } catch {
+          case t: Throwable if mode == SaveMode.ErrorIfExists && existingTableOpt.isEmpty =>
+            // Get an exception when update catalog, and the table in Catalog not exists.
+            // We can safety clean the path of the table to avoid PATH already exists problem.
+            val tableLocation = new Path(table.storage.locationUri.getOrElse(
+              spark.sessionState.catalog.defaultTablePath(table.identifier)))
+            fs.delete(tableLocation, true)
+            logWarning(s"Clean up the table path $tableLocation " +
+              s"due to catch an exception when update catalog")
+            throw t
+        }
       }
     case TableCreationModes.Replace if existingTableOpt.isDefined =>
       spark.sessionState.catalog.alterTable(table)
