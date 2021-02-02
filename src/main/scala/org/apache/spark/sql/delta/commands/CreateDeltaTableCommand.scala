@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.analysis.CannotReplaceMissingTableException
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType, CatalogUtils}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog}
+import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.util.PartitionUtils
 import org.apache.spark.sql.execution.command.{DDLUtils, RunnableCommand}
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -145,7 +146,7 @@ case class CreateDeltaTableCommand(
         }
       } else {
         def createTransactionLogOrVerify(): Unit = {
-          if (isManagedTable) {
+          if (isManagedTable && !allowCreateTableOnExistingData(sparkSession)) {
             // When creating a managed table, the table path should not exist or is empty, or
             // users would be surprised to see the data, or see the data directory being dropped
             // after the table is dropped.
@@ -219,6 +220,10 @@ case class CreateDeltaTableCommand(
 
       Nil
     }
+  }
+
+  private def allowCreateTableOnExistingData(spark: SparkSession): Boolean = {
+    spark.sessionState.conf.getConf(DeltaSQLConf.ALLOW_CREATE_TABLE_ON_EXISTING_DATA)
   }
 
   private def getProvidedMetadata(table: CatalogTable, schemaString: String): Metadata = {

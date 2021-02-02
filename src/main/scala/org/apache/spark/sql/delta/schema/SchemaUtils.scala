@@ -360,9 +360,17 @@ object SchemaUtils {
       val nullabilityDiffs =
         if (existing.nullable == specified.nullable) Nil
         else Seq(fieldNullabilityMessage(s"$name", specified.nullable, existing.nullable))
+      // If a table convert from Hive table, its column metadata will contains HIVE_TYPE_STRING.
+      // Comparing them should ignore the case of only one table metadata contains HIVE_TYPE_STRING.
+      // The condition should be "(contains ^ contains) || equals"
       val metadataDiffs =
-        if (existing.metadata == specified.metadata) Nil
-        else Seq(metadataDifferentMessage(s"$name", specified.metadata, existing.metadata))
+        if ((existing.metadata.contains(HIVE_TYPE_STRING) ^
+            specified.metadata.contains(HIVE_TYPE_STRING)) ||
+            existing.metadata == specified.metadata) {
+          Nil
+        } else {
+          Seq(metadataDifferentMessage(s"$name", specified.metadata, existing.metadata))
+        }
       val typeDiffs =
         typeDifference(existing.dataType, specified.dataType, name)
 

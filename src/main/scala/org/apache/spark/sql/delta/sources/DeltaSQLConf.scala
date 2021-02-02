@@ -348,4 +348,13 @@ object DeltaSQLConf {
         """.stripMargin)
       .booleanConf
       .createWithDefault(true)
+
+  val ALLOW_CREATE_TABLE_ON_EXISTING_DATA =
+    buildConf("createTableOnExistingData.allowed")
+      .doc(
+        """
+          |This is for HDM copy only, allow create a delta table on existing data fold.
+        """.stripMargin)
+      .booleanConf
+      .createWithDefault(false)
 }
