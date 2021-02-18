@@ -17,13 +17,9 @@
 package org.apache.spark.sql.delta
 
 // scalastyle:off import.ordering.noEmptyLine
-import org.apache.spark.sql.delta.catalog.DeltaTableV2
-import org.apache.spark.sql.delta.files.TahoeLogFileIndex
-import org.apache.spark.sql.delta.metering.DeltaLogging
-import org.apache.spark.sql.delta.schema.SchemaUtils
-import org.apache.spark.sql.delta.util.AnalysisHelper
-import org.apache.spark.sql.{AnalysisException, SparkSession}
+import org.apache.spark.sql.{AnalysisException, CompactTableBase, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.{GetColumnByOrdinal, UnresolvedAttribute, UnresolvedExtractValue, caseInsensitiveResolution, withPosition}
+import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTablePartition, CatalogUtils}
 import org.apache.spark.sql.catalyst.expressions.SubExprUtils.{containsOuter, stripOuterReferences}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
@@ -32,7 +28,14 @@ import org.apache.spark.sql.catalyst.plans.LeftAnti
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.toPrettySQL
-import org.apache.spark.sql.execution.datasources.LogicalRelation
+import org.apache.spark.sql.delta.catalog.DeltaTableV2
+import org.apache.spark.sql.delta.commands.ConvertBackCommand
+import org.apache.spark.sql.delta.files.TahoeLogFileIndex
+import org.apache.spark.sql.delta.metering.DeltaLogging
+import org.apache.spark.sql.delta.schema.SchemaUtils
+import org.apache.spark.sql.delta.util.AnalysisHelper
+import org.apache.spark.sql.execution.command.{CompactTableCommand, DDLUtils}
+import org.apache.spark.sql.execution.datasources.{DataSource, LogicalRelation}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, StructField, StructType}
@@ -43,13 +46,30 @@ import org.apache.spark.sql.types.{DataType, StructField, StructType}
  */
 class DeltaAnalysis(session: SparkSession, conf: SQLConf)
   extends Rule[LogicalPlan] with AnalysisHelper with PredicateHelper
-    with ConstraintHelper with DeltaLogging {
+    with ConstraintHelper with CompactTableBase with DeltaLogging {
 
   private def resolver = session.sessionState.conf.resolver
 
   type CastFunction = (Expression, DataType) => Expression
 
   override def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsDown {
+    case CompactTable(s @ SubqueryAlias(_, LogicalRelation(_, _, Some(catalogTable), _)),
+        partitionSpec, targetFileNum) if DDLUtils.isDeltaTable(catalogTable) =>
+      // Convert back to parquet
+      ConvertBackCommand(catalogTable.identifier, None, None).run(session)
+      val parquetTable = session.sessionState.catalog.getTableMetadata(catalogTable.identifier)
+      assert(!DDLUtils.isDeltaTable(parquetTable))
+      // Rebuild file index in plan LogicalRelation, the old one is TahoeLogFileIndex
+      val pathOption = parquetTable.storage.locationUri.map("path" -> CatalogUtils.URIToString(_))
+      val dataSource = DataSource(
+        session,
+        className = "parquet",
+        options = parquetTable.storage.properties ++ pathOption,
+        catalogTable = Some(parquetTable))
+      val r = LogicalRelation(dataSource.resolveRelation(checkFilesExist = false), parquetTable)
+      val plan = s.copy(child = r)
+      convert(session, plan, parquetTable, partitionSpec, targetFileNum)
+
     // INSERT INTO by ordinal
     case a @ AppendData(DataSourceV2Relation(d: DeltaTableV2, _, _, _, _), query, _, false)
       if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema()) =>
@@ -255,6 +275,14 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
 
   }
 
+  override def compact(
+      table: CatalogTable,
+      partition: Seq[CatalogTablePartition],
+      plan: Seq[LogicalPlan]): LogicalPlan = {
+    // We set back to delta for launching CompactDeltaTableExec in CompactDeltaTableStrategy
+    CompactTableCommand(table.copy(provider = Some("delta")), partition, plan)
+  }
+
   /**
    * Performs the schema adjustment by adding UpCasts (which are safe) and Aliases so that we
    * can check if the by-ordinal schema of the insert query matches our Delta table.
@@ -385,7 +413,7 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
     val isNamedExpression = plan match {
       case Aggregate(_, aggregateExpressions, _) => aggregateExpressions.contains(attribute)
       case Project(projectList, _) => projectList.contains(attribute)
-      case Window(windowExpressions, _, _, _) => windowExpressions.contains(attribute)
+      case Window(windowExpressions, _, _, _, _) => windowExpressions.contains(attribute)
       case _ => false
     }
     val wrapper: Expression => Expression =
@@ -421,9 +449,9 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
     // IsNotNull should be constructed by `constructIsNotNullConstraints`.
     val predicates = constraints.filterNot(_.isInstanceOf[IsNotNull])
     predicates.foreach {
-      case eq @ EqualTo(l @ Cast(_: Expression, _, _), r: Expression) =>
+      case eq @ EqualTo(l @ Cast(_: Expression, _, _, _), r: Expression) =>
         inferredConstraints ++= replaceConstraints(predicates - eq, r, l)
-      case eq @ EqualTo(l: Expression, r @ Cast(_: Expression, _, _)) =>
+      case eq @ EqualTo(l: Expression, r @ Cast(_: Expression, _, _, _)) =>
         inferredConstraints ++= replaceConstraints(predicates - eq, l, r)
       case eq @ EqualTo(l: Expression, r: Expression) =>
         val candidateConstraints = predicates - eq
@@ -747,7 +775,7 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
             case Filter(cond, _) =>
               val constraints = splitConjunctivePredicates(cond)
               val exprs = constraints.flatMap(inferIsNotNullConstraints).collect {
-                case IsNotNull(Cast(expr, _, _)) => expr
+                case IsNotNull(Cast(expr, _, _, _)) => expr
                 case IsNotNull(expr) => expr
               }
               newSub.output.intersect(exprs).nonEmpty

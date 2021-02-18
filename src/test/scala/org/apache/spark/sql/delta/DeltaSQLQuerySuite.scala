@@ -19,7 +19,9 @@ package org.apache.spark.sql.delta
 import java.io.{File, FileNotFoundException}
 import java.util.concurrent.TimeUnit
 
-import org.apache.hadoop.fs.Path
+import scala.collection.mutable.ArrayBuffer
+
+import org.apache.hadoop.fs.{FileSystem, LocatedFileStatus, Path}
 
 import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent}
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
@@ -31,6 +33,7 @@ import org.apache.spark.sql.delta.catalog.{DeltaCatalog, DeltaTableV2}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 import org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionStart
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.util.Utils
 
@@ -529,6 +532,152 @@ class DeltaSQLQuerySuite extends QueryTest
           |""".stripMargin
       assert(sql("show create table test").head(10).head.getString(0) == expected)
 
+    }
+  }
+
+  test("test execute compact non-partition delta table command") {
+    withTable("table1") {
+      withSQLConf(SQLConf.SMALL_FILE_SIZE_THRESHOLD.key -> "-1") {
+        (1 to 100).map(i => (i, s"${i % 5}")).toDF("a", "b").
+          repartition(3).write.saveAsTable("table1")
+        sql("convert to delta table1")
+        sql("update table1 set a = 0 where a % 5 = 0")
+        sql("delete from table1 where a % 3 = 0 || a % 7 = 0")
+        sql("delete from table1 where b = 0")
+        val table = TableIdentifier("table1", Some("default"))
+        val loc1 = spark.sessionState.catalog.getTableMetadata(table).location
+        // scalastyle:off hadoopconfiguration
+        val fs = FileSystem.get(loc1, spark.sparkContext.hadoopConfiguration)
+        // scalastyle:one hadoopconfiguration
+        val files1 = fs.listStatus(new Path(loc1.getPath))
+          .filterNot(_.getPath.toString.contains("_SUCCESS"))
+          .filterNot(_.getPath.toString.contains("_delta_log"))
+        assert(files1.length == 9)
+        checkAnswer(spark.table("table1"),
+          Seq(Row(1, "1"), Row(2, "2"), Row(21, "1"), Row(22, "2"), Row(23, "3"), Row(42, "2"),
+            Row(43, "3"), Row(44, "4"), Row(63, "3"), Row(64, "4"), Row(84, "4"), Row(86, "1")))
+        sql("compact table table1 into 1 files")
+        val afterCompact = spark.sessionState.catalog.getTableMetadata(table)
+        val loc2 = afterCompact.location
+        assert(loc1.getPath == loc2.getPath)
+        val files2 = fs.listStatus(new Path(loc2.getPath))
+          .filterNot(_.getPath.toString.contains("_SUCCESS"))
+          .filterNot(_.getPath.toString.contains("_delta_log"))
+        assert(files2.length == 1)
+        assert(afterCompact.provider.contains("delta"))
+
+        checkAnswer(spark.table("table1"),
+          Seq(Row(1, "1"), Row(2, "2"), Row(21, "1"), Row(22, "2"), Row(23, "3"), Row(42, "2"),
+            Row(43, "3"), Row(44, "4"), Row(63, "3"), Row(64, "4"), Row(84, "4"), Row(86, "1")))
+      }
+    }
+  }
+
+  test("test execute compact all partitions delta table command") {
+    withTable("table2") {
+      withSQLConf(SQLConf.SMALL_FILE_SIZE_THRESHOLD.key -> "-1") {
+        (1 to 100).map(i => (i, s"${i % 5}")).toDF("a", "b").
+          repartition(3).write.format("parquet").
+          partitionBy("b").saveAsTable("table2")
+        sql("convert to delta table2")
+        sql("update table2 set a = 0 where a % 5 = 0")
+        sql("delete from table2 where a % 3 = 0 || a % 7 = 0")
+        sql("delete from table2 where b = '0'")
+        val table = TableIdentifier("table2", Some("default"))
+        val loc1 = spark.sessionState.catalog.getTableMetadata(table).location
+        // scalastyle:off hadoopconfiguration
+        val fs = FileSystem.get(loc1, spark.sparkContext.hadoopConfiguration)
+        // scalastyle:on hadoopconfiguration
+        assert(fs.listStatus(new Path(loc1.getPath))
+          .filterNot(_.getPath.toString.contains("_SUCCESS"))
+          .filterNot(_.getPath.toString.contains("_delta_log")).length == 5)
+        val it = fs.listFiles(new Path(loc1), true)
+        val allFiles = new ArrayBuffer[LocatedFileStatus]
+        while(it.hasNext) {
+          val e = it.next()
+          if (!e.getPath.toString.contains("_SUCCESS") &&
+            !e.getPath.toString.contains("_delta_log")) {
+            allFiles += e
+          }
+        }
+        assert(allFiles.length == 24)
+
+        sql("compact table table2 into 1 files")
+        val afterCompact = spark.sessionState.catalog.getTableMetadata(table)
+        val loc2 = afterCompact.location
+        assert(loc1.getPath == loc2.getPath)
+        assert(fs.listStatus(new Path(loc2.getPath))
+          .filterNot(_.getPath.toString.contains("_SUCCESS"))
+          .filterNot(_.getPath.toString.contains("_delta_log")).length == 5)
+        val it2 = fs.listFiles(new Path(loc2), true)
+        val allFiles2 = new ArrayBuffer[LocatedFileStatus]
+        while(it2.hasNext) {
+          val e = it2.next()
+          if (!e.getPath.toString.contains("_SUCCESS") &&
+            !e.getPath.toString.contains("_delta_log")) {
+            allFiles2 += e
+          }
+        }
+        assert(allFiles2.length == 5)
+        assert(afterCompact.provider.contains("delta"))
+        checkAnswer(sql("select * from table2"),
+          Seq(Row(1, "1"), Row(2, "2"), Row(21, "1"), Row(22, "2"), Row(23, "3"), Row(42, "2"),
+            Row(43, "3"), Row(44, "4"), Row(63, "3"), Row(64, "4"), Row(84, "4"), Row(86, "1")))
+      }
+    }
+  }
+
+  test("test execute compact specified partition table command") {
+    withTable("table3") {
+      withSQLConf(SQLConf.SMALL_FILE_SIZE_THRESHOLD.key -> "-1") {
+        (1 to 100).map(i => (i, s"${i % 5}")).toDF("a", "b").
+          repartition(3).write.format("parquet").
+          partitionBy("b").saveAsTable("table3")
+        sql("convert to delta table3")
+        sql("update table3 set a = 0 where a % 5 = 0")
+        sql("delete from table3 where a % 3 = 0 || a % 7 = 0")
+        sql("delete from table3 where b = '0'")
+        val table = TableIdentifier("table3", Some("default"))
+        val loc1 = spark.sessionState.catalog.getTableMetadata(table).location
+        // scalastyle:off hadoopconfiguration
+        val fs = FileSystem.get(loc1, spark.sparkContext.hadoopConfiguration)
+        // scalastyle:on hadoopconfiguration
+        assert(fs.listStatus(new Path(loc1.getPath))
+          .filterNot(_.getPath.toString.contains("_SUCCESS"))
+          .filterNot(_.getPath.toString.contains("_delta_log")).length == 5)
+        val it = fs.listFiles(new Path(loc1), true)
+        val allFiles = new ArrayBuffer[LocatedFileStatus]
+        while(it.hasNext) {
+          val e = it.next()
+          if (!e.getPath.toString.contains("_SUCCESS") &&
+            !e.getPath.toString.contains("_delta_log")) {
+            allFiles += e
+          }
+        }
+        assert(allFiles.length == 24)
+
+        sql("compact table table3 partition(b='1') into 1 files")
+        val afterCompact = spark.sessionState.catalog.getTableMetadata(table)
+        val loc2 = afterCompact.location
+        assert(loc1.getPath == loc2.getPath)
+        assert(fs.listStatus(new Path(loc2.getPath))
+          .filterNot(_.getPath.toString.contains("_SUCCESS"))
+          .filterNot(_.getPath.toString.contains("_delta_log")).length == 5)
+        val it2 = fs.listFiles(new Path(loc2), true)
+        val allFiles2 = new ArrayBuffer[LocatedFileStatus]
+        while(it2.hasNext) {
+          val e = it2.next()
+          if (!e.getPath.toString.contains("_SUCCESS") &&
+            !e.getPath.toString.contains("_delta_log")) {
+            allFiles2 += e
+          }
+        }
+        assert(allFiles2.length == 7)
+        assert(afterCompact.provider.contains("delta"))
+        checkAnswer(sql("select * from table3"),
+          Seq(Row(1, "1"), Row(2, "2"), Row(21, "1"), Row(22, "2"), Row(23, "3"), Row(42, "2"),
+            Row(43, "3"), Row(44, "4"), Row(63, "3"), Row(64, "4"), Row(84, "4"), Row(86, "1")))
+      }
     }
   }
 }

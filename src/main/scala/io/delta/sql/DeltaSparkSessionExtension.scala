@@ -16,10 +16,11 @@
 
 package io.delta.sql
 
-import org.apache.spark.sql.delta._
 import io.delta.sql.parser.DeltaSqlParser
 
 import org.apache.spark.sql.SparkSessionExtensions
+import org.apache.spark.sql.delta._
+import org.apache.spark.sql.delta.compact.CompactDeltaTableStrategy
 
 /**
  * An extension for Spark SQL to activate Delta SQL parser to support Delta SQL grammar.
@@ -88,6 +89,9 @@ class DeltaSparkSessionExtension extends (SparkSessionExtensions => Unit) {
     }
     extensions.injectPostHocResolutionRule { session =>
       PreprocessTableDelete
+    }
+    extensions.injectPlannerStrategy { session =>
+      CompactDeltaTableStrategy
     }
   }
 }
