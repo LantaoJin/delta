@@ -540,6 +540,13 @@ object DeltaLog extends DeltaLogging {
     }
   }
 
+  def cached(spark: SparkSession, dataPath: Path): Boolean = {
+    val rawPath = new Path(dataPath, "_delta_log")
+    val fs = rawPath.getFileSystem(spark.sessionState.newHadoopConf())
+    val path = fs.makeQualified(rawPath)
+    deltaLogCache.getIfPresent(path) != null
+  }
+
   def clearCache(): Unit = {
     deltaLogCache.invalidateAll()
   }
