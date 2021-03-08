@@ -188,7 +188,8 @@ case class MergeIntoCommand(
     "numTargetFilesBeforeSkipping" -> createMetric(sc, "number of target files before skipping"),
     "numTargetFilesAfterSkipping" -> createMetric(sc, "number of target files after skipping"),
     "numTargetFilesRemoved" -> createMetric(sc, "number of files removed to target"),
-    "numTargetFilesAdded" -> createMetric(sc, "number of files added to target"))
+    "numTargetFilesAdded" -> createMetric(sc, "number of files added to target"),
+    "numOutputRows" -> createMetric(sc, "total number of rows written out"))
 
   val targetTable = getCatalogTableFromTargetPlan(target)
 

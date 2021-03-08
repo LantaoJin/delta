@@ -365,7 +365,8 @@ private[delta] object DeltaOperationMetrics {
   val WRITE = Set(
     "numFiles", // number of files written
     "numOutputBytes", // size in bytes of the written contents
-    "numOutputRows" // number of rows written
+    "numOutputRows", // number of rows written
+    "numParts" // number of partitions
   )
 
   val STREAMING_UPDATE = Set(
@@ -426,6 +427,7 @@ private[delta] object DeltaOperationMetrics {
   val UPDATE = Set(
     "numAddedFiles", // number of files added
     "numRemovedFiles", // number of files removed
+    "numOutputRows", // number of output rows
     "numUpdatedRows", // number of rows updated
     "numCopiedRows" // number of rows just copied over in the process of updating files.
   )
