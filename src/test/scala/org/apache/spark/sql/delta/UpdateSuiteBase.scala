@@ -413,7 +413,7 @@ abstract class UpdateSuiteBase
         set = "key = 1",
         where = "EXISTS (SELECT max(c) FROM source)")
     }.getMessage
-    assert(e1.contains("Subqueries are not supported"))
+    assert(e1.contains("In or uncorrelated subquery is supported only"))
 
     // subquery with NOT EXISTS
     val e2 = intercept[AnalysisException] {
@@ -423,13 +423,13 @@ abstract class UpdateSuiteBase
     }.getMessage
     assert(e2.contains("Subqueries are not supported"))
 
-    // subquery with IN
-    val e3 = intercept[AnalysisException] {
-      executeUpdate(target = s"delta.`$tempPath`",
-        set = "key = 1",
-        where = "key IN (SELECT max(c) FROM source)")
-    }.getMessage
-    assert(e3.contains("Subqueries are not supported"))
+//    // subquery with IN
+//    val e3 = intercept[AnalysisException] {
+//      executeUpdate(target = s"delta.`$tempPath`",
+//        set = "key = 1",
+//        where = "key IN (SELECT max(c) FROM source)")
+//    }.getMessage
+//    assert(e3.contains("Subqueries are not supported"))
 
     // subquery with NOT IN
     val e4 = intercept[AnalysisException] {
@@ -437,7 +437,7 @@ abstract class UpdateSuiteBase
         set = "key = 1",
         where = "key NOT IN (SELECT max(c) FROM source)")
     }.getMessage
-    assert(e4.contains("Subqueries are not supported"))
+    assert(e4.contains("NOT IN subquery without IS NOT NULL is not supported"))
   }
 
   test("nested data support") {

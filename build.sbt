@@ -250,12 +250,12 @@ releaseProcess := Seq[ReleaseStep](
 
 resolvers ++= Seq(
   Resolver.mavenLocal,
-  "ebaycentral.snapshots" at "http://ebaycentral.qa.ebay.com/content/repositories/snapshots",
-  "ebaycentral.releases"  at "http://ebaycentral.qa.ebay.com/content/repositories/releases"
+  "ebaycentral.snapshots" at "https://ebaycentral.qa.ebay.com/content/repositories/snapshots",
+  "ebaycentral.releases"  at "https://ebaycentral.qa.ebay.com/content/repositories/releases"
 )
 
 publishTo := Some(
-  "ebaycentral.snapshots" at "http://ebaycentral.qa.ebay.com/content/repositories/snapshots"
+  "ebaycentral.snapshots" at "https://ebaycentral.qa.ebay.com/content/repositories/snapshots"
 )
 
 credentials += Credentials(Path.userHome / ".sbt" / ".credentials")

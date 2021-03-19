@@ -318,7 +318,7 @@ abstract class DeleteSuiteBase extends QueryTest
       Row("c", "v") :: Row("d", "vv") :: Nil)
   }
 
-  test("do not support subquery test") {
+  ignore("do not support subquery test") {
     append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"))
     Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("c", "d").createOrReplaceTempView("source")
 
