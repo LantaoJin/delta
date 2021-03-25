@@ -230,6 +230,8 @@ class Snapshot(
         .select("partitionValues").as[Map[String, String]].collect().toSet
     partitions.map { partitionKv =>
       partitionKv.map {
+        case (key, value) if value == null =>
+          key + "=" + ExternalCatalogUtils.DEFAULT_PARTITION_NAME
         case (key, value) => key + "=" + value
       }.mkString("/")
     }.toSeq.sorted
@@ -268,6 +270,11 @@ class Snapshot(
         isPartialPartitionSpec(partialSpec.get, spec)
       } else {
         true
+      }
+    }.map { partitionKv =>
+      partitionKv.map {
+        case (key, value) if value == null => (key, ExternalCatalogUtils.DEFAULT_PARTITION_NAME)
+        case (key, value) => (key, value)
       }
     }.map { partitionKv =>
       val tablePath = new Path(table.location)

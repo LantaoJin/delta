@@ -1969,4 +1969,55 @@ class SQLQuerySuite extends QueryTest
       DeltaLog.clearCache()
     }
   }
+
+  test("test convert to delta partition purge") {
+    withTable("target") {
+      sql(
+        """
+          |create table target (id int, dt string) using parquet
+          |partitioned by (dt)
+          |""".stripMargin)
+      sql("insert into table target values (1, 'a'), (2, 'b'), (3, 'c')")
+      val partsBeforeConvert = spark.sessionState.catalog.listPartitions(TableIdentifier("target"))
+      assert(partsBeforeConvert.size == 3)
+      sql("convert to delta target")
+      Thread.sleep(1000)
+      val partsAfterConvert = spark.sessionState.catalog.listPartitions(TableIdentifier("target"))
+      assert(partsAfterConvert.size == 0)
+      val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier("target"))
+      val deltaLog = DeltaLog.forTable(spark, table)
+      assert(deltaLog.snapshot.listPartitions(table).size == 3)
+      sql("convert to parquet target")
+      val partsConvertBack = spark.sessionState.catalog.listPartitions(TableIdentifier("target"))
+      assert(partsConvertBack.size == 3)
+    }
+  }
+
+  test("Test convert partition with __HIVE_DEFAULT_PARTITION__") {
+    withTable("test1", "test2") {
+      sql("create table test1 (id int, dt string) using delta partitioned by (dt)")
+      sql("insert into table test1 values (1, '__HIVE_DEFAULT_PARTITION__')")
+      checkAnswer(
+        sql("SHOW PARTITIONS test1"),
+        Row("dt=__HIVE_DEFAULT_PARTITION__") :: Nil
+      )
+      sql("convert to parquet test1") // no NPE
+      checkAnswer(
+        sql("SHOW PARTITIONS test1"),
+        Row("dt=__HIVE_DEFAULT_PARTITION__") :: Nil
+      )
+
+      sql("create table test2 (id int, dt string) using delta partitioned by (dt)")
+      sql("insert into table test2 values (1, null)")
+      checkAnswer(
+        sql("SHOW PARTITIONS test2"),
+        Row("dt=__HIVE_DEFAULT_PARTITION__") :: Nil
+      )
+      sql("convert to parquet test2") // no NPE
+      checkAnswer(
+        sql("SHOW PARTITIONS test2"),
+        Row("dt=__HIVE_DEFAULT_PARTITION__") :: Nil
+      )
+    }
+  }
 }
