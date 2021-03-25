@@ -42,6 +42,20 @@ import org.apache.spark.util.Utils
  * Helper trait for all delta commands.
  */
 trait DeltaCommand extends DeltaLogging {
+
+  /**
+   * Set callSite to "DeltaCommand", for special use case.
+   */
+  protected def withDeltaCall[T](spark: SparkSession)(fn: => T): T = {
+    val oldCallSite = spark.sparkContext.getCallSite()
+    try {
+      spark.sparkContext.setCallSite("DeltaCommand")
+      fn
+    } finally {
+      spark.sparkContext.setCallSite(oldCallSite)
+    }
+  }
+
   /**
    * Converts string predicates into [[Expression]]s relative to a transaction.
    *

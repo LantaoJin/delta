@@ -20,7 +20,7 @@ package org.apache.spark.sql.delta.commands
 import java.io.Closeable
 import java.util.Locale
 
-import scala.collection.JavaConverters._
+import scala.concurrent.{ExecutionContext, Future}
 
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 
@@ -39,12 +39,12 @@ import org.apache.spark.sql.delta.sources.{DeltaSQLConf, DeltaSourceUtils}
 import org.apache.spark.sql.delta.util.{DateFormatter, DeltaFileOperations, PartitionUtils, TimestampFormatter}
 import org.apache.spark.sql.delta.util.SerializableFileStatus
 import org.apache.spark.sql.delta.services.{ConvertToDeltaEvent, DeltaTableMetadata, config}
-import org.apache.spark.sql.execution.command.{DDLUtils, RunnableCommand}
+import org.apache.spark.sql.execution.command.{AlterTableDropPartitionCommand, DDLUtils, RunnableCommand}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetToSparkSchemaConverter}
 import org.apache.spark.sql.execution.streaming.{FileStreamSink, MetadataLogFileIndex}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
-import org.apache.spark.util.{SerializableConfiguration, Utils}
+import org.apache.spark.util.{SerializableConfiguration, ThreadUtils}
 
 /**
  * Convert an existing parquet table to a delta table by creating delta logs based on
@@ -75,6 +75,10 @@ abstract class ConvertToDeltaCommandBase(
   var partitionColNames: Seq[String] = Nil
   var partitionFields: Seq[StructField] = Nil
   val timestampPartitionPattern = "yyyy-MM-dd HH:mm:ss[.S]"
+
+  @transient private val executionContext = ExecutionContext.fromExecutorService {
+    ThreadUtils.newDaemonSingleThreadExecutor("delta-drop-hive-partition-future")
+  }
 
   override def run(spark: SparkSession): Seq[Row] = {
     val convertProperties = resolveConvertTarget(spark, tableIdentifier) match {
@@ -400,6 +404,41 @@ abstract class ConvertToDeltaCommandBase(
     // If there is a catalog table, convert metadata
     if (convertProperties.catalogTable.isDefined) {
       convertMetadata(convertProperties.catalogTable.get, spark.sessionState.catalog)
+      // Drop partitions in HiveMetaStore async
+      Future {
+        withDeltaCall(spark) {
+          try {
+            val table = convertProperties.catalogTable.get
+            // use catalog.listPartitions to get partitions in HMS
+            val deletedPartitions = spark.sessionState.catalog.listPartitions(table.identifier)
+            if (deletedPartitions.nonEmpty) {
+              val isRangePartitionedTable = false
+              // todo (lajin) In 3.0 we haven't supported range partition yet
+              if (isRangePartitionedTable) {
+                //            AlterTableDropRangePartitionCommand(
+                //              oldTable.identifier,
+                //              deletedPartitions.map(_.spec.head._2),
+                //              ifExists = true,
+                //              purge = false,
+                //              retainData = true).run(spark)
+              } else {
+                AlterTableDropPartitionCommand.fromSpecs(
+                  table.identifier,
+                  deletedPartitions.map(_.spec),
+                  ifExists = true,
+                  purge = false,
+                  retainData = true /* already deleted */).run(spark)
+              }
+            }
+          } catch {
+            case e: Throwable =>
+              // just logging, won't rollback
+              logError(s"Failed to drop partition metadata for " +
+                s"${convertProperties.catalogTable.get.identifier}, " +
+                s"some dirty data will keep in HiveMetaStore.", e)
+          }
+        }
+      }(executionContext)
     }
 
     Seq.empty[Row]

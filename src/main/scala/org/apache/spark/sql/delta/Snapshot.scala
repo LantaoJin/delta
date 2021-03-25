@@ -29,7 +29,7 @@ import org.apache.hadoop.fs.{FileSystem, Path}
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
-import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTablePartition, CatalogUtils}
+import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTablePartition, CatalogUtils, ExternalCatalogUtils}
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, LogicalRelation}
 import org.apache.spark.sql.expressions.UserDefinedFunction
@@ -314,6 +314,30 @@ class Snapshot(
   }
 
   /**
+   * List the names of all partitions that belong to the specified table, assuming it exists.
+   *
+   * A partial partition spec may optionally be provided to filter the partitions returned.
+   * For instance, if there exist partitions (a='1', b='2'), (a='1', b='3') and (a='2', b='4'),
+   * then a partial spec of (a='1') will return the first two only.
+   */
+  def listPartitionNames: Seq[String] = {
+    val implicits = spark.implicits
+    import implicits._
+
+    val partitions =
+      allFiles.select("path", "partitionValues").join(
+        tombstones.select("path"), Seq("path"), "leftanti")
+        .select("partitionValues").as[Map[String, String]].collect().toSet
+    partitions.map { partitionKv =>
+      partitionKv.map {
+        case (key, value) if value == null =>
+          key + "=" + ExternalCatalogUtils.DEFAULT_PARTITION_NAME
+        case (key, value) => key + "=" + value
+      }.mkString("/")
+    }.toSeq.sorted
+  }
+
+  /**
    * List the metadata of all partitions that belong to the specified table, assuming it exists.
    *
    * A partial partition spec may optionally be provided to filter the partitions returned.
@@ -346,6 +370,11 @@ class Snapshot(
         isPartialPartitionSpec(partialSpec.get, spec)
       } else {
         true
+      }
+    }.map { partitionKv =>
+      partitionKv.map {
+        case (key, value) if value == null => (key, ExternalCatalogUtils.DEFAULT_PARTITION_NAME)
+        case (key, value) => (key, value)
       }
     }.map { partitionKv =>
       val tablePath = new Path(table.location)
