@@ -692,7 +692,7 @@ class DeltaSQLQuerySuite extends QueryTest
       val partsBeforeConvert = spark.sessionState.catalog.listPartitions(TableIdentifier("target"))
       assert(partsBeforeConvert.size == 3)
       sql("convert to delta target")
-      Thread.sleep(1000) // since drop partition async
+      Thread.sleep(5000) // since drop partition async
       val partsAfterConvert = spark.sessionState.catalog.listPartitions(TableIdentifier("target"))
       assert(partsAfterConvert.size == 0)
       val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier("target"))
