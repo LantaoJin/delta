@@ -618,7 +618,7 @@ class DeltaSQLQuerySuite extends QueryTest
             allFiles2 += e
           }
         }
-        assert(allFiles2.length == 5)
+        assert(allFiles2.length == 4)
         assert(afterCompact.provider.contains("delta"))
         checkAnswer(sql("select * from table2"),
           Seq(Row(1, "1"), Row(2, "2"), Row(21, "1"), Row(22, "2"), Row(23, "3"), Row(42, "2"),
