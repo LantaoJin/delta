@@ -311,6 +311,7 @@ class DoubleCheckerTask(conf: SparkConf, validate: ValidateTask) extends Runnabl
     val hadoopConf = SparkHadoopUtil.get.newConfiguration(conf)
     val basePath = new Path(baseDir)
     val fs = basePath.getFileSystem(hadoopConf)
+    logInfo("Double check started")
     try {
       fs.listStatus(basePath)
         .filter(_.isDirectory)
@@ -346,11 +347,10 @@ class DoubleCheckerTask(conf: SparkConf, validate: ValidateTask) extends Runnabl
             logWarning(s"Catch an exception when double check db $db", e)
         }
       }
+      logInfo("Double check completed")
     } catch {
       case e: Throwable =>
         logWarning("Catch an exception when double check", e)
-    } finally {
-      fs.close()
     }
   }
 }

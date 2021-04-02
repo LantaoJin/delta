@@ -308,5 +308,5 @@ object DeltaSQLConf {
   val DOUBLE_CHECK_INTERVAL = buildStaticConf("doubleChecker.schedule.interval")
     .doc("The interval of delta table double checker thread is scheduled.")
     .timeConf(TimeUnit.SECONDS)
-    .createWithDefault(3 * 3600) // 6 hours by default
+    .createWithDefault(3 * 3600) // 3 hours by default
 }
