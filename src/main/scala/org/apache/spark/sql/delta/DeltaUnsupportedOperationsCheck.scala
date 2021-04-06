@@ -51,9 +51,9 @@ case class DeltaUnsupportedOperationsCheck(spark: SparkSession)
 
   def apply(plan: LogicalPlan): Unit = plan.foreach {
     // Unsupported Hive commands
-    case c: CreateTableLikeCommand =>
-      recordDeltaEvent(null, "delta.unsupported.createLike")
-      fail(operation = "CREATE TABLE LIKE", c.sourceTable)
+//    case c: CreateTableLikeCommand =>
+//      recordDeltaEvent(null, "delta.unsupported.createLike")
+//      fail(operation = "CREATE TABLE LIKE", c.sourceTable)
 
     case a: AnalyzePartitionCommand =>
       recordDeltaEvent(null, "delta.unsupported.analyzePartition")

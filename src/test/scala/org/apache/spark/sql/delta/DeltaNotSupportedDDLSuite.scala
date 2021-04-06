@@ -99,11 +99,11 @@ abstract class DeltaNotSupportedDDLBase extends QueryTest
     }
   }
 
-  test("CREATE TABLE LIKE") {
-    withTable("tbl") {
-      assertUnsupported(s"CREATE TABLE tbl LIKE $nonPartitionedTableName")
-    }
-  }
+//  test("CREATE TABLE LIKE") {
+//    withTable("tbl") {
+//      assertUnsupported(s"CREATE TABLE tbl LIKE $nonPartitionedTableName")
+//    }
+//  }
 
   test("ANALYZE TABLE PARTITION") {
     assertUnsupported(s"ANALYZE TABLE $partitionedTableName PARTITION (p1) COMPUTE STATISTICS")
