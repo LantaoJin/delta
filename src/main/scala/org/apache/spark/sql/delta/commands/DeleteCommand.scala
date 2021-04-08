@@ -58,7 +58,9 @@ case class DeleteCommand(
   override lazy val metrics = Map[String, SQLMetric](
     "numRemovedFiles" -> createMetric(sc, "number of files removed."),
     "numAddedFiles" -> createMetric(sc, "number of files added."),
-    "numDeletedRows" -> createMetric(sc, "number of rows deleted.")
+    "numDeletedRows" -> createMetric(sc, "number of rows deleted."),
+    "numOutputRows" -> createMetric(sc, "number of output rows"),
+    "numCopiedRows" -> createMetric(sc, "number of copied rows")
   )
 
   final override def run(sparkSession: SparkSession): Seq[Row] = {

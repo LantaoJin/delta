@@ -381,14 +381,16 @@ private[delta] object DeltaOperationMetrics {
     "numRemovedFiles", // number of files removed
     "numDeletedRows", // number of rows removed
     "numCopiedRows", // number of rows copied in the process of deleting files
-    "numOutputRows"
+    "numOutputRows" // number of output rows
   )
 
   /** Deleting the entire table or partition would prevent row level metrics from being recorded */
   val DELETE_PARTITIONS = Set(
     "numAddedFiles", // number of files added
     "numRemovedFiles", // number of files removed,
-    "numDeletedRows" // number of rows removed
+    "numDeletedRows", // number of rows removed
+    "numCopiedRows", // number of rows copied in the process of deleting files
+    "numOutputRows" // number of output rows
   )
 
   val TRUNCATE = Set(
