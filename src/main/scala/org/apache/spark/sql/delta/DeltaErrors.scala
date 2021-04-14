@@ -198,6 +198,13 @@ object DeltaErrors
       "Data used in creating the Delta table doesn't have any columns.")
   }
 
+  def legacyEmptyDeltaTableException(deltaTableIdentifier: DeltaTableIdentifier): Throwable = {
+    new AnalysisException(s"$deltaTableIdentifier is a legacy empty initialized Delta table. " +
+      s"This means the table created by a legacy Spark version (2.3.0) and just initialized, " +
+      s"no data inserted at all. Operating on the table via Spark 3.0 or above is not allowed. " +
+      s"Please re-create it in Spark 3.0 or above, or insert some data via legacy Spark first.")
+  }
+
   def notADeltaTableException(deltaTableIdentifier: DeltaTableIdentifier): Throwable = {
     new AnalysisException(s"$deltaTableIdentifier is not a Delta table.")
   }

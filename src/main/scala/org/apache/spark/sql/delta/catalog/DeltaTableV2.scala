@@ -145,6 +145,10 @@ case class DeltaTableV2(
     if (!deltaLog.tableExists) {
       val id = catalogTable.map(ct => DeltaTableIdentifier(table = Some(ct.identifier)))
         .getOrElse(DeltaTableIdentifier(path = Some(path.toString)))
+      // Legacy initialized Delta tables may miss delta log folder
+      if (catalogTable.exists(DeltaTableUtils.isLegacyDeltaTable)) {
+        throw DeltaErrors.legacyEmptyDeltaTableException(id)
+      }
       throw DeltaErrors.notADeltaTableException(id)
     }
     val partitionPredicates = DeltaDataSource.verifyAndCreatePartitionFilters(

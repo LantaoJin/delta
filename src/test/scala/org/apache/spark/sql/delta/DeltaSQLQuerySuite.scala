@@ -25,12 +25,12 @@ import org.apache.hadoop.fs.{FileSystem, LocatedFileStatus, Path}
 
 import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent}
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
-import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.{QualifiedTableName, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.CatalogTableType
 import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog}
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform}
 import org.apache.spark.sql.delta.catalog.{DeltaCatalog, DeltaTableV2}
-import org.apache.spark.sql.delta.sources.DeltaSQLConf
+import org.apache.spark.sql.delta.sources.{DeltaSQLConf, DeltaSourceUtils}
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 import org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionStart
 import org.apache.spark.sql.internal.SQLConf
@@ -731,6 +731,37 @@ class DeltaSQLQuerySuite extends QueryTest
         sql("SHOW PARTITIONS test2"),
         Row("dt=__HIVE_DEFAULT_PARTITION__") :: Nil
       )
+    }
+  }
+
+  test("Test legacy empty delta table") {
+    withTable("test1", "test2") {
+      sql("create table test1 (id int, name string) using delta")
+      sql("create table test2 (id int, name string, dt string) using delta partitioned by (dt)")
+      val logPath1 = DeltaLog.forTable(spark, TableIdentifier("test1")).logPath
+      val fs = logPath1.getFileSystem(spark.sessionState.newHadoopConf)
+      fs.delete(logPath1, true)
+      val logPath2 = DeltaLog.forTable(spark, TableIdentifier("test2")).logPath
+      fs.delete(logPath2, true)
+      val test1 = spark.sessionState.catalog.getTableMetadata(TableIdentifier("test1"))
+      val mockLegacyTest1 = test1.copy(createVersion = DeltaSourceUtils.LEGACY_TABLE_CREATED_BY)
+      spark.sessionState.catalog.alterTable(mockLegacyTest1)
+      val qualified1 = QualifiedTableName(test1.database, test1.identifier.table)
+      spark.sessionState.catalog.invalidateCachedTable(qualified1)
+      val test2 = spark.sessionState.catalog.getTableMetadata(TableIdentifier("test2"))
+      val mockLegacyTest2 = test2.copy(createVersion = DeltaSourceUtils.LEGACY_TABLE_CREATED_BY)
+      spark.sessionState.catalog.alterTable(mockLegacyTest2)
+      val qualified2 = QualifiedTableName(test2.database, test2.identifier.table)
+      spark.sessionState.catalog.invalidateCachedTable(qualified2)
+
+      var msg = intercept[AnalysisException] {
+        sql("update test1 set id = 5")
+      }.getMessage
+      assert(msg.contains("Operating on the table via Spark 3.0 or above is not allowed"))
+      msg = intercept[AnalysisException] {
+        sql("update test2 set id = 5")
+      }.getMessage
+      assert(msg.contains("Operating on the table via Spark 3.0 or above is not allowed"))
     }
   }
 }

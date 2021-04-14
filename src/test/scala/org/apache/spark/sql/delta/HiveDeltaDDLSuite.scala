@@ -16,10 +16,9 @@
 
 package org.apache.spark.sql.delta
 
-import org.apache.spark.sql.delta.test.DeltaHiveTest
-
 import org.apache.spark.sql.AnalysisException
-import org.apache.spark.sql.hive.test.TestHiveSingleton
+import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.delta.test.DeltaHiveTest
 
 abstract class HiveDeltaDDLSuiteBase
   extends DeltaDDLTestBase {
@@ -34,4 +33,22 @@ abstract class HiveDeltaDDLSuiteBase
   }
 }
 
-class HiveDeltaDDLSuite extends HiveDeltaDDLSuiteBase with DeltaHiveTest
+class HiveDeltaDDLSuite extends HiveDeltaDDLSuiteBase with DeltaHiveTest {
+
+  test("transient_lastDdlTime is needed in delta") {
+    withTable("delta1", "delta2", "delta3") {
+      sql("create table delta1 (id int) using delta")
+      sql("create table delta2 using delta as select 1 as id")
+      sql("create table delta3 (id int) using parquet")
+      val t1 = spark.sessionState.catalog.getTableMetadata(TableIdentifier("delta1"))
+      val t2 = spark.sessionState.catalog.getTableMetadata(TableIdentifier("delta2"))
+      var t3 = spark.sessionState.catalog.getTableMetadata(TableIdentifier("delta3"))
+      assert(t3.properties("transient_lastDdlTime").toLong > 0)
+      sql("convert to delta delta3")
+      t3 = spark.sessionState.catalog.getTableMetadata(TableIdentifier("delta3"))
+      assert(t1.properties("transient_lastDdlTime").toLong > 0)
+      assert(t2.properties("transient_lastDdlTime").toLong > 0)
+      assert(t3.properties("transient_lastDdlTime").toLong > 0)
+    }
+  }
+}

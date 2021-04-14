@@ -27,6 +27,7 @@ import org.apache.spark.sql.sources.Filter
 object DeltaSourceUtils {
   val NAME = "delta"
   val ALT_NAME = "delta"
+  val LEGACY_TABLE_CREATED_BY = "Spark 2.3.0"
 
   // Batch relations don't pass partitioning columns to `CreatableRelationProvider`s, therefore
   // as a hack, we pass in the partitioning columns among the options.

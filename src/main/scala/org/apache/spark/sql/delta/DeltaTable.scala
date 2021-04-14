@@ -82,6 +82,9 @@ object DeltaTableUtils extends PredicateHelper
   /** Check whether this table is a Delta table based on information from the Catalog. */
   def isDeltaTable(table: CatalogTable): Boolean = DeltaSourceUtils.isDeltaTable(table.provider)
 
+  def isLegacyDeltaTable(table: CatalogTable): Boolean = {
+    isDeltaTable(table) && table.createVersion == DeltaSourceUtils.LEGACY_TABLE_CREATED_BY
+  }
   /**
    * Check whether the provided table name is a Delta table based on information from the Catalog.
    */
