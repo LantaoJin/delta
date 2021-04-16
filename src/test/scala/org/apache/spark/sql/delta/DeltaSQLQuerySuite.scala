@@ -757,11 +757,11 @@ class DeltaSQLQuerySuite extends QueryTest
       var msg = intercept[AnalysisException] {
         sql("update test1 set id = 5")
       }.getMessage
-      assert(msg.contains("Operating on the table via Spark 3.0 or above is not allowed"))
+      assert(msg.contains("Any operation on the table via current Spark version is not allowed"))
       msg = intercept[AnalysisException] {
         sql("update test2 set id = 5")
       }.getMessage
-      assert(msg.contains("Operating on the table via Spark 3.0 or above is not allowed"))
+      assert(msg.contains("Any operation on the table via current Spark version is not allowed"))
     }
   }
 }
