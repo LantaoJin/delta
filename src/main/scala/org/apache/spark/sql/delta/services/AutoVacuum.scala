@@ -304,6 +304,8 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
  */
 class DoubleCheckerTask(conf: SparkConf, validate: ValidateTask) extends Runnable with Logging {
 
+  val EXCEPTIONAL_DATABASES = Seq("AR_AGNG_TABLES")
+
   override def run(): Unit = {
     val spark = SparkSession.active
     val catalog = spark.sessionState.catalog
@@ -313,11 +315,10 @@ class DoubleCheckerTask(conf: SparkConf, validate: ValidateTask) extends Runnabl
     val fs = basePath.getFileSystem(hadoopConf)
     logInfo("Double check started")
     try {
-      fs.listStatus(basePath)
+      (fs.listStatus(basePath)
         .filter(_.isDirectory)
         .map(_.getPath.getName.toLowerCase())
-        .filter(_.startsWith("p_"))
-        .filter(_.endsWith("_t")).foreach { db =>
+        .filter(_.startsWith("p_")) ++ EXCEPTIONAL_DATABASES.map(_.toLowerCase())).foreach { db =>
         logInfo(s"Begin to double check the delta tables in $db")
         try {
           catalog.getTablesByName(catalog.listTables(db))
