@@ -8,4 +8,4 @@
   sbt-ivy-snapshots: https://repo.scala-sbt.org/scalasbt/ivy-snapshots/, [organization]/[module]/[revision]/[type]s/[artifact](-[classifier]).[ext], bootOnly
   sbt-plugin-releases: https://repo.scala-sbt.org/scalasbt/sbt-plugin-releases/, [organization]/[module]/(scala_[scalaVersion]/)(sbt_[sbtVersion]/)[revision]/[type]s/[artifact](-[classifier]).[ext]
   spark-packages: https://repos.spark-packages.org/
-  typesafe-releases: http://repo.typesafe.com/typesafe/releases/
+  typesafe-releases: https://repo.typesafe.com/typesafe/releases/
