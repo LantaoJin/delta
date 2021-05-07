@@ -357,4 +357,9 @@ object DeltaSQLConf {
         """.stripMargin)
       .booleanConf
       .createWithDefault(false)
+
+  val VACUUM_RENAME_BASE_PATH =
+    buildConf("vacuum.renameBasePath")
+      .stringConf
+      .createWithDefault("/tmp/delta/vacuumRenameBasePath")
 }

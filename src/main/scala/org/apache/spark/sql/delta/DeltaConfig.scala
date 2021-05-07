@@ -291,7 +291,7 @@ object DeltaConfigs extends DeltaLogging {
    */
   val TOMBSTONE_RETENTION = buildConfig[CalendarInterval](
     "deletedFileRetentionDuration",
-    "interval 1 week",
+    "interval 12 hours",
     parseCalendarInterval,
     isValidIntervalConfigValue,
     "needs to be provided as a calendar interval such as '2 weeks'. Months " +

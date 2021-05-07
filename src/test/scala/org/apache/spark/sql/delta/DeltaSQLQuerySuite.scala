@@ -17,6 +17,7 @@
 package org.apache.spark.sql.delta
 
 import java.io.{File, FileNotFoundException}
+import java.text.SimpleDateFormat
 import java.util.concurrent.TimeUnit
 
 import scala.collection.mutable.ArrayBuffer
@@ -507,6 +508,49 @@ class DeltaSQLQuerySuite extends QueryTest
       sql("drop table if exists test3")
       Utils.deleteRecursively(tempDir)
       DeltaLog.clearCache()
+    }
+  }
+
+  test("convert back with rename policy") {
+    val tempDir = Utils.createTempDir()
+    val basePath = tempDir.getParent
+    withSQLConf(DeltaSQLConf.VACUUM_RENAME_BASE_PATH.key -> basePath) {
+      val currentDate = new SimpleDateFormat("yyyy-MM-dd").format(System.currentTimeMillis())
+      val datePath = new Path(conf.getConf(DeltaSQLConf.VACUUM_RENAME_BASE_PATH), currentDate)
+      Utils.deleteRecursively(new File(datePath.toUri.toString))
+
+      val tempPath = tempDir.getCanonicalPath
+      val deltaLog = DeltaLog.forTable(spark, new Path(tempPath))
+      sql(
+        s"""
+           |create table test1 (key int, value int) using delta
+           |location '$tempPath'
+           |""".stripMargin)
+      try {
+        append(deltaLog, Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"))
+        checkAnswer(readDeltaTable(tempPath),
+          Row(2, 2) :: Row(1, 4) :: Row(1, 1) :: Row(0, 3) :: Nil)
+        sql("DELETE FROM test1 WHERE key % 2 = 0")
+        checkAnswer(spark.table("test1"), Row(1, 4) :: Row(1, 1) :: Nil)
+
+        val allFiles = new File(tempPath).listFiles().map(_.getName)
+          .filter(_.endsWith("parquet")).toSet
+
+        sql("CONVERT TO PARQUET test1")
+        checkAnswer(readParquetTable(tempPath), Row(1, 4) :: Row(1, 1) :: Nil)
+
+        val restFiles = new File(tempPath).listFiles().map(_.getName)
+          .filter(_.endsWith("parquet")).toSet
+
+        val renamedFiles = new File(datePath.toUri.toString).listFiles().map(_.getName)
+          .filter(_.endsWith("parquet")).toSet
+
+        assert((renamedFiles ++ restFiles) === allFiles)
+      } finally {
+        sql("drop table if exists test1")
+        Utils.deleteRecursively(tempDir)
+        DeltaLog.clearCache()
+      }
     }
   }
 

@@ -16,6 +16,8 @@
 
 package org.apache.spark.sql.delta.services
 
+import java.text.SimpleDateFormat
+import java.util.{Calendar, Date}
 import java.util.concurrent.{ConcurrentHashMap, ScheduledFuture, TimeUnit}
 
 import scala.collection.JavaConverters._
@@ -36,6 +38,7 @@ import org.apache.spark.sql.delta.{DeltaLog, DeltaTableUtils}
 import org.apache.spark.sql.delta.commands.VacuumCommand
 import org.apache.spark.sql.delta.services.DeltaTableMetadata._
 import org.apache.spark.sql.delta.services.ui.{DeltaTab, VacuumSkipped, VacuumingInfo}
+import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.execution.command.{CommandUtils, DDLUtils}
 import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.util.{ThreadUtils, Utils}
@@ -49,6 +52,9 @@ class AutoVacuum(ctx: SparkContext) extends Logging {
 
   private lazy val doubleCheckerThread =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("delta-double-checker")
+
+  private lazy val renamedFileCleanerThread =
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("delta-renamed-cleaner")
 
   val started: Boolean = {
     // add delta listener only delta enabled
@@ -83,6 +89,8 @@ class AutoVacuum(ctx: SparkContext) extends Logging {
       val doubleCheckerInterval = ctx.getConf.get(config.DOUBLE_CHECK_INTERVAL)
       doubleCheckerThread.scheduleWithFixedDelay(new DoubleCheckerTask(ctx.getConf, validate),
         if (Utils.isTesting) 15 else doubleCheckerInterval, doubleCheckerInterval, TimeUnit.SECONDS)
+      renamedFileCleanerThread.scheduleWithFixedDelay(new RenamedFileCleaner(ctx.getConf),
+        5, 3600 * 8, TimeUnit.SECONDS)
       true
     } else {
       false
@@ -355,6 +363,34 @@ class DoubleCheckerTask(conf: SparkConf, validate: ValidateTask) extends Runnabl
         logWarning("Catch an exception when double check", e)
     } finally {
       fs.close()
+    }
+  }
+}
+
+class RenamedFileCleaner(conf: SparkConf) extends Runnable with Logging {
+
+  private def dayBeforeYesterday: Date = {
+    val cal = Calendar.getInstance()
+    cal.add(Calendar.DATE, -2)
+    cal.getTime
+  }
+
+  override def run(): Unit = {
+    val toDeleteDate = new SimpleDateFormat("yyyy-MM-dd").format(dayBeforeYesterday)
+    val toDelete = new Path(conf.get(DeltaSQLConf.VACUUM_RENAME_BASE_PATH), toDeleteDate)
+    val hadoopConf = SparkHadoopUtil.get.newConfiguration(conf)
+    val fs = toDelete.getFileSystem(hadoopConf)
+    try {
+      if (fs.exists(toDelete)) {
+        if (fs.delete(toDelete, false)) {
+          logInfo(s"Permanently cleaned folder $toDelete")
+        }
+      } else {
+        logInfo(s"$toDelete is not exists")
+      }
+    } catch {
+      case e: Throwable =>
+        logWarning(s"Catch an exception when clean renamed path $toDelete", e)
     }
   }
 }

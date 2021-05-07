@@ -18,20 +18,20 @@ package org.apache.spark.sql.delta.commands
 
 // scalastyle:off import.ordering.noEmptyLine
 import java.net.URI
+import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.concurrent.TimeUnit
 
-import scala.collection.JavaConverters._
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize
+import org.apache.hadoop.fs.{FileSystem, Path}
 
+import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.{FileAction, RemoveFile}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.util.DeltaFileOperations
-import org.apache.spark.sql.delta.util.DeltaFileOperations.tryDeleteNonRecursive
-import com.fasterxml.jackson.databind.annotation.JsonDeserialize
-import org.apache.hadoop.fs.{FileSystem, Path}
-
-import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
+import org.apache.spark.sql.delta.util.DeltaFileOperations._
 import org.apache.spark.util.{Clock, SerializableConfiguration, SystemClock}
 
 /**
@@ -43,7 +43,7 @@ import org.apache.spark.util.{Clock, SerializableConfiguration, SystemClock}
  * will be ignored. Then we take a diff of the files and delete directories that were already empty,
  * and all files that are within the table that are no longer tracked.
  */
-object VacuumCommand extends VacuumCommandImpl {
+object VacuumCommand extends VacuumCommandImpl with Serializable {
 
   /**
    * Additional check on retention duration to prevent people from shooting themselves in the foot.
@@ -110,6 +110,7 @@ object VacuumCommand extends VacuumCommandImpl {
         "a Delta table? Refusing to garbage collect.")
 
       val retentionMillis = retentionHours.map(h => TimeUnit.HOURS.toMillis(math.round(h)))
+      require(retentionMillis.forall(_ >= 0), "Retention for Vacuum can't be less than 0.")
       if (safetyCheckEnabled) {
         checkRetentionPeriodSafety(spark, retentionMillis, deltaLog.tombstoneRetentionMillis)
       }
@@ -227,7 +228,15 @@ object VacuumCommand extends VacuumCommandImpl {
         }
         logInfo(s"Deleting untracked files and empty directories in $path")
 
-        val filesDeleted = delete(diff, fs)
+        val filesDeleted = if (retentionMillis.forall(_ < deltaLog.tombstoneRetentionMillis)) {
+          val conf = spark.sessionState.conf
+          val currentDate = new SimpleDateFormat("yyyy-MM-dd").format(System.currentTimeMillis())
+          val datePath = new Path(conf.getConf(DeltaSQLConf.VACUUM_RENAME_BASE_PATH), currentDate)
+          fs.mkdirs(datePath)
+          rename(diff, spark, basePath, fs.makeQualified(datePath).toString, hadoopConf)
+        } else {
+          delete(diff, spark, basePath, hadoopConf)
+        }
 
         val stats = DeltaVacuumStats(
           isDryRun = false,
@@ -272,9 +281,40 @@ trait VacuumCommandImpl extends DeltaCommand {
   /**
    * Attempts to delete the list of candidate files. Returns the number of files deleted.
    */
-  protected def delete(diff: Dataset[String], fs: FileSystem): Long = {
-    val fileResultSet = diff.collectAsIterator()
-    fileResultSet.map(p => stringToPath(p)).count(f => tryDeleteNonRecursive(fs, f))
+  protected def delete(
+      diff: Dataset[String],
+      spark: SparkSession,
+      basePath: String,
+      hadoopConf : Broadcast[SerializableConfiguration]): Long = {
+    import spark.implicits._
+    diff.mapPartitions { files =>
+      val fs = new Path(basePath).getFileSystem(hadoopConf.value.value)
+      val filesDeletedPerPartition =
+        files.map(p => stringToPath(p)).count(f => tryDeleteNonRecursive(fs, f))
+      Iterator(filesDeletedPerPartition)
+    }.reduce(_ + _)
+  }
+
+  /**
+   * Attempts to rename the list of candidate files. Returns the number of files renamed.
+   */
+  protected def rename(
+      diff: Dataset[String],
+      spark: SparkSession,
+      basePath: String,
+      datePath: String,
+      hadoopConf : Broadcast[SerializableConfiguration]): Long = {
+    import spark.implicits._
+    diff.mapPartitions { files =>
+      val fs = new Path(basePath).getFileSystem(hadoopConf.value.value)
+      val filesRenamedPerPartition =
+        files.map(p => stringToPath(p)).count { src =>
+          val dst = new Path(stringToPath(datePath), src.getName)
+          logInfo(s"Vacuum renaming $src to $dst")
+          tryRename(fs, src, dst)
+        }
+      Iterator(filesRenamedPerPartition)
+    }.reduce(_ + _)
   }
 
   protected def stringToPath(path: String): Path = new Path(new URI(path))

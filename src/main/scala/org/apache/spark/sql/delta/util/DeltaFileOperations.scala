@@ -235,6 +235,21 @@ object DeltaFileOperations extends DeltaLogging {
     }
   }
 
+  def tryRename(fs: FileSystem, src: Path, dst: Path, tries: Int = 3): Boolean = {
+    try {
+      if (fs.exists(dst)) {
+        fs.delete(dst, true)
+      }
+      fs.rename(src, dst)
+    } catch {
+      case _: FileNotFoundException => true
+      case _: IOException => false
+      case NonFatal(e) if isThrottlingError(e) && tries > 0 =>
+        randomBackoff("renames", e)
+        tryRename(fs, src, dst, tries - 1)
+    }
+  }
+
   /**
    * Returns all the levels of sub directories that `path` has with respect to `base`. For example:
    * getAllSubDirectories("/base", "/base/a/b/c") =>
