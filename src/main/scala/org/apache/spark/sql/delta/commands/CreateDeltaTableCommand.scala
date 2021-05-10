@@ -16,10 +16,13 @@
 
 package org.apache.spark.sql.delta.commands
 
+// scalastyle:off import.ordering.noEmptyLine
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.Metadata
+import org.apache.spark.sql.delta.catalog.DeltaTableV2
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.schema.SchemaUtils
+import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.hadoop.fs.{FileSystem, Path}
 
 import org.apache.spark.sql._
@@ -231,7 +234,7 @@ case class CreateDeltaTableCommand(
 //        partitionColumnNames = Nil, // store partitionColumnNames to HMS to keep compatibility
         tracksPartitionsInCatalog = false) // delta table won't use catalog any more
       logInfo(s"Table is path-based table: $tableByPath. Update catalog with mode: $operation")
-      updateCatalog(sparkSession, tableWithDefaultOptions, fs)
+      updateCatalog(sparkSession, tableWithDefaultOptions, deltaLog.snapshot, fs)
 
       Nil
     }
@@ -365,7 +368,10 @@ case class CreateDeltaTableCommand(
    * code paths.
    */
   private def updateCatalog(
-      spark: SparkSession, table: CatalogTable, fs: FileSystem): Unit = operation match {
+      spark: SparkSession,
+      table: CatalogTable,
+      snapshot: Snapshot,
+      fs: FileSystem): Unit = operation match {
     case _ if tableByPath => // do nothing with the metastore if this is by path
     case TableCreationModes.Create =>
       if (DDLUtils.isTemporaryTable(table)) {
@@ -404,6 +410,15 @@ case class CreateDeltaTableCommand(
           ignoreIfExists = false,
           validateLocation = false)
       }
+  }
+
+  /** Clean up the information we pass on to store in the catalog. */
+  private def cleanupTableDefinition(table: CatalogTable, snapshot: Snapshot): CatalogTable = {
+    table.copy(
+      schema = new StructType(),
+      properties = Map.empty,
+      partitionColumnNames = Nil,
+      tracksPartitionsInCatalog = true)
   }
 
   /**
