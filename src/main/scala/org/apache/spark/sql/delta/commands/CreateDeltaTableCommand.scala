@@ -134,7 +134,9 @@ case class CreateDeltaTableCommand(
               replaceMetadataIfNecessary(
                 txn, tableWithLocation, options, writer.data.schema.asNullable)
             }
-            val actions = writer.write(txn, sparkSession)
+            val actions = withStatusCode("DELTA", "Writing for CTAS") {
+              writer.write(txn, sparkSession)
+            }
             val op = getOperation(txn.metadata, isManagedTable, Some(options))
             txn.commit(actions, op)
           case cmd: RunnableCommand =>
@@ -150,14 +152,18 @@ case class CreateDeltaTableCommand(
               replaceMetadataIfNecessary(
                 txn, tableWithLocation, options, other.schema.asNullable)
             }
-            val actions = WriteIntoDelta(
-              deltaLog = deltaLog,
-              mode = mode,
-              options,
-              partitionColumns = table.partitionColumnNames,
-              bucket = table.bucketSpec,
-              configuration = table.properties,
-              data = data).write(txn, sparkSession)
+            val writer =
+              WriteIntoDelta(
+                deltaLog = deltaLog,
+                mode = mode,
+                options,
+                partitionColumns = table.partitionColumnNames,
+                bucket = table.bucketSpec,
+                configuration = table.properties,
+                data = data)
+            val actions = withStatusCode("DELTA", "Writing for CTAS") {
+              writer.write(txn, sparkSession)
+            }
 
             val op = getOperation(txn.metadata, isManagedTable, Some(options))
             txn.commit(actions, op)

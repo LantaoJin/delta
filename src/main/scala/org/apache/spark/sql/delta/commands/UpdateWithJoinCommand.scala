@@ -87,10 +87,14 @@ case class UpdateWithJoinCommand(
         val deltaActions = {
           val filesToRewrite =
             recordDeltaOperation(targetDeltaLog, "delta.dml.update.findTouchedFiles") {
-              findTouchedFiles(spark, deltaTxn)
+              withStatusCode("DELTA", "Filtering files for cross table UPDATE") {
+                findTouchedFiles(spark, deltaTxn)
+              }
             }
 
-          val newWrittenFiles = writeAllChanges(spark, deltaTxn, filesToRewrite)
+          val newWrittenFiles = withStatusCode("DELTA", "Writing for cross table UPDATE") {
+            writeAllChanges(spark, deltaTxn, filesToRewrite)
+          }
           filesToRewrite.map(_.remove) ++ newWrittenFiles
         }
 
