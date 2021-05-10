@@ -1018,6 +1018,24 @@ object DeltaErrors
       cause = Some(originalException))
   }
 
+  def maxCommitRetriesExceededException(
+      attemptNumber: Int,
+      attemptVersion: Long,
+      initAttemptVersion: Long,
+      numActions: Int,
+      totalCommitAttemptTime: Long): Throwable = {
+    new IllegalStateException(
+      s"""This commit has failed as it has been tried $attemptNumber times but did not succeed.
+         |This can be caused by the Delta table being committed continuously by many concurrent
+         |commits.
+         |
+         |Commit started at version: $initAttemptVersion
+         |Commit failed at version: $attemptVersion
+         |Number of actions attempted to commit: $numActions
+         |Total time spent attempting this commit: $totalCommitAttemptTime ms
+       """.stripMargin)
+  }
+
   def rollbackToInvalidVersion(version: Long): Throwable = {
     new AnalysisException(s"Rollback to invalid version $version.")
   }
