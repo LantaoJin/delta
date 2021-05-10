@@ -326,7 +326,7 @@ case class MergeIntoCommand(
     }
 
     if (multipleMatchCount > 0 && !canBeComputedUnambiguously) {
-      throw DeltaErrors.multipleSourceRowMatchingTargetRowInMergeException(spark)
+      throw DeltaErrors.multipleSourceRowMatchingTargetRowException(spark, "MERGE")
     }
 
     // Get the AddFiles using the touched file names.
