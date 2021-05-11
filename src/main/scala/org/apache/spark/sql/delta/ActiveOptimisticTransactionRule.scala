@@ -22,6 +22,7 @@ import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.delta.files.{PinnedTahoeFileIndex, TahoeLogFileIndex}
+import org.apache.spark.sql.execution.datasources.LogicalRelation
 
 /**
  * This rule tries to find if we attempt to read the same table when there is an active transaction.
@@ -60,7 +61,10 @@ class ActiveOptimisticTransactionRule(spark: SparkSession) extends Rule[LogicalP
               fileIndex.deltaLog,
               fileIndex.path,
               txn.snapshot)
-            DeltaTableUtils.replaceFileIndex(p, pinnedIndex)
+            val targetTable = p.collectFirst {
+              case l @ LogicalRelation(_, _, Some(catalogTable), _) => catalogTable
+            }
+            DeltaTableUtils.replaceFileIndex(p, pinnedIndex, targetTable)
           } else {
             p
           }
