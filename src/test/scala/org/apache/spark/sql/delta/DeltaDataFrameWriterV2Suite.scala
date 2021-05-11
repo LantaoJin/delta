@@ -119,13 +119,13 @@ trait OpenSourceDataFrameWriterV2Tests
     spark.table("source").writeTo("table_name").append()
 
     checkAnswer(
-      spark.table("table_name"),
+      sql("select id, data from table_name"),
       Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
 
     spark.table("source2").writeTo("table_name").overwrite(lit(true))
 
     checkAnswer(
-      spark.table("table_name"),
+      sql("select id, data from table_name"),
       Seq(Row(4L, "d"), Row(5L, "e"), Row(6L, "f")))
   }
 
@@ -138,7 +138,7 @@ trait OpenSourceDataFrameWriterV2Tests
     spark.table("source").writeTo("table_name").append()
 
     checkAnswer(
-      spark.table("table_name"),
+      sql("select id, data from table_name"),
       Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
 
     val e = intercept[AnalysisException] {
@@ -147,7 +147,7 @@ trait OpenSourceDataFrameWriterV2Tests
     assert(e.getMessage.contains("Invalid data would be written to partitions"))
 
     checkAnswer(
-      spark.table("table_name"),
+      sql("select id, data from table_name"),
       Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
   }
 
@@ -185,7 +185,7 @@ trait OpenSourceDataFrameWriterV2Tests
     spark.table("source").writeTo("table_name").append()
 
     checkAnswer(
-      spark.table("table_name"),
+      sql("select id, data from table_name"),
       Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
 
     val e = intercept[AnalysisException] {
@@ -195,7 +195,7 @@ trait OpenSourceDataFrameWriterV2Tests
     assert(e.getMessage.contains("Table default.table_name does not support dynamic overwrite"))
 
     checkAnswer(
-      spark.table("table_name"),
+      sql("select id, data from table_name"),
       Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
   }
 
@@ -291,13 +291,13 @@ trait OpenSourceDataFrameWriterV2Tests
     spark.table("source").writeTo("table_name").using("delta").partitionedBy($"id").create()
 
     checkAnswer(
-      spark.table("table_name"),
+      sql("select id, data from table_name"),
       Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
 
     val table = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
 
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("id", LongType).add("data", StringType))
+    assert(table.schema === new StructType().add("data", StringType).add("id", LongType))
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
     assert(getProperties(table).isEmpty)
   }
@@ -316,7 +316,7 @@ trait OpenSourceDataFrameWriterV2Tests
 
     // table should not have been changed
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("id", LongType).add("data", StringType))
+    assert(table.schema === new StructType().add("data", StringType).add("id", LongType))
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
     assert(getProperties(table).isEmpty)
   }
@@ -324,17 +324,17 @@ trait OpenSourceDataFrameWriterV2Tests
   test("Replace: basic behavior") {
     spark.sql(
       "CREATE TABLE table_name (id bigint, data string) USING delta PARTITIONED BY (id)")
-    spark.sql("INSERT INTO TABLE table_name SELECT * FROM source")
+    spark.sql("INSERT INTO TABLE table_name SELECT data, id FROM source")
 
     checkAnswer(
-      spark.table("table_name"),
+      sql("select id, data from table_name"),
       Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
 
     val table = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
 
     // validate the initial table
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("id", LongType).add("data", StringType))
+    assert(table.schema === new StructType().add("data", StringType).add("id", LongType))
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
     assert(getProperties(table).isEmpty)
 
@@ -382,7 +382,7 @@ trait OpenSourceDataFrameWriterV2Tests
       .replace()
 
     checkAnswer(
-      spark.table("table_name"),
+      sql("select id, data, even_or_odd from table_name"),
       Seq(Row(4L, "d", "even"), Row(5L, "e", "odd"), Row(6L, "f", "even")))
 
     val replaced = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
@@ -390,9 +390,9 @@ trait OpenSourceDataFrameWriterV2Tests
     // validate the replacement table
     assert(replaced.name === "default.table_name")
     assert(replaced.schema === new StructType()
-      .add("id", LongType)
       .add("data", StringType)
-      .add("even_or_odd", StringType))
+      .add("even_or_odd", StringType)
+      .add("id", LongType))
     assert(replaced.partitioning === Seq(IdentityTransform(FieldReference("id"))))
     assert(getProperties(replaced).isEmpty)
   }
@@ -424,17 +424,17 @@ trait OpenSourceDataFrameWriterV2Tests
   test("CreateOrReplace: table exists") {
     spark.sql(
       "CREATE TABLE table_name (id bigint, data string) USING delta PARTITIONED BY (id)")
-    spark.sql("INSERT INTO TABLE table_name SELECT * FROM source")
+    spark.sql("INSERT INTO TABLE table_name SELECT data, id FROM source")
 
     checkAnswer(
-      spark.table("table_name"),
+      sql("select id, data from table_name"),
       Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
 
     val table = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
 
     // validate the initial table
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("id", LongType).add("data", StringType))
+    assert(table.schema === new StructType().add("data", StringType).add("id", LongType))
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
     assert(getProperties(table).isEmpty)
 
@@ -506,7 +506,8 @@ trait OpenSourceDataFrameWriterV2Tests
     assert(e.getMessage.contains("Partitioning by expressions"))
   }
 
-  test("Create: partitioned by bucket(4, id) - not supported") {
+  // todo(lajin) we've supported it
+  ignore("Create: partitioned by bucket(4, id) - not supported") {
     val e = intercept[AnalysisException] {
       spark.table("source")
         .writeTo("table_name")
@@ -567,7 +568,7 @@ class DeltaDataFrameWriterV2Suite
     val table = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
 
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("id", LongType).add("data", StringType))
+    assert(table.schema === new StructType().add("data", StringType).add("id", LongType))
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
     assert(getProperties(table) === Map("delta.appendOnly" -> "true"))
   }
@@ -575,17 +576,17 @@ class DeltaDataFrameWriterV2Suite
   test("Replace: basic behavior using empty df") {
     spark.sql(
       "CREATE TABLE table_name (id bigint, data string) USING delta PARTITIONED BY (id)")
-    spark.sql("INSERT INTO TABLE table_name SELECT * FROM source")
+    spark.sql("INSERT INTO TABLE table_name SELECT data, id FROM source")
 
     checkAnswer(
-      spark.table("table_name"),
+      sql("select id, data from table_name"),
       Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
 
     val table = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
 
     // validate the initial table
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("id", LongType).add("data", StringType))
+    assert(table.schema === new StructType().add("data", StringType).add("id", LongType))
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
     assert(getProperties(table).isEmpty)
 
@@ -613,10 +614,10 @@ class DeltaDataFrameWriterV2Suite
   test("throw error with createOrReplace and Replace if overwriteSchema=false") {
     spark.sql(
       "CREATE TABLE table_name (id bigint, data string) USING delta PARTITIONED BY (id)")
-    spark.sql("INSERT INTO TABLE table_name SELECT * FROM source")
+    spark.sql("INSERT INTO TABLE table_name SELECT data, id FROM source")
 
     checkAnswer(
-      spark.table("table_name"),
+      sql("select id, data from table_name"),
       Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
 
     def checkFailure(
