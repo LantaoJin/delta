@@ -82,11 +82,22 @@ abstract class MergeIntoSuiteBase
     spark.read.format("delta").load(path)
   }
 
+  protected def expectedKVRows(rows: Seq[Row])(implicit isPartitioned: Boolean): Seq[Row] = {
+    if (isPartitioned) rows.map {
+      case Row(k, v) => Row(v, k)
+      case Row(k, v1, v2) => Row(v1, v2, k)
+    } else rows
+  }
+
+  protected def expectedTwoKeyRows(rows: Seq[Row])(implicit isPartitioned: Boolean): Seq[Row] = {
+    if (isPartitioned) rows.map { case Row(k1, k2, v) => Row(v, k1, k2) } else rows
+  }
+
   protected def withCrossJoinEnabled(body: => Unit): Unit = {
     withSQLConf(SQLConf.CROSS_JOINS_ENABLED.key -> "true") { body }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic case - merge to Delta table by path, isPartitioned: $isPartitioned") {
       withTable("source") {
         val partitions = if (isPartitioned) "key2" :: Nil else Nil
@@ -101,10 +112,10 @@ abstract class MergeIntoSuiteBase
           insert = "(key2, value) VALUES (key1 - 10, src.value + 10)")
 
         checkAnswer(readDeltaTable(tempPath),
-          Row(2, 2) :: // No change
+          expectedKVRows(Row(2, 2) :: // No change
             Row(21, 21) :: // Update
             Row(-10, 13) :: // Insert
-            Nil)
+            Nil))
       }
     }
   }
@@ -241,7 +252,7 @@ abstract class MergeIntoSuiteBase
       source: Seq[(JInt, JInt)],
       condition: String,
       expectedResults: Seq[(JInt, JInt)]) = {
-    Seq(true, false).foreach { isPartitioned =>
+    Seq(true, false).foreach { implicit isPartitioned =>
       test(s"basic case - null handling - $name, isPartitioned: $isPartitioned") {
         withView("sourceView") {
           val partitions = if (isPartitioned) "key" :: Nil else Nil
@@ -257,7 +268,7 @@ abstract class MergeIntoSuiteBase
 
           checkAnswer(
             readDeltaTable(tempPath),
-            expectedResults.map { r => Row(r._1, r._2) }
+            expectedKVRows(expectedResults.map { r => Row(r._1, r._2) })
           )
 
           Utils.deleteRecursively(new File(tempPath))
@@ -544,14 +555,14 @@ abstract class MergeIntoSuiteBase
       }
 
       checkAnswer(readDeltaTable(tempPath),
-        Row(-8, 19) :: // Insert
+        expectedKVRows(Row(-8, 19) :: // Insert
           Row(21, 25) :: // Update
           Row(21, 25) :: // Update
-          Nil)
+          Nil)(isPartitioned = true))
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"Merge table using different data types - implicit casting, parts: $isPartitioned") {
       withTable("source") {
         Seq((1, "5"), (3, "9"), (3, "a")).toDF("key1", "value").createOrReplaceTempView("source")
@@ -566,12 +577,12 @@ abstract class MergeIntoSuiteBase
           insert = "(key2, value) VALUES ('44', src.value + '10')")
 
         checkAnswer(readDeltaTable(tempPath),
-          Row(44, 19) :: // Insert
+          expectedKVRows(Row(44, 19) :: // Insert
           // NULL is generated when the type casting does not work for some values)
           Row(44, null) :: // Insert
           Row(34, 20) :: // Update
           Row(2, 2) :: // No change
-          Nil)
+          Nil))
       }
     }
   }
@@ -735,7 +746,7 @@ abstract class MergeIntoSuiteBase
     errorContains(e, "Expect a full scan of Delta sources, but found a partial scan")
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"single file, isPartitioned: $isPartitioned") {
       withTable("source") {
         val df = spark.range(5).selectExpr("id as key1", "id as key2", "id as col1").repartition(1)
@@ -754,12 +765,12 @@ abstract class MergeIntoSuiteBase
           insert = "(key1, key2, col1) VALUES (srcKey, source.key2, source.col1)")
 
         checkAnswer(readDeltaTable(tempPath),
-          Row(-998, 1002, 2) :: // Update
+          expectedTwoKeyRows(Row(-998, 1002, 2) :: // Update
             Row(-999, 1001, 1) :: // Update
             Row(-1000, 1000, 0) :: // Update
             Row(4, 4, 4) :: // No change
             Row(3, 3, 3) :: // No change
-            Nil)
+            Nil))
       }
     }
   }
@@ -770,7 +781,7 @@ abstract class MergeIntoSuiteBase
       condition: String,
       expectedResults: Seq[(String, String, String)],
       numFilesPerPartition: Int = 2) = {
-    Seq(true, false).foreach { isPartitioned =>
+    Seq(true, false).foreach { implicit isPartitioned =>
       test(s"$name, isPartitioned: $isPartitioned") { withTable("source") {
         val partitions = if (isPartitioned) "key2" :: Nil else Nil
         append(target.toDF("key2", "value", "op").repartition(numFilesPerPartition), partitions)
@@ -788,7 +799,7 @@ abstract class MergeIntoSuiteBase
 
         checkAnswer(
           readDeltaTable(tempPath),
-          expectedResults.map { r => Row(r._1, r._2, r._3) }
+          expectedKVRows(expectedResults.map { r => Row(r._1, r._2, r._3) })
         )
 
         Utils.deleteRecursively(new File(tempPath))
@@ -871,7 +882,7 @@ abstract class MergeIntoSuiteBase
     numFilesPerPartition = 1
   )
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic case - column pruning, isPartitioned: $isPartitioned") {
       withTable("source") {
         val partitions = if (isPartitioned) "key2" :: Nil else Nil
@@ -887,10 +898,10 @@ abstract class MergeIntoSuiteBase
           insert = "(key2, value) VALUES (key1 - 10, src.value + 10)")
 
         checkAnswer(readDeltaTable(tempPath),
-          Row(2, 2) :: // No change
+          expectedKVRows(Row(2, 2) :: // No change
             Row(21, 21) :: // Update
             Row(-10, 13) :: // Insert
-            Nil)
+            Nil))
       }
     }
   }
@@ -1340,7 +1351,7 @@ abstract class MergeIntoSuiteBase
       mergeOn: String,
       mergeClauses: MergeClause*)(
       result: Seq[(Int, Int)]): Unit = {
-    Seq(true, false).foreach { isPartitioned =>
+    Seq(true, false).foreach { implicit isPartitioned =>
       test(s"$namePrefix - $name - isPartitioned: $isPartitioned ") {
         withKeyValueData(source, target, isPartitioned) { case (sourceName, targetName) =>
           withSQLConf(DeltaSQLConf.MERGE_INSERT_ONLY_ENABLED.key -> "true") {
@@ -1351,7 +1362,7 @@ abstract class MergeIntoSuiteBase
           } else targetName
           checkAnswer(
             readDeltaTable(deltaPath),
-            result.map { case (k, v) => Row(k, v) })
+            expectedKVRows(result.map { case (k, v) => Row(k, v) }))
         }
       }
     }
@@ -1804,7 +1815,7 @@ abstract class MergeIntoSuiteBase
     condition: String,
     expectedResults: Seq[(JInt, JInt)],
     insertCondition: Option[String] = None) = {
-    Seq(true, false).foreach { isPartitioned =>
+    Seq(true, false).foreach { implicit isPartitioned =>
       test(s"basic case - null handling - $name, isPartitioned: $isPartitioned") {
         withView("sourceView") {
           val partitions = if (isPartitioned) "key" :: Nil else Nil
@@ -1828,7 +1839,7 @@ abstract class MergeIntoSuiteBase
           }
           checkAnswer(
             readDeltaTable(tempPath),
-            expectedResults.map { r => Row(r._1, r._2) }
+            expectedKVRows(expectedResults.map { r => Row(r._1, r._2) })
           )
 
           Utils.deleteRecursively(new File(tempPath))
@@ -2020,7 +2031,7 @@ abstract class MergeIntoSuiteBase
       mergeClauses: MergeClause*) (
       result: Seq[(Int, Int)]): Unit = {
     Seq(true, false).foreach { matchedOnlyEnabled =>
-      Seq(true, false).foreach { isPartitioned =>
+      Seq(true, false).foreach { implicit isPartitioned =>
         val s = if (matchedOnlyEnabled) "enabled" else "disabled"
         test(s"matched only merge - $s - $name - isPartitioned: $isPartitioned ") {
           withKeyValueData(source, target, isPartitioned) { case (sourceName, targetName) =>
@@ -2032,7 +2043,7 @@ abstract class MergeIntoSuiteBase
             } else targetName
             checkAnswer(
               readDeltaTable(deltaPath),
-              result.map { case (k, v) => Row(k, v) })
+              expectedKVRows(result.map { case (k, v) => Row(k, v) }))
           }
         }
       }
@@ -2077,7 +2088,7 @@ abstract class MergeIntoSuiteBase
       target: Seq[(JInt, JInt)],
       mergeOn: String,
       result: Seq[(JInt, JInt)]) = {
-    Seq(true, false).foreach { isPartitioned =>
+    Seq(true, false).foreach { implicit isPartitioned =>
       withSQLConf(DeltaSQLConf.MERGE_MATCHED_ONLY_ENABLED.key -> "true") {
         test(s"matched only merge - null handling - $name, isPartitioned: $isPartitioned") {
           withView("sourceView") {
@@ -2093,7 +2104,7 @@ abstract class MergeIntoSuiteBase
 
             checkAnswer(
               readDeltaTable(tempPath),
-              result.map { r => Row(r._1, r._2) }
+              expectedKVRows(result.map { r => Row(r._1, r._2) })
             )
 
             Utils.deleteRecursively(new File(tempPath))

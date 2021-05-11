@@ -16,13 +16,14 @@
 
 package org.apache.spark.sql.delta.schema
 
-import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.Metadata
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.util.PartitionUtils
 
 import org.apache.spark.sql.{Dataset, SparkSession}
+import org.apache.spark.sql.catalyst.catalog.BucketSpec
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
 /**
@@ -56,9 +57,22 @@ trait ImplicitMetadataOperation extends DeltaLogging {
       configuration: Map[String, String],
       isOverwriteMode: Boolean,
       rearrangeOnly: Boolean = false): Unit = {
+    val orderedSchema = getMergedSchema(data.schema, partitionColumns)
     updateMetadata(
-      data.sparkSession, txn, data.schema, partitionColumns, bucketSpec,
+      data.sparkSession, txn, orderedSchema, partitionColumns, bucketSpec,
       configuration, isOverwriteMode, rearrangeOnly)
+  }
+
+  protected def getMergedSchema(
+      originSchema: StructType,
+      partitionColumnNames: Seq[String]): StructType = {
+    val dataSchema = StructType(originSchema.filterNot(f =>
+      partitionColumnNames.exists(p => SchemaUtils.DELTA_COL_RESOLVER(p, f.name))))
+    val partitionSchema = PartitionUtils.partitionColumnsSchema(
+      originSchema, partitionColumnNames, false)
+    val orderedSchema = PartitionUtils.mergeDataAndPartitionSchema(
+      dataSchema, partitionSchema, false)._1
+    orderedSchema
   }
 
   protected final def updateMetadata(

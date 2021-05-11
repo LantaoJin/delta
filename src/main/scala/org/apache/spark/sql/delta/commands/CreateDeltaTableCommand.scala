@@ -106,6 +106,9 @@ case class CreateDeltaTableCommand(
 
     val isManagedTable = tableWithLocation.tableType == CatalogTableType.MANAGED
     val tableLocation = new Path(tableWithLocation.location)
+    val partitionColumnNames = table.partitionColumnNames
+    val orderedSchema = getOrderedSchema(tableWithLocation.schema, partitionColumnNames)
+
     val fs = tableLocation.getFileSystem(sparkSession.sessionState.newHadoopConf())
     val deltaLog = DeltaLog.forTable(sparkSession, tableLocation)
     val options =
@@ -131,8 +134,9 @@ case class CreateDeltaTableCommand(
             // In the V2 Writer, methods like "replace" and "createOrReplace" implicitly mean that
             // the metadata should be changed. This wasn't the behavior for DataFrameWriterV1.
             if (!isV1Writer) {
+              val orderedSchema = getOrderedSchema(writer.data.schema, partitionColumnNames)
               replaceMetadataIfNecessary(
-                txn, tableWithLocation, options, writer.data.schema.asNullable)
+                txn, tableWithLocation, options, orderedSchema.asNullable)
             }
             val actions = withStatusCode("DELTA", "Writing for CTAS") {
               writer.write(txn, sparkSession)
@@ -149,8 +153,9 @@ case class CreateDeltaTableCommand(
             // In the V2 Writer, methods like "replace" and "createOrReplace" implicitly mean that
             // the metadata should be changed. This wasn't the behavior for DataFrameWriterV1.
             if (!isV1Writer) {
+              val orderedSchema = getOrderedSchema(data.schema, partitionColumnNames)
               replaceMetadataIfNecessary(
-                txn, tableWithLocation, options, other.schema.asNullable)
+                txn, tableWithLocation, options, orderedSchema.asNullable)
             }
             val writer =
               WriteIntoDelta(
@@ -186,7 +191,7 @@ case class CreateDeltaTableCommand(
             makePathEmpty(sparkSession, tableWithLocation)
             // This is a user provided schema.
             // Doesn't come from a query, Follow nullability invariants.
-            val newMetadata = getProvidedMetadata(table, table.schema.json)
+            val newMetadata = getProvidedMetadata(table, orderedSchema.json)
             txn.updateMetadataForNewTable(newMetadata)
 
             val op = getOperation(newMetadata, isManagedTable, None)
@@ -223,19 +228,13 @@ case class CreateDeltaTableCommand(
         }
       }
 
-      val dataSchema = StructType(tableWithLocation.schema.filterNot(f =>
-          tableWithLocation.partitionColumnNames.exists(p => conf.resolver(p, f.name))))
-      val partitionSchema = PartitionUtils.partitionColumnsSchema(tableWithLocation.schema,
-        tableWithLocation.partitionColumnNames, conf.caseSensitiveAnalysis)
-      val mergedSchema = PartitionUtils.mergeDataAndPartitionSchema(dataSchema, partitionSchema,
-        conf.caseSensitiveAnalysis)._1
       // We would have failed earlier on if we couldn't ignore the existence of the table
       // In addition, we just might using saveAsTable to append to the table, so ignore the creation
       // if it already exists.
       // Note that someone may have dropped and recreated the table in a separate location in the
       // meantime... Unfortunately we can't do anything there at the moment, because Hive sucks.
       val tableWithDefaultOptions = tableWithLocation.copy(
-        schema = mergedSchema, // schema order may be changed
+        schema = orderedSchema, // schema order may be changed
 //        partitionColumnNames = Nil, // store partitionColumnNames to HMS to keep compatibility
         tracksPartitionsInCatalog = false) // delta table won't use catalog any more
       logInfo(s"Table is path-based table: $tableByPath. Update catalog with mode: $operation")
@@ -243,6 +242,18 @@ case class CreateDeltaTableCommand(
 
       Nil
     }
+  }
+
+  private def getOrderedSchema(
+      originSchema: StructType,
+      partitionColumnNames: Seq[String]): StructType = {
+    val dataSchema = StructType(originSchema.filterNot(f =>
+      partitionColumnNames.exists(p => conf.resolver(p, f.name))))
+    val partitionSchema = PartitionUtils.partitionColumnsSchema(originSchema,
+      partitionColumnNames, conf.caseSensitiveAnalysis)
+    val orderedSchema = PartitionUtils.mergeDataAndPartitionSchema(dataSchema, partitionSchema,
+      conf.caseSensitiveAnalysis)._1
+    orderedSchema
   }
 
   private def allowCreateTableOnExistingData(spark: SparkSession): Boolean = {

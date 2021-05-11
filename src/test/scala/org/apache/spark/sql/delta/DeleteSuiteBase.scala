@@ -66,15 +66,19 @@ abstract class DeleteSuiteBase extends QueryTest
     writer.save(deltaLog.dataPath.toString)
   }
 
+  protected def expectedKVRows(rows: Seq[Row])(implicit partitioned: Boolean): Seq[Row] = {
+    if (partitioned) rows.map { case Row(k, v) => Row(v, k) } else rows
+  }
+
   protected def checkDelete(
       condition: Option[String],
       expectedResults: Seq[Row],
-      tableName: Option[String] = None): Unit = {
+      tableName: Option[String] = None)(implicit isPartitioned: Boolean = false): Unit = {
     executeDelete(target = tableName.getOrElse(s"delta.`$tempPath`"), where = condition.orNull)
-    checkAnswer(readDeltaTable(tempPath), expectedResults)
+    checkAnswer(readDeltaTable(tempPath), expectedKVRows(expectedResults))
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic case - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
@@ -83,7 +87,7 @@ abstract class DeleteSuiteBase extends QueryTest
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic case - delete from a Delta table by path - Partition=$isPartitioned") {
       withTable("deltaTable") {
         val partitions = if (isPartitioned) "key" :: Nil else Nil
@@ -101,7 +105,7 @@ abstract class DeleteSuiteBase extends QueryTest
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic case - delete from a Delta table by name - Partition=$isPartitioned") {
       withTable("delta_table") {
         val partitionByClause = if (isPartitioned) "PARTITIONED BY (key)" else ""
@@ -132,7 +136,7 @@ abstract class DeleteSuiteBase extends QueryTest
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic key columns - Partition=$isPartitioned") {
       val input = Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value")
       val partitions = if (isPartitioned) "key" :: Nil else Nil
@@ -144,7 +148,7 @@ abstract class DeleteSuiteBase extends QueryTest
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"where key columns - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
@@ -155,7 +159,7 @@ abstract class DeleteSuiteBase extends QueryTest
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"where data columns - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
@@ -169,6 +173,7 @@ abstract class DeleteSuiteBase extends QueryTest
   test("where data columns and partition columns") {
     val input = Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value")
     append(input, Seq("key"))
+    implicit val isPartitioned = true
 
     checkDelete(Some("value = 4 and key = 3"),
       Row(2, 2) :: Row(1, 4) :: Row(1, 1) :: Row(0, 3) :: Nil)
@@ -181,7 +186,7 @@ abstract class DeleteSuiteBase extends QueryTest
   }
 
   Seq(true, false).foreach { skippingEnabled =>
-    Seq(true, false).foreach { isPartitioned =>
+    Seq(true, false).foreach { implicit isPartitioned =>
       test(s"data and partition columns - Partition=$isPartitioned Skipping=$skippingEnabled") {
         withSQLConf(DeltaSQLConf.DELTA_STATS_SKIPPING.key -> skippingEnabled.toString) {
           val partitions = if (isPartitioned) "key" :: Nil else Nil
@@ -248,7 +253,7 @@ abstract class DeleteSuiteBase extends QueryTest
     checkAnswer(spark.read.format("delta").load(tempPath), Row(1, 4) :: Nil)
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"condition having current_date - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(
@@ -267,13 +272,14 @@ abstract class DeleteSuiteBase extends QueryTest
       Seq((java.sql.Timestamp.valueOf("2012-12-31 16:00:10.011"), 2),
         (java.sql.Timestamp.valueOf("2099-12-31 16:00:10.011"), 4))
         .toDF("key", "value"), Seq("key"))
+    implicit val isPartitioned = true
 
     checkDelete(Some("CURRENT_TIMESTAMP > key"),
       Row(java.sql.Timestamp.valueOf("2099-12-31 16:00:10.011"), 4) :: Nil)
     checkDelete(Some("CURRENT_TIMESTAMP <= key"), Nil)
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"foldable condition - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
