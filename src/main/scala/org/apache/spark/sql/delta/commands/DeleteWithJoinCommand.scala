@@ -20,7 +20,7 @@ import org.apache.spark.SparkContext
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
 import org.apache.spark.sql.delta._
-import org.apache.spark.sql.delta.actions.AddFile
+import org.apache.spark.sql.delta.actions.{AddFile, FileAction}
 import org.apache.spark.sql.delta.files._
 import org.apache.spark.sql.delta.util.AnalysisHelper
 import org.apache.spark.sql.catalyst.expressions._
@@ -185,7 +185,7 @@ case class DeleteWithJoinCommand(
     spark: SparkSession,
     deltaTxn: OptimisticTransaction,
     filesToRewrite: Seq[AddFile]
-  ): Seq[AddFile] = {
+  ): Seq[FileAction] = {
     if (filesToRewrite.isEmpty) {
       return Nil
     }

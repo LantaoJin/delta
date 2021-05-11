@@ -21,7 +21,7 @@ import scala.collection.JavaConverters._
 import org.apache.spark.SparkContext
 import org.apache.spark.sql._
 import org.apache.spark.sql.delta._
-import org.apache.spark.sql.delta.actions.AddFile
+import org.apache.spark.sql.delta.actions.{AddFile, FileAction}
 import org.apache.spark.sql.delta.files._
 import org.apache.spark.sql.delta.util.{AnalysisHelper, SetAccumulator}
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
@@ -214,7 +214,7 @@ case class UpdateWithJoinCommand(
     spark: SparkSession,
     deltaTxn: OptimisticTransaction,
     filesToRewrite: Seq[AddFile]
-  ): Seq[AddFile] = {
+  ): Seq[FileAction] = {
 
     // Generate a new logical plan that has same output attributes exprIds as the target plan.
     // This allows us to apply the existing resolved update/insert expressions.
