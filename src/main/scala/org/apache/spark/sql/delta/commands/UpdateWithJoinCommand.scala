@@ -16,6 +16,8 @@
 
 package org.apache.spark.sql.delta.commands
 
+import java.util.concurrent.TimeUnit
+
 import scala.collection.JavaConverters._
 
 import org.apache.spark.SparkContext
@@ -79,19 +81,23 @@ case class UpdateWithJoinCommand(
     "numFilesBeforeSkipping" -> createMetric(sc, "number of target files before skipping"),
     "numFilesAfterSkipping" -> createMetric(sc, "number of target files after skipping"),
     "numRemovedFiles" -> createMetric(sc, "number of files removed to target"),
-    "numAddedFiles" -> createMetric(sc, "number of files added to target"))
+    "numAddedFiles" -> createMetric(sc, "number of files added to target"),
+    "executionTimeMs" ->
+      createMetric(sc, "time taken to execute the entire operation"),
+    "scanTimeMs" ->
+      createMetric(sc, "time taken to scan the files for matches"),
+    "rewriteTimeMs" ->
+      createMetric(sc, "time taken to rewrite the matched files"))
 
   override def run(spark: SparkSession): Seq[Row] = {
-    recordDeltaOperation(targetDeltaLog, "delta.dml.update") {
+    recordUpdateOperation(sqlMetricName = "executionTimeMs") {
       targetDeltaLog.withNewTransaction { deltaTxn =>
+        if (target.schema.size != deltaTxn.metadata.schema.size) {
+          throw DeltaErrors.schemaChangedSinceAnalysis(
+            atAnalysis = target.schema, latestSchema = deltaTxn.metadata.schema)
+        }
         val deltaActions = {
-          val filesToRewrite =
-            recordDeltaOperation(targetDeltaLog, "delta.dml.update.findTouchedFiles") {
-              withStatusCode("DELTA", "Filtering files for cross table UPDATE") {
-                findTouchedFiles(spark, deltaTxn)
-              }
-            }
-
+          val filesToRewrite = findTouchedFiles(spark, deltaTxn)
           val newWrittenFiles = withStatusCode("DELTA", "Writing for cross table UPDATE") {
             writeAllChanges(spark, deltaTxn, filesToRewrite)
           }
@@ -124,13 +130,14 @@ case class UpdateWithJoinCommand(
           rowsUpdated = metrics("numUpdatedRows").value)
         recordDeltaEvent(targetFileIndex.deltaLog, "delta.dml.update.stats", data = stats)
 
-        // This is needed to make the SQL metrics visible in the Spark UI
-        val executionId = spark.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
-        SQLMetrics.postDriverMetricUpdates(spark.sparkContext, executionId, metrics.values.toSeq)
       }
       spark.sharedState.cacheManager.recacheByPlan(spark, target)
-      Seq.empty
     }
+    // This is needed to make the SQL metrics visible in the Spark UI. Also this needs
+    // to be outside the recordMergeOperation because this method will update some metric.
+    val executionId = spark.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
+    SQLMetrics.postDriverMetricUpdates(spark.sparkContext, executionId, metrics.values.toSeq)
+    Seq.empty
   }
 
   /**
@@ -140,7 +147,8 @@ case class UpdateWithJoinCommand(
    */
   private def findTouchedFiles(
     spark: SparkSession,
-    deltaTxn: OptimisticTransaction): Seq[AddFile] = {
+    deltaTxn: OptimisticTransaction
+  ): Seq[AddFile] = recordUpdateOperation(sqlMetricName = "scanTimeMs") {
 
     // Accumulator to collect all the distinct touched files
     val touchedFilesAccum = new SetAccumulator[String]()
@@ -214,7 +222,7 @@ case class UpdateWithJoinCommand(
     spark: SparkSession,
     deltaTxn: OptimisticTransaction,
     filesToRewrite: Seq[AddFile]
-  ): Seq[FileAction] = {
+  ): Seq[FileAction] = recordUpdateOperation(sqlMetricName = "rewriteTimeMs") {
 
     // Generate a new logical plan that has same output attributes exprIds as the target plan.
     // This allows us to apply the existing resolved update/insert expressions.
@@ -354,6 +362,22 @@ case class UpdateWithJoinCommand(
   }
 
   private def seqToString(exprs: Seq[Expression]): String = exprs.map(_.sql).mkString("\n\t")
+
+  /**
+   * Execute the given `thunk` and return its result while recording the time taken to do it.
+   *
+   * @param sqlMetricName name of SQL metric to update with the time taken by the thunk
+   * @param thunk the code to execute
+   */
+  private def recordUpdateOperation[A](sqlMetricName: String = null)(thunk: => A): A = {
+    val startTimeNs = System.nanoTime()
+    val r = thunk
+    val timeTakenMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimeNs)
+    if (sqlMetricName != null && timeTakenMs > 0) {
+      metrics(sqlMetricName) += timeTakenMs
+    }
+    r
+  }
 }
 
 case class UpdateDataRows(rows: Long)

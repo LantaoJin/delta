@@ -388,7 +388,10 @@ private[delta] object DeltaOperationMetrics {
     "numTargetRowsCopied", // number of target rows copied
     "numOutputRows", // total number of rows written out
     "numTargetFilesAdded", // num files added to the sink(target)
-    "numTargetFilesRemoved" // number of files removed from the sink(target)
+    "numTargetFilesRemoved", // number of files removed from the sink(target)
+    "executionTimeMs",  // time taken to execute the entire operation
+    "scanTimeMs", // time taken to scan the files for matches
+    "rewriteTimeMs" // time taken to rewrite the matched files
   )
 
   val UPDATE = Set(

@@ -16,6 +16,8 @@
 
 package org.apache.spark.sql.delta.commands
 
+import java.util.concurrent.TimeUnit
+
 import org.apache.spark.SparkContext
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
@@ -72,20 +74,24 @@ case class DeleteWithJoinCommand(
     "numFilesBeforeSkipping" -> createMetric(sc, "number of target files before skipping"),
     "numFilesAfterSkipping" -> createMetric(sc, "number of target files after skipping"),
     "numRemovedFiles" -> createMetric(sc, "number of files removed to target"),
-    "numAddedFiles" -> createMetric(sc, "number of files added to target"))
+    "numAddedFiles" -> createMetric(sc, "number of files added to target"),
+    "executionTimeMs" ->
+      createMetric(sc, "time taken to execute the entire operation"),
+    "scanTimeMs" ->
+      createMetric(sc, "time taken to scan the files for matches"),
+    "rewriteTimeMs" ->
+      createMetric(sc, "time taken to rewrite the matched files"))
 
   override def run(spark: SparkSession): Seq[Row] = {
-    recordDeltaOperation(targetDeltaLog, "delta.dml.delete") {
+    recordDeleteOperation(sqlMetricName = "executionTimeMs") {
       targetDeltaLog.assertRemovable()
       targetDeltaLog.withNewTransaction { deltaTxn =>
+        if (target.schema.size != deltaTxn.metadata.schema.size) {
+          throw DeltaErrors.schemaChangedSinceAnalysis(
+            atAnalysis = target.schema, latestSchema = deltaTxn.metadata.schema)
+        }
         val deltaActions = {
-          val filesToRewrite =
-            recordDeltaOperation(targetDeltaLog, "delta.dml.delete.findTouchedFiles") {
-              withStatusCode("DELTA", "Filtering files for cross table DELETE") {
-                findTouchedFiles(spark, deltaTxn)
-              }
-            }
-
+          val filesToRewrite = findTouchedFiles(spark, deltaTxn)
           val newWrittenFiles = withStatusCode("DELTA", "Writing for cross table DELETE") {
             writeAllChanges(spark, deltaTxn, filesToRewrite)
           }
@@ -119,13 +125,14 @@ case class DeleteWithJoinCommand(
           rowsDeleted = metrics("numDeletedRows").value)
         recordDeltaEvent(targetFileIndex.deltaLog, "delta.dml.delete.stats", data = stats)
 
-        // This is needed to make the SQL metrics visible in the Spark UI
-        val executionId = spark.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
-        SQLMetrics.postDriverMetricUpdates(spark.sparkContext, executionId, metrics.values.toSeq)
       }
       spark.sharedState.cacheManager.recacheByPlan(spark, target)
-      Seq.empty
     }
+    // This is needed to make the SQL metrics visible in the Spark UI. Also this needs
+    // to be outside the recordMergeOperation because this method will update some metric.
+    val executionId = spark.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
+    SQLMetrics.postDriverMetricUpdates(spark.sparkContext, executionId, metrics.values.toSeq)
+    Seq.empty
   }
 
   /**
@@ -135,7 +142,8 @@ case class DeleteWithJoinCommand(
    */
   private def findTouchedFiles(
     spark: SparkSession,
-    deltaTxn: OptimisticTransaction): Seq[AddFile] = {
+    deltaTxn: OptimisticTransaction
+  ): Seq[AddFile] = recordDeleteOperation(sqlMetricName = "scanTimeMs") {
     import spark.implicits._
 
     // Skip data based on the delete condition
@@ -185,7 +193,7 @@ case class DeleteWithJoinCommand(
     spark: SparkSession,
     deltaTxn: OptimisticTransaction,
     filesToRewrite: Seq[AddFile]
-  ): Seq[FileAction] = {
+  ): Seq[FileAction] = recordDeleteOperation(sqlMetricName = "rewriteTimeMs") {
     if (filesToRewrite.isEmpty) {
       return Nil
     }
@@ -318,6 +326,23 @@ case class DeleteWithJoinCommand(
     // only capture the needed metric in a local variable
     val metric = metrics(name)
     udf { () => { metric += 1; true }}.asNondeterministic().apply().expr
+  }
+
+
+  /**
+   * Execute the given `thunk` and return its result while recording the time taken to do it.
+   *
+   * @param sqlMetricName name of SQL metric to update with the time taken by the thunk
+   * @param thunk the code to execute
+   */
+  private def recordDeleteOperation[A](sqlMetricName: String = null)(thunk: => A): A = {
+    val startTimeNs = System.nanoTime()
+    val r = thunk
+    val timeTakenMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimeNs)
+    if (sqlMetricName != null && timeTakenMs > 0) {
+      metrics(sqlMetricName) += timeTakenMs
+    }
+    r
   }
 }
 
