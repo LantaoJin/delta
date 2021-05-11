@@ -125,7 +125,11 @@ trait Checkpoints extends DeltaLogging {
   /** Creates a checkpoint at the current log version. */
   def checkpoint(
       overwrite: Boolean = false): Unit = recordDeltaOperation(this, "delta.checkpoint") {
-    val checkpointMetaData = checkpoint(snapshot, overwrite)
+    val snapshotToCheckpoint = snapshot
+    if (snapshotToCheckpoint.version < 0) {
+      throw DeltaErrors.checkpointNonExistTable(dataPath)
+    }
+    val checkpointMetaData = checkpoint(snapshotToCheckpoint, overwrite)
     val json = JsonUtils.toJson(checkpointMetaData)
     store.write(LAST_CHECKPOINT, Iterator(json), overwrite = true)
 
