@@ -20,10 +20,13 @@ import java.io.File
 import java.lang.{Integer => JInt}
 import java.util.Locale
 
+import scala.language.implicitConversions
+
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.scalatest.BeforeAndAfterEach
 
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
+import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecution
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.{SharedSparkSession, SQLTestUtils}
 import org.apache.spark.sql.types.{IntegerType, MapType, StringType, StructType}
@@ -79,11 +82,22 @@ abstract class MergeIntoSuiteBase
     spark.read.format("delta").load(path)
   }
 
+  protected def expectedKVRows(rows: Seq[Row])(implicit isPartitioned: Boolean): Seq[Row] = {
+    if (isPartitioned) rows.map {
+      case Row(k, v) => Row(v, k)
+      case Row(k, v1, v2) => Row(v1, v2, k)
+    } else rows
+  }
+
+  protected def expectedTwoKeyRows(rows: Seq[Row])(implicit isPartitioned: Boolean): Seq[Row] = {
+    if (isPartitioned) rows.map { case Row(k1, k2, v) => Row(v, k1, k2) } else rows
+  }
+
   protected def withCrossJoinEnabled(body: => Unit): Unit = {
     withSQLConf(SQLConf.CROSS_JOINS_ENABLED.key -> "true") { body }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic case - merge to Delta table by path, isPartitioned: $isPartitioned") {
       withTable("source") {
         val partitions = if (isPartitioned) "key2" :: Nil else Nil
@@ -98,10 +112,10 @@ abstract class MergeIntoSuiteBase
           insert = "(key2, value) VALUES (key1 - 10, src.value + 10)")
 
         checkAnswer(readDeltaTable(tempPath),
-          Row(2, 2) :: // No change
+          expectedKVRows(Row(2, 2) :: // No change
             Row(21, 21) :: // Update
             Row(-10, 13) :: // Insert
-            Nil)
+            Nil))
       }
     }
   }
@@ -238,7 +252,7 @@ abstract class MergeIntoSuiteBase
       source: Seq[(JInt, JInt)],
       condition: String,
       expectedResults: Seq[(JInt, JInt)]) = {
-    Seq(true, false).foreach { isPartitioned =>
+    Seq(true, false).foreach { implicit isPartitioned =>
       test(s"basic case - null handling - $name, isPartitioned: $isPartitioned") {
         withView("sourceView") {
           val partitions = if (isPartitioned) "key" :: Nil else Nil
@@ -254,7 +268,7 @@ abstract class MergeIntoSuiteBase
 
           checkAnswer(
             readDeltaTable(tempPath),
-            expectedResults.map { r => Row(r._1, r._2) }
+            expectedKVRows(expectedResults.map { r => Row(r._1, r._2) })
           )
 
           Utils.deleteRecursively(new File(tempPath))
@@ -541,14 +555,14 @@ abstract class MergeIntoSuiteBase
       }
 
       checkAnswer(readDeltaTable(tempPath),
-        Row(-8, 19) :: // Insert
+        expectedKVRows(Row(-8, 19) :: // Insert
           Row(21, 25) :: // Update
           Row(21, 25) :: // Update
-          Nil)
+          Nil)(isPartitioned = true))
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"Merge table using different data types - implicit casting, parts: $isPartitioned") {
       withTable("source") {
         Seq((1, "5"), (3, "9"), (3, "a")).toDF("key1", "value").createOrReplaceTempView("source")
@@ -563,12 +577,12 @@ abstract class MergeIntoSuiteBase
           insert = "(key2, value) VALUES ('44', src.value + '10')")
 
         checkAnswer(readDeltaTable(tempPath),
-          Row(44, 19) :: // Insert
+          expectedKVRows(Row(44, 19) :: // Insert
           // NULL is generated when the type casting does not work for some values)
           Row(44, null) :: // Insert
           Row(34, 20) :: // Update
           Row(2, 2) :: // No change
-          Nil)
+          Nil))
       }
     }
   }
@@ -732,7 +746,7 @@ abstract class MergeIntoSuiteBase
     errorContains(e, "Expect a full scan of Delta sources, but found a partial scan")
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"single file, isPartitioned: $isPartitioned") {
       withTable("source") {
         val df = spark.range(5).selectExpr("id as key1", "id as key2", "id as col1").repartition(1)
@@ -751,12 +765,12 @@ abstract class MergeIntoSuiteBase
           insert = "(key1, key2, col1) VALUES (srcKey, source.key2, source.col1)")
 
         checkAnswer(readDeltaTable(tempPath),
-          Row(-998, 1002, 2) :: // Update
+          expectedTwoKeyRows(Row(-998, 1002, 2) :: // Update
             Row(-999, 1001, 1) :: // Update
             Row(-1000, 1000, 0) :: // Update
             Row(4, 4, 4) :: // No change
             Row(3, 3, 3) :: // No change
-            Nil)
+            Nil))
       }
     }
   }
@@ -767,7 +781,7 @@ abstract class MergeIntoSuiteBase
       condition: String,
       expectedResults: Seq[(String, String, String)],
       numFilesPerPartition: Int = 2) = {
-    Seq(true, false).foreach { isPartitioned =>
+    Seq(true, false).foreach { implicit isPartitioned =>
       test(s"$name, isPartitioned: $isPartitioned") { withTable("source") {
         val partitions = if (isPartitioned) "key2" :: Nil else Nil
         append(target.toDF("key2", "value", "op").repartition(numFilesPerPartition), partitions)
@@ -785,7 +799,7 @@ abstract class MergeIntoSuiteBase
 
         checkAnswer(
           readDeltaTable(tempPath),
-          expectedResults.map { r => Row(r._1, r._2, r._3) }
+          expectedKVRows(expectedResults.map { r => Row(r._1, r._2, r._3) })
         )
 
         Utils.deleteRecursively(new File(tempPath))
@@ -868,7 +882,7 @@ abstract class MergeIntoSuiteBase
     numFilesPerPartition = 1
   )
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic case - column pruning, isPartitioned: $isPartitioned") {
       withTable("source") {
         val partitions = if (isPartitioned) "key2" :: Nil else Nil
@@ -884,10 +898,10 @@ abstract class MergeIntoSuiteBase
           insert = "(key2, value) VALUES (key1 - 10, src.value + 10)")
 
         checkAnswer(readDeltaTable(tempPath),
-          Row(2, 2) :: // No change
+          expectedKVRows(Row(2, 2) :: // No change
             Row(21, 21) :: // Update
             Row(-10, 13) :: // Insert
-            Nil)
+            Nil))
       }
     }
   }
@@ -937,14 +951,18 @@ abstract class MergeIntoSuiteBase
     }
   }
 
+  // scalastyle:off argcount
   def testNestedDataSupport(name: String, namePrefix: String = "nested data support")(
       source: String,
       target: String,
       update: Seq[String],
       insert: String = null,
-      schema: StructType = null,
+      targetSchema: StructType = null,
+      sourceSchema: StructType = null,
       result: String = null,
-      errorStrs: Seq[String] = null): Unit = {
+      errorStrs: Seq[String] = null,
+      confs: Seq[(String, String)] = Seq.empty): Unit = {
+    // scalastyle:on argcount
 
     require(result == null ^ errorStrs == null, "either set the result or the error strings")
 
@@ -952,24 +970,28 @@ abstract class MergeIntoSuiteBase
       if (result != null) s"$namePrefix - $name" else s"$namePrefix - analysis error - $name"
 
     test(testName) {
-      withJsonData(source, target, schema) { case (sourceName, targetName) =>
-        val fieldNames = spark.table(targetName).schema.fieldNames
-        val fieldNamesStr = fieldNames.mkString("`", "`, `", "`")
-        val keyName = s"`${fieldNames.head}`"
+      withSQLConf(confs: _*) {
+        withJsonData(source, target, targetSchema, sourceSchema) { case (sourceName, targetName) =>
+          val fieldNames = spark.table(targetName).schema.fieldNames
+          val fieldNamesStr = fieldNames.mkString("`", "`, `", "`")
+          val keyName = s"`${fieldNames.head}`"
 
-        def execMerge() = executeMerge(
-          target = s"$targetName t",
-          source = s"$sourceName s",
-          condition = s"s.$keyName = t.$keyName",
-          update = update.mkString(", "),
-          insert = Option(insert).getOrElse(s"($fieldNamesStr) VALUES ($fieldNamesStr)"))
+          def execMerge() = executeMerge(
+            target = s"$targetName t",
+            source = s"$sourceName s",
+            condition = s"s.$keyName = t.$keyName",
+            update = update.mkString(", "),
+            insert = Option(insert).getOrElse(s"($fieldNamesStr) VALUES ($fieldNamesStr)"))
 
-        if (result != null) {
-          execMerge()
-          checkAnswer(spark.table(targetName), spark.read.json(strToJsonSeq(result).toDS))
-        } else {
-          val e = intercept[AnalysisException] { execMerge() }
-          errorStrs.foreach { s => errorContains(e.getMessage, s) }
+          if (result != null) {
+            execMerge()
+            checkAnswer(spark.table(targetName), spark.read.json(strToJsonSeq(result).toDS))
+          } else {
+            val e = intercept[AnalysisException] {
+              execMerge()
+            }
+            errorStrs.foreach { s => errorContains(e.getMessage, s) }
+          }
         }
       }
     }
@@ -1103,15 +1125,109 @@ abstract class MergeIntoSuiteBase
     source = """{ "key": "A", "value": { "a": 0 } }""",
     target = """{ "key": "A", "value": { "a": 1 } }""",
     update = "value.a = 2" :: Nil,
-    schema = new StructType().add("key", StringType).add("value", MapType(StringType, IntegerType)),
+    targetSchema =
+      new StructType().add("key", StringType).add("value", MapType(StringType, IntegerType)),
     errorStrs = "Updating nested fields is only supported for StructType" :: Nil)
 
   testNestedDataSupport("updating array type")(
     source = """{ "key": "A", "value": [ { "a": 0 } ] }""",
     target = """{ "key": "A", "value": [ { "a": 1 } ] }""",
     update = "value.a = 2" :: Nil,
-    schema = new StructType().add("key", StringType).add("value", MapType(StringType, IntegerType)),
+    targetSchema =
+      new StructType().add("key", StringType).add("value", MapType(StringType, IntegerType)),
     errorStrs = "Updating nested fields is only supported for StructType" :: Nil)
+
+  testNestedDataSupport("resolution by name - update specific column")(
+    source = """{ "key": "A", "value": { "b": 2, "a": { "y": 20, "x": 10} } }""",
+    target = """{ "key": "A", "value": { "a": { "x": 1, "y": 2 }, "b": 1 }}""",
+    targetSchema = new StructType()
+      .add("key", StringType)
+      .add("value", new StructType()
+        .add("a", new StructType().add("x", IntegerType).add("y", IntegerType))
+        .add("b", IntegerType)),
+    sourceSchema = new StructType()
+      .add("key", StringType)
+      .add("value", new StructType()
+        .add("b", IntegerType)
+        .add("a", new StructType().add("y", IntegerType).add("x", IntegerType))),
+    update = "value.a = s.value.a",
+    result = """{ "key": "A", "value": { "a": { "x": 10, "y": 20 }, "b": 1 } }""")
+
+  testNestedDataSupport("resolution by name - update *")(
+    source = """{ "key": "A", "value": { "b": 2, "a": { "y": 20, "x": 10} } }""",
+    target = """{ "key": "A", "value": { "a": { "x": 1, "y": 2 }, "b": 1 }}""",
+    targetSchema = new StructType()
+      .add("key", StringType)
+      .add("value", new StructType()
+        .add("a", new StructType().add("x", IntegerType).add("y", IntegerType))
+        .add("b", IntegerType)),
+    sourceSchema = new StructType()
+      .add("key", StringType)
+      .add("value", new StructType()
+        .add("b", IntegerType)
+        .add("a", new StructType().add("y", IntegerType).add("x", IntegerType))),
+    update = "*",
+    result = """{ "key": "A", "value": { "a": { "x": 10, "y": 20 } , "b": 2} }""")
+
+  testNestedDataSupport("resolution by name - insert specific column")(
+    source = """{ "key": "B", "value": { "b": 2, "a": { "y": 20, "x": 10} } }""",
+    target = """{ "key": "A", "value": { "a": { "x": 1, "y": 2 }, "b": 1 } }""",
+    targetSchema = new StructType()
+      .add("key", StringType)
+      .add("value", new StructType()
+        .add("a", new StructType().add("x", IntegerType).add("y", IntegerType))
+        .add("b", IntegerType)),
+    sourceSchema = new StructType()
+      .add("key", StringType)
+      .add("value", new StructType()
+        .add("b", IntegerType)
+        .add("a", new StructType().add("y", IntegerType).add("x", IntegerType))),
+    update = "*",
+    insert = "(key, value) VALUES (s.key, s.value)",
+    result =
+      """
+        |{ "key": "A", "value": { "a": { "x": 1, "y": 2 }, "b": 1 } },
+        |{ "key": "B", "value": { "a": { "x": 10, "y": 20 }, "b": 2 } }""".stripMargin)
+
+  testNestedDataSupport("resolution by name - insert *")(
+    source = """{ "key": "B", "value": { "b": 2, "a": { "y": 20, "x": 10} } }""",
+    target = """{ "key": "A", "value": { "a": { "x": 1, "y": 2 }, "b": 1 } }""",
+    targetSchema = new StructType()
+      .add("key", StringType)
+      .add("value", new StructType()
+        .add("a", new StructType().add("x", IntegerType).add("y", IntegerType))
+        .add("b", IntegerType)),
+    sourceSchema = new StructType()
+      .add("key", StringType)
+      .add("value", new StructType()
+        .add("b", IntegerType)
+        .add("a", new StructType().add("y", IntegerType).add("x", IntegerType))),
+    update = "*",
+    insert = "*",
+    result =
+      """
+        |{ "key": "A", "value": { "a": { "x": 1, "y": 2 }, "b": 1 } },
+        |{ "key": "B", "value": { "a": { "x": 10, "y": 20 }, "b": 2 } }""".stripMargin)
+
+  // Note that value.b has to be in the right position for this test to avoid throwing an error
+  // trying to write its integer value into the value.a struct.
+  testNestedDataSupport("update resolution by position with conf")(
+    source = """{ "key": "A", "value": { "a": { "y": 20, "x": 10}, "b": 2 }}""",
+    target = """{ "key": "A", "value": { "a": { "x": 1, "y": 2 }, "b": 1 } }""",
+    targetSchema = new StructType()
+      .add("key", StringType)
+      .add("value", new StructType()
+        .add("a", new StructType().add("x", IntegerType).add("y", IntegerType))
+        .add("b", IntegerType)),
+    sourceSchema = new StructType()
+      .add("key", StringType)
+      .add("value", new StructType()
+        .add("a", new StructType().add("y", IntegerType).add("x", IntegerType))
+        .add("b", IntegerType)),
+    update = "*",
+    insert = "(key, value) VALUES (s.key, s.value)",
+    result = """{ "key": "A", "value": { "a": { "x": 20, "y": 10 }, "b": 2 } }""",
+    confs = (DeltaSQLConf.DELTA_RESOLVE_MERGE_UPDATE_STRUCTS_BY_NAME.key, "false") +: Nil)
 
   /** A simple representative of a any WHEN clause in a MERGE statement */
   protected case class MergeClause(isMatched: Boolean, condition: String, action: String = null) {
@@ -1235,7 +1351,7 @@ abstract class MergeIntoSuiteBase
       mergeOn: String,
       mergeClauses: MergeClause*)(
       result: Seq[(Int, Int)]): Unit = {
-    Seq(true, false).foreach { isPartitioned =>
+    Seq(true, false).foreach { implicit isPartitioned =>
       test(s"$namePrefix - $name - isPartitioned: $isPartitioned ") {
         withKeyValueData(source, target, isPartitioned) { case (sourceName, targetName) =>
           withSQLConf(DeltaSQLConf.MERGE_INSERT_ONLY_ENABLED.key -> "true") {
@@ -1246,8 +1362,24 @@ abstract class MergeIntoSuiteBase
           } else targetName
           checkAnswer(
             readDeltaTable(deltaPath),
-            result.map { case (k, v) => Row(k, v) })
+            expectedKVRows(result.map { case (k, v) => Row(k, v) }))
         }
+      }
+    }
+  }
+
+  protected def testExtendedMergeErrorOnMultipleMatches(
+      name: String)(
+      source: Seq[(Int, Int)],
+      target: Seq[(Int, Int)],
+      mergeOn: String,
+      mergeClauses: MergeClause*): Unit = {
+    test(s"extended syntax - $name") {
+      withKeyValueData(source, target) { case (sourceName, targetName) =>
+        val errMsg = intercept[UnsupportedOperationException] {
+          executeMerge(s"$targetName t", s"$sourceName s", mergeOn, mergeClauses: _*)
+        }.getMessage.toLowerCase(Locale.ROOT)
+        assert(errMsg.contains("cannot perform merge as multiple source rows matched"))
       }
     }
   }
@@ -1262,21 +1394,11 @@ abstract class MergeIntoSuiteBase
       (2, 2)
     ))
 
-
-  test(s"extended syntax - only update with multiple matches") {
-    withKeyValueData(
-      source = (0, 0) :: (1, 10) :: (1, 11) :: (2, 20) :: Nil,
-      target = (1, 1) :: (2, 2) :: Nil
-    ) { case (sourceName, targetName) =>
-      intercept[UnsupportedOperationException] {
-        executeMerge(
-          s"$targetName t",
-          s"$sourceName s",
-          "s.key = t.key",
-          update(set = "key = s.key, value = s.value"))
-      }
-    }
-  }
+  testExtendedMergeErrorOnMultipleMatches("only update with multiple matches")(
+    source = (0, 0) :: (1, 10) :: (1, 11) :: (2, 20) :: Nil,
+    target = (1, 1) :: (2, 2) :: Nil,
+    mergeOn = "s.key = t.key",
+    update(set = "key = s.key, value = s.value"))
 
   testExtendedMerge("only conditional update")(
     source = (0, 0) :: (1, 10) :: (2, 20) :: (3, 30) :: Nil,
@@ -1289,6 +1411,12 @@ abstract class MergeIntoSuiteBase
       (3, 3)    // not updated due to target-only condition `t.value <> 3`
     ))
 
+  testExtendedMergeErrorOnMultipleMatches("only conditional update with multiple matches")(
+    source = (0, 0) :: (1, 10) :: (1, 11) :: (2, 20) :: Nil,
+    target = (1, 1) :: (2, 2) :: Nil,
+    mergeOn = "s.key = t.key",
+    update(condition = "s.value = 10", set = "key = s.key, value = s.value"))
+
   testExtendedMerge("only delete")(
     source = (0, 0) :: (1, 10) :: (3, 30) :: Nil,
     target = (1, 1) :: (2, 2) :: Nil,
@@ -1298,16 +1426,16 @@ abstract class MergeIntoSuiteBase
       (2, 2)    // (1, 1) deleted
     ))          // (3, 30) not inserted as not insert clause
 
-  test(s"extended syntax - only delete with multiple matches") {
-    withKeyValueData(
-      source = (0, 0) :: (1, 10) :: (1, 100) :: (3, 30) :: Nil,
-      target = (1, 1) :: (2, 2) :: Nil
-    ) { case (sourceName, targetName) =>
-      intercept[UnsupportedOperationException] {
-        executeMerge(s"$targetName t", s"$sourceName s", "s.key = t.key", delete())
-      }
-    }
-  }
+  // This is not ambiguous even when there are multiple matches
+  testExtendedMerge(s"only delete with multiple matches")(
+    source = (0, 0) :: (1, 10) :: (1, 100) :: (3, 30) :: Nil,
+    target = (1, 1) :: (2, 2) :: Nil,
+    mergeOn = "s.key = t.key",
+    delete())(
+    result = Seq(
+      (2, 2)  // (1, 1) matches multiple source rows but unambiguously deleted
+    )
+  )
 
   testExtendedMerge("only conditional delete")(
     source = (0, 0) :: (1, 10) :: (2, 20) :: (3, 30) :: Nil,
@@ -1318,6 +1446,12 @@ abstract class MergeIntoSuiteBase
       (2, 2),   // not deleted due to source-only condition `s.value <> 20`
       (3, 3)    // not deleted due to target-only condition `t.value <> 3`
     ))          // (1, 1) deleted
+
+  testExtendedMergeErrorOnMultipleMatches("only conditional delete with multiple matches")(
+    source = (0, 0) :: (1, 10) :: (1, 100) :: (2, 20) :: Nil,
+    target = (1, 1) :: (2, 2) :: Nil,
+    mergeOn = "s.key = t.key",
+    delete(condition = "s.value = 10"))
 
   testExtendedMerge("conditional update + delete")(
     source = (0, 0) :: (1, 10) :: (2, 20) :: Nil,
@@ -1330,6 +1464,13 @@ abstract class MergeIntoSuiteBase
       (3, 3)
     ))
 
+  testExtendedMergeErrorOnMultipleMatches("conditional update + delete with multiple matches")(
+    source = (0, 0) :: (1, 10) :: (2, 20) :: (2, 200) :: Nil,
+    target = (1, 1) :: (2, 2) :: Nil,
+    mergeOn = "s.key = t.key",
+    update(condition = "s.value = 20", set = "key = s.key, value = s.value"),
+    delete())
+
   testExtendedMerge("conditional update + conditional delete")(
     source = (0, 0) :: (1, 10) :: (2, 20) :: (3, 30) :: Nil,
     target = (1, 1) :: (2, 2) :: (3, 3) :: (4, 4) :: Nil,
@@ -1341,6 +1482,14 @@ abstract class MergeIntoSuiteBase
       (3, 30),  // (3, 3) updated even though it matched update and delete conditions, as update 1st
       (4, 4)
     ))          // (1, 1) deleted as it matched delete condition
+
+  testExtendedMergeErrorOnMultipleMatches(
+    "conditional update + conditional delete with multiple matches")(
+    source = (0, 0) :: (1, 10) :: (1, 100) :: (2, 20) :: (2, 200) :: Nil,
+    target = (1, 1) :: (2, 2) :: Nil,
+    mergeOn = "s.key = t.key",
+    update(condition = "s.value = 20", set = "key = s.key, value = s.value"),
+    delete(condition = "s.value = 10"))
 
   testExtendedMerge("conditional delete + conditional update (order matters)")(
     source = (0, 0) :: (1, 10) :: (2, 20) :: (3, 30) :: Nil,
@@ -1413,6 +1562,20 @@ abstract class MergeIntoSuiteBase
       (2, 2)
     ))
 
+  testExtendedMerge(s"delete + insert with multiple matches for both") (
+    source = (1, 10) :: (1, 100) :: (3, 30) :: (3, 300) :: Nil,
+    target = (1, 1) :: (2, 2) :: Nil,
+    mergeOn = "s.key = t.key",
+    delete(),
+    insert(values = "(key, value) VALUES (s.key, s.value)")) (
+    result = Seq(
+               // (1, 1) matches multiple source rows but unambiguously deleted
+      (2, 2),  // existed previously
+      (3, 30), // inserted
+      (3, 300) // inserted
+    )
+  )
+
   testExtendedMerge("conditional update + conditional delete + conditional insert")(
     source = (0, 0) :: (1, 10) :: (2, 20) :: (3, 30) :: (4, 40) :: Nil,
     target = (1, 1) :: (2, 2) :: (3, 3) :: Nil,
@@ -1425,6 +1588,15 @@ abstract class MergeIntoSuiteBase
       (3, 3),   // neither updated nor deleted as it matched neither condition
       (4, 40)   // (4, 40) inserted by condition, but not (0, 0)
     ))          // (2, 2) deleted by condition but not (1, 1) or (3, 3)
+
+  testExtendedMergeErrorOnMultipleMatches(
+    "conditional update + conditional delete + conditional insert with multiple matches")(
+    source = (0, 0) :: (1, 10) :: (1, 100) :: (2, 20) :: (2, 200) :: Nil,
+    target = (1, 1) :: (2, 2) :: Nil,
+    mergeOn = "s.key = t.key",
+    update(condition = "s.value = 20", set = "key = s.key, value = s.value"),
+    delete(condition = "s.value = 10"),
+    insert(condition = "s.value = 0", values = "(key, value) VALUES (s.key, s.value)"))
 
   // complex merge condition = has target-only and source-only predicates
   testExtendedMerge(
@@ -1477,11 +1649,18 @@ abstract class MergeIntoSuiteBase
   protected def withJsonData(
       source: Seq[String],
       target: Seq[String],
-      schema: StructType = null)(
+      schema: StructType = null,
+      sourceSchema: StructType = null)(
       thunk: (String, String) => Unit): Unit = {
 
     def toDF(strs: Seq[String]) = {
-      if (schema != null) spark.read.schema(schema).json(strs.toDS) else spark.read.json(strs.toDS)
+      if (sourceSchema != null && strs == source) {
+        spark.read.schema(sourceSchema).json(strs.toDS)
+      } else if (schema != null) {
+        spark.read.schema(schema).json(strs.toDS)
+      } else {
+        spark.read.json(strs.toDS)
+      }
     }
     append(toDF(target), Nil)
     withTempView("source") {
@@ -1636,7 +1815,7 @@ abstract class MergeIntoSuiteBase
     condition: String,
     expectedResults: Seq[(JInt, JInt)],
     insertCondition: Option[String] = None) = {
-    Seq(true, false).foreach { isPartitioned =>
+    Seq(true, false).foreach { implicit isPartitioned =>
       test(s"basic case - null handling - $name, isPartitioned: $isPartitioned") {
         withView("sourceView") {
           val partitions = if (isPartitioned) "key" :: Nil else Nil
@@ -1660,7 +1839,7 @@ abstract class MergeIntoSuiteBase
           }
           checkAnswer(
             readDeltaTable(tempPath),
-            expectedResults.map { r => Row(r._1, r._2) }
+            expectedKVRows(expectedResults.map { r => Row(r._1, r._2) })
           )
 
           Utils.deleteRecursively(new File(tempPath))
@@ -1705,14 +1884,61 @@ abstract class MergeIntoSuiteBase
   test("insert only merge - turn off feature flag") {
     withSQLConf(DeltaSQLConf.MERGE_INSERT_ONLY_ENABLED.key -> "false") {
       withKeyValueData(
-        source = (0, 0) :: (1, 10) :: (1, 100) :: (3, 30) :: (3, 300) :: Nil,
-        target = (1, 1) :: (2, 2) :: Nil
+        source = (1, 10) :: (3, 30) :: Nil,
+        target = (1, 1) :: Nil
       ) { case (sourceName, targetName) =>
-        intercept[UnsupportedOperationException] {
-          // This is supposed to fail as the duplicated keys in source were not supported.
-          executeMerge(s"$targetName t", s"$sourceName s", "s.key = t.key",
+        executeMerge(
+          s"$targetName t",
+          s"$sourceName s",
+          "s.key = t.key",
+          insert(values = "(key, value) VALUES (s.key, s.value)"))
+
+        checkAnswer(sql(s"SELECT key, value FROM $targetName"),
+          Row(1, 1) :: Row(3, 30) :: Nil)
+
+        val metrics = spark.sql(s"DESCRIBE HISTORY $targetName LIMIT 1")
+          .select("operationMetrics")
+          .collect().head.getMap(0).asInstanceOf[Map[String, String]]
+        assert(metrics.contains("numTargetFilesRemoved"))
+        // If insert-only code path is not used, then the general code path will rewrite existing
+        // target files.
+        assert(metrics("numTargetFilesRemoved").toInt > 0)
+      }
+    }
+  }
+
+  test("insert only merge - multiple matches when feature flag off") {
+    withSQLConf(DeltaSQLConf.MERGE_INSERT_ONLY_ENABLED.key -> "false") {
+      // Verify that in case of multiple matches, it throws error rather than producing
+      // incorrect results.
+      withKeyValueData(
+        source = (1, 10) :: (1, 100) :: (2, 20) :: Nil,
+        target = (1, 1) :: Nil
+      ) { case (sourceName, targetName) =>
+        val errMsg = intercept[UnsupportedOperationException] {
+          executeMerge(
+            s"$targetName t",
+            s"$sourceName s",
+            "s.key = t.key",
             insert(values = "(key, value) VALUES (s.key, s.value)"))
-        }
+        }.getMessage.toLowerCase(Locale.ROOT)
+        assert(errMsg.contains("cannot perform merge as multiple source rows matched"))
+      }
+
+      // Verify that in case of multiple matches, it throws error rather than producing
+      // incorrect results.
+      withKeyValueData(
+        source = (1, 10) :: (1, 100) :: (2, 20) :: (2, 200) :: Nil,
+        target = (1, 1) :: Nil
+      ) { case (sourceName, targetName) =>
+        val errMsg = intercept[UnsupportedOperationException] {
+          executeMerge(
+            s"$targetName t",
+            s"$sourceName s",
+            "s.key = t.key",
+            insert(condition = "s.value = 20", values = "(key, value) VALUES (s.key, s.value)"))
+        }.getMessage.toLowerCase(Locale.ROOT)
+        assert(errMsg.contains("cannot perform merge as multiple source rows matched"))
       }
     }
   }
@@ -1723,7 +1949,8 @@ abstract class MergeIntoSuiteBase
       srcRange: Range,
       expectLessFilesWithRepartition: Boolean,
       clauses: MergeClause*): Unit = {
-    test(s"merge with repartition - $name") {
+    test(s"merge with repartition - $name",
+      DisableAdaptiveExecution("AQE coalese would partition number")) {
       withTempView("source") {
         withTempDir { basePath =>
           val tgt1 = basePath + "target"
@@ -1804,7 +2031,7 @@ abstract class MergeIntoSuiteBase
       mergeClauses: MergeClause*) (
       result: Seq[(Int, Int)]): Unit = {
     Seq(true, false).foreach { matchedOnlyEnabled =>
-      Seq(true, false).foreach { isPartitioned =>
+      Seq(true, false).foreach { implicit isPartitioned =>
         val s = if (matchedOnlyEnabled) "enabled" else "disabled"
         test(s"matched only merge - $s - $name - isPartitioned: $isPartitioned ") {
           withKeyValueData(source, target, isPartitioned) { case (sourceName, targetName) =>
@@ -1816,7 +2043,7 @@ abstract class MergeIntoSuiteBase
             } else targetName
             checkAnswer(
               readDeltaTable(deltaPath),
-              result.map { case (k, v) => Row(k, v) })
+              expectedKVRows(result.map { case (k, v) => Row(k, v) }))
           }
         }
       }
@@ -1861,7 +2088,7 @@ abstract class MergeIntoSuiteBase
       target: Seq[(JInt, JInt)],
       mergeOn: String,
       result: Seq[(JInt, JInt)]) = {
-    Seq(true, false).foreach { isPartitioned =>
+    Seq(true, false).foreach { implicit isPartitioned =>
       withSQLConf(DeltaSQLConf.MERGE_MATCHED_ONLY_ENABLED.key -> "true") {
         test(s"matched only merge - null handling - $name, isPartitioned: $isPartitioned") {
           withView("sourceView") {
@@ -1877,7 +2104,7 @@ abstract class MergeIntoSuiteBase
 
             checkAnswer(
               readDeltaTable(tempPath),
-              result.map { r => Row(r._1, r._2) }
+              expectedKVRows(result.map { r => Row(r._1, r._2) })
             )
 
             Utils.deleteRecursively(new File(tempPath))
@@ -1911,35 +2138,41 @@ abstract class MergeIntoSuiteBase
       sourceData: => DataFrame,
       update: String = null,
       insert: String = null,
-      expected: Seq[Product] = null,
-      expectedWithoutEvolution: Seq[Product] = null,
+      expected: => DataFrame = null,
+      expectedWithoutEvolution: => DataFrame = null,
       expectErrorContains: String = null,
-      expectErrorWithoutEvolutionContains: String = null) = {
+      expectErrorWithoutEvolutionContains: String = null,
+      confs: Seq[(String, String)] = Seq()) = {
     test(s"schema evolution - $name - with evolution disabled") {
-      append(targetData)
-      withTempView("source") {
-        sourceData.createOrReplaceTempView("source")
-        val clauses = Option(update).map(u => this.update(set = u)) ++
-          Option(insert).map(i => this.insert(values = i))
+      withSQLConf(confs: _*) {
+        append(targetData)
+        withTempView("source") {
+          sourceData.createOrReplaceTempView("source")
+          val clauses = Option(update).map(u => this.update(set = u)) ++
+            Option(insert).map(i => this.insert(values = i))
 
-        if (expectErrorWithoutEvolutionContains != null) {
-          val ex = intercept[AnalysisException] {
+          if (expectErrorWithoutEvolutionContains != null) {
+            val ex = intercept[AnalysisException] {
+              executeMerge(s"delta.`$tempPath` t", s"source s", "s.key = t.key",
+                clauses.toSeq: _*)
+            }
+            assert(ex.getMessage.contains(expectErrorWithoutEvolutionContains))
+          } else {
             executeMerge(s"delta.`$tempPath` t", s"source s", "s.key = t.key",
               clauses.toSeq: _*)
+            checkAnswer(
+              spark.read.format("delta").load(tempPath),
+              expectedWithoutEvolution.collect())
+            assert(
+              spark.read.format("delta").load(tempPath).schema.asNullable ===
+                expectedWithoutEvolution.schema.asNullable)
           }
-          assert(ex.getMessage.contains(expectErrorWithoutEvolutionContains))
-        } else {
-          executeMerge(s"delta.`$tempPath` t", s"source s", "s.key = t.key",
-            clauses.toSeq: _*)
-          checkAnswer(
-            spark.read.format("delta").load(tempPath),
-            expectedWithoutEvolution.map(Row.fromTuple))
         }
       }
     }
 
     test(s"schema evolution - $name") {
-      withSQLConf((DeltaSQLConf.DELTA_SCHEMA_AUTO_MIGRATE.key, "true")) {
+      withSQLConf((confs :+ (DeltaSQLConf.DELTA_SCHEMA_AUTO_MIGRATE.key, "true")): _*) {
         append(targetData)
         withTempView("source") {
           sourceData.createOrReplaceTempView("source")
@@ -1957,7 +2190,9 @@ abstract class MergeIntoSuiteBase
               clauses.toSeq: _*)
             checkAnswer(
               spark.read.format("delta").load(tempPath),
-              expected.map(Row.fromTuple))
+              expected.collect())
+            assert(spark.read.format("delta").load(tempPath).schema.asNullable ===
+              expected.schema.asNullable)
           }
         }
       }
@@ -1969,11 +2204,12 @@ abstract class MergeIntoSuiteBase
     sourceData = Seq((1, 1, "extra1"), (2, 2, "extra2")).toDF("key", "value", "extra"),
     insert = "*",
     expected =
-      (0, 0, null) +: (3, 30, null) +: // unchanged
+      ((0, 0, null) +: (3, 30, null) +: // unchanged
         (1, 10, null) +:  // not updated
-        (2, 2, "extra2") +: Nil, // newly inserted,
+        (2, 2, "extra2") +: Nil // newly inserted
+      ).toDF("key", "value", "extra"),
     expectedWithoutEvolution =
-      (0, 0) +: (3, 30) +: (1, 10) +: (2, 2) +: Nil
+      ((0, 0) +: (3, 30) +: (1, 10) +: (2, 2) +: Nil).toDF("key", "value")
   )
 
   testEvolution("new column with only update *")(
@@ -1981,10 +2217,11 @@ abstract class MergeIntoSuiteBase
     sourceData = Seq((1, 1, "extra1"), (2, 2, "extra2")).toDF("key", "value", "extra"),
     update = "*",
     expected =
-      (0, 0, null) +: (3, 30, null) +:
+      ((0, 0, null) +: (3, 30, null) +:
         (1, 1, "extra1") +: // updated
-        Nil, // row 2 not inserted
-    expectedWithoutEvolution = (0, 0) +: (3, 30) +: (1, 1) +: Nil
+        Nil // row 2 not inserted
+      ).toDF("key", "value", "extra"),
+    expectedWithoutEvolution = ((0, 0) +: (3, 30) +: (1, 1) +: Nil).toDF("key", "value")
   )
 
   testEvolution("update * with column not in source")(
@@ -1992,7 +2229,7 @@ abstract class MergeIntoSuiteBase
     sourceData = Seq((1, 1), (2, 2)).toDF("key", "value"),
     update = "*",
     // update went through even though `extra` wasn't there
-    expected = (0, 0, 0) +: (1, 1, 10) +: (3, 30, 30) +: Nil,
+    expected = ((0, 0, 0) +: (1, 1, 10) +: (3, 30, 30) +: Nil).toDF("key", "value", "extra"),
     expectErrorWithoutEvolutionContains = "cannot resolve `extra` in UPDATE clause"
   )
 
@@ -2001,7 +2238,9 @@ abstract class MergeIntoSuiteBase
     sourceData = Seq((1, 1), (2, 2)).toDF("key", "value"),
     insert = "*",
     // insert went through even though `extra` wasn't there
-    expected = (0, 0, 0) +: (1, 10, 10) +: (2, 2, null) +: (3, 30, 30) +: Nil,
+    expected = ((0, 0, 0) +: (1, 10, 10) +: (2, 2, null) +: (3, 30, 30) +: Nil)
+      .asInstanceOf[List[(Integer, Integer, Integer)]]
+      .toDF("key", "value", "extra"),
     expectErrorWithoutEvolutionContains = "cannot resolve `extra` in INSERT clause"
   )
 
@@ -2010,8 +2249,22 @@ abstract class MergeIntoSuiteBase
     sourceData = Seq((1, 1, 1), (2, 2, 2)).toDF("key", "value", "extra"),
     insert = "(key, value) VALUES (s.key, s.value)",
     // 2 should have extra = null, since extra wasn't in the insert spec.
-    expected = (0, 0, 0) +: (1, 10, 10) +: (2, 2, null) +: (3, 30, 30) +: Nil,
-    expectedWithoutEvolution = (0, 0, 0) +: (1, 10, 10) +: (2, 2, null) +: (3, 30, 30) +: Nil
+    expected = ((0, 0, 0) +: (1, 10, 10) +: (2, 2, null) +: (3, 30, 30) +: Nil)
+      .asInstanceOf[List[(Integer, Integer, Integer)]]
+      .toDF("key", "value", "extra"),
+    expectedWithoutEvolution = ((0, 0, 0) +: (1, 10, 10) +: (2, 2, null) +: (3, 30, 30) +: Nil)
+      .asInstanceOf[List[(Integer, Integer, Integer)]]
+      .toDF("key", "value", "extra")
+  )
+
+  testEvolution("explicitly update one column")(
+    targetData = Seq((0, 0), (1, 10), (3, 30)).toDF("key", "value"),
+    sourceData = Seq((1, 1, 1), (2, 2, 2)).toDF("key", "value", "extra"),
+    update = "value = s.value",
+    // Both results should be the same - we're checking that no evolution logic triggers
+    // even though there's an extra source column.
+    expected = ((0, 0) +: (1, 1) +: (3, 30) +: Nil).toDF("key", "value"),
+    expectedWithoutEvolution = ((0, 0) +: (1, 1) +: (3, 30) +: Nil).toDF("key", "value")
   )
 
   testEvolution("new column with update non-* and insert *")(
@@ -2019,10 +2272,11 @@ abstract class MergeIntoSuiteBase
     sourceData = Seq((1, 1, 1), (2, 2, 2)).toDF("key", "value", "extra"),
     update = "key = s.key, value = s.value",
     insert = "*",
-    expected = (0, 0, null) +: (2, 2, 2) +: (3, 30, null) +:
+    expected = ((0, 0, null) +: (2, 2, 2) +: (3, 30, null) +:
       // null because `extra` isn't an update action, even though it's 1 in the source data
-      (1, 1, null) +: Nil,
-    expectedWithoutEvolution = (0, 0) +: (2, 2) +: (3, 30) +: (1, 1) +: Nil
+      (1, 1, null) +: Nil)
+      .asInstanceOf[List[(Integer, Integer, Integer)]].toDF("key", "value", "extra"),
+    expectedWithoutEvolution = ((0, 0) +: (2, 2) +: (3, 30) +: (1, 1) +: Nil).toDF("key", "value")
   )
 
   testEvolution("new column with update * and insert non-*")(
@@ -2030,10 +2284,11 @@ abstract class MergeIntoSuiteBase
     sourceData = Seq((1, 1, 1), (2, 2, 2)).toDF("key", "value", "extra"),
     update = "*",
     insert = "(key, value) VALUES (s.key, s.value)",
-    expected = (0, 0, null) +: (1, 1, 1) +: (3, 30, null) +:
+    expected = ((0, 0, null) +: (1, 1, 1) +: (3, 30, null) +:
       // null because `extra` isn't an insert action, even though it's 2 in the source data
-      (2, 2, null) +: Nil,
-    expectedWithoutEvolution = (0, 0) +: (2, 2) +: (3, 30) +: (1, 1) +: Nil
+      (2, 2, null) +: Nil)
+      .asInstanceOf[List[(Integer, Integer, Integer)]].toDF("key", "value", "extra"),
+    expectedWithoutEvolution = ((0, 0) +: (2, 2) +: (3, 30) +: (1, 1) +: Nil).toDF("key", "value")
   )
 
   testEvolution("evolve partitioned table")(
@@ -2041,8 +2296,9 @@ abstract class MergeIntoSuiteBase
     sourceData = Seq((1, 1, "extra1"), (2, 2, "extra2")).toDF("key", "value", "extra"),
     update = "*",
     insert = "*",
-    expected = (0, 0, null) +: (1, 1, "extra1") +: (2, 2, "extra2") +: (3, 30, null) +: Nil,
-    expectedWithoutEvolution = (0, 0) +: (2, 2) +: (3, 30) +: (1, 1) +: Nil
+    expected = ((0, 0, null) +: (1, 1, "extra1") +: (2, 2, "extra2") +: (3, 30, null) +: Nil)
+      .toDF("key", "value", "extra"),
+    expectedWithoutEvolution = ((0, 0) +: (2, 2) +: (3, 30) +: (1, 1) +: Nil).toDF("key", "value")
   )
 
   testEvolution("star expansion with names including dots")(
@@ -2051,8 +2307,10 @@ abstract class MergeIntoSuiteBase
       "key", "value.with.dotted.name", "extra.dotted"),
     update = "*",
     insert = "*",
-    expected = (0, 0, null) +: (1, 1, "extra1") +: (2, 2, "extra2") +: (3, 30, null) +: Nil,
-    expectedWithoutEvolution = (0, 0) +: (2, 2) +: (3, 30) +: (1, 1) +: Nil
+    expected = ((0, 0, null) +: (1, 1, "extra1") +: (2, 2, "extra2") +: (3, 30, null) +: Nil)
+      .toDF("key", "value.with.dotted.name", "extra.dotted"),
+    expectedWithoutEvolution = ((0, 0) +: (2, 2) +: (3, 30) +: (1, 1) +: Nil)
+      .toDF("key", "value.with.dotted.name")
   )
 
   // Note that incompatible types are those where a cast to the target type can't resolve - any
@@ -2061,7 +2319,8 @@ abstract class MergeIntoSuiteBase
     targetData = Seq((0, 0), (1, 10), (3, 30)).toDF("key", "value"),
     sourceData = Seq((1, Array[Byte](1)), (2, Array[Byte](2))).toDF("key", "value"),
     update = "*",
-    expectErrorContains = "cannot cast binary to int",
+    expectErrorContains =
+      "Failed to merge incompatible data types IntegerType and BinaryType",
     expectErrorWithoutEvolutionContains = "cannot cast binary to int"
   )
 
@@ -2069,7 +2328,7 @@ abstract class MergeIntoSuiteBase
     targetData = Seq((0, 0), (1, 10), (3, 30)).toDF("key", "value"),
     sourceData = Seq((1, Array[Byte](1)), (2, Array[Byte](2))).toDF("key", "value"),
     insert = "*",
-    expectErrorContains = "cannot cast binary to int",
+    expectErrorContains = "Failed to merge incompatible data types IntegerType and BinaryType",
     expectErrorWithoutEvolutionContains = "cannot cast binary to int"
   )
 
@@ -2079,8 +2338,8 @@ abstract class MergeIntoSuiteBase
     sourceData = Seq((1.toByte, 1.toShort), (2.toByte, 2.toShort)).toDF("key", "value"),
     insert = "*",
     update = "*",
-    expected = (0, 0) +: (1, 1) +: (2, 2) +: (3, 30) +: Nil,
-    expectedWithoutEvolution = (0, 0) +: (1, 1) +: (2, 2) +: (3, 30) +: Nil
+    expected = Seq((0, 0), (1, 1), (2, 2), (3, 30)).toDF("key", "value"),
+    expectedWithoutEvolution = Seq((0, 0), (1, 1), (2, 2), (3, 30)).toDF("key", "value")
   )
 
   // Delta's automatic schema evolution allows converting table columns with a numeric type narrower
@@ -2090,8 +2349,16 @@ abstract class MergeIntoSuiteBase
     sourceData = Seq((1, 1), (2, 2)).toDF("key", "value"),
     insert = "*",
     update = "*",
-    expected = (0, 0) +: (1, 1) +: (2, 2) +: Nil,
-    expectedWithoutEvolution = (0, 0) +: (1, 1) +: (2, 2) +: Nil
+    expected =
+      ((0.toByte, 0.toShort) +:
+        (1.toByte, 1.toShort) +:
+        (2.toByte, 2.toShort) +: Nil
+        ).toDF("key", "value"),
+    expectedWithoutEvolution =
+      ((0.toByte, 0.toShort) +:
+        (1.toByte, 1.toShort) +:
+        (2.toByte, 2.toShort) +: Nil
+        ).toDF("key", "value")
   )
 
   testEvolution("upcast int source type into long target")(
@@ -2099,16 +2366,20 @@ abstract class MergeIntoSuiteBase
     sourceData = Seq((1, 1), (2, 2)).toDF("key", "value"),
     insert = "*",
     update = "*",
-    expected = (0, 0L) +: (1, 1L) +: (2, 2L) +: (3, 30L) +: Nil,
-    expectedWithoutEvolution = (0, 0L) +: (1, 1L) +: (2, 2L) +: (3, 30L) +: Nil
+    expected = ((0, 0L) +: (1, 1L) +: (2, 2L) +: (3, 30L) +: Nil).toDF("key", "value"),
+    expectedWithoutEvolution =
+      ((0, 0L) +: (1, 1L) +: (2, 2L) +: (3, 30L) +: Nil).toDF("key", "value")
   )
 
   testEvolution("write string into int column")(
     targetData = Seq((0, 0), (1, 10), (3, 30)).toDF("key", "value"),
     sourceData = Seq((1, "1"), (2, "2"), (5, "notANumber")).toDF("key", "value"),
     insert = "*",
-    expected = (0, 0) +: (1, 10) +: (2, 2) +: (3, 30) +: (5, null) +: Nil,
-    expectedWithoutEvolution = (0, 0) +: (1, 10) +: (2, 2) +: (3, 30) +: (5, null) +: Nil
+    expected = ((0, 0) +: (1, 10) +: (2, 2) +: (3, 30) +: (5, null) +: Nil)
+      .asInstanceOf[List[(Integer, Integer)]].toDF("key", "value"),
+    expectedWithoutEvolution =
+      ((0, 0) +: (1, 10) +: (2, 2) +: (3, 30) +: (5, null) +: Nil)
+        .asInstanceOf[List[(Integer, Integer)]].toDF("key", "value")
   )
 
   // This is kinda bug-for-bug compatibility. It doesn't really make sense that infinity is casted
@@ -2117,16 +2388,121 @@ abstract class MergeIntoSuiteBase
     targetData = Seq((0, 0), (1, 10), (3, 30)).toDF("key", "value"),
     sourceData = Seq((1, 1.1), (2, 2.2), (5, Double.PositiveInfinity)).toDF("key", "value"),
     insert = "*",
-    expected = (0, 0) +: (1, 10) +: (2, 2) +: (3, 30) +: (5, Int.MaxValue) +: Nil,
-    expectedWithoutEvolution = (0, 0) +: (1, 10) +: (2, 2) +: (3, 30) +: (5, Int.MaxValue) +: Nil
+    expected =
+      ((0, 0) +: (1, 10) +: (2, 2) +: (3, 30) +: (5, Int.MaxValue) +: Nil)
+        .asInstanceOf[List[(Integer, Integer)]].toDF("key", "value"),
+    expectedWithoutEvolution =
+      ((0, 0) +: (1, 10) +: (2, 2) +: (3, 30) +: (5, Int.MaxValue) +: Nil)
+        .asInstanceOf[List[(Integer, Integer)]].toDF("key", "value")
   )
 
-  testEvolution("extra nested column in source")(
-    targetData = Seq((1, ("a" -> 1, "b" -> 2))).toDF("key", "x"),
-    sourceData = Seq((2, ("a" -> 2, "b" -> 2, "c" -> 3))).toDF("key", "x"),
+  testEvolution("extra nested column in source - insert")(
+    targetData = Seq((1, (1, 10))).toDF("key", "x"),
+    sourceData = Seq((2, (2, 20, 30))).toDF("key", "x"),
     insert = "*",
+    expected = ((1, (1, 10, null)) +: (2, (2, 20, 30)) +: Nil)
+      .asInstanceOf[List[(Integer, (Integer, Integer, Integer))]].toDF("key", "x"),
+    expectErrorWithoutEvolutionContains = "Cannot cast struct"
+  )
+
+  testEvolution("missing nested column in source - insert")(
+    targetData = Seq((1, (1, 2, 3))).toDF("key", "x"),
+    sourceData = Seq((2, (2, 3))).toDF("key", "x"),
+    insert = "*",
+    expected = ((1, (1, 2, 3)) +: (2, (2, 3, null)) +: Nil)
+      .asInstanceOf[List[(Integer, (Integer, Integer, Integer))]].toDF("key", "x"),
+    expectErrorWithoutEvolutionContains = "Cannot cast struct"
+  )
+
+  testEvolution("missing nested column resolved by name - insert")(
+    targetData = Seq((1, 1, 2, 3)).toDF("key", "a", "b", "c")
+      .selectExpr("key", "named_struct('a', a, 'b', b, 'c', c) as x"),
+    sourceData = Seq((2, 2, 4)).toDF("key", "a", "c")
+      .selectExpr("key", "named_struct('a', a, 'c', c) as x"),
+    insert = "*",
+    expected = ((1, (1, 2, 3)) +: (2, (2, null, 4)) +: Nil)
+      .asInstanceOf[List[(Integer, (Integer, Integer, Integer))]].toDF("key", "x")
+      .selectExpr("key", "named_struct('a', x._1, 'b', x._2, 'c', x._3) as x"),
+    expectErrorWithoutEvolutionContains = "Cannot cast struct"
+  )
+
+  testEvolution("additional nested column in source resolved by name - insert")(
+   targetData = Seq((1, 10, 30)).toDF("key", "a", "c")
+      .selectExpr("key", "named_struct('a', a, 'c', c) as x"),
+   sourceData = Seq((2, 20, 30, 40)).toDF("key", "a", "b", "c")
+      .selectExpr("key", "named_struct('a', a, 'b', b, 'c', c) as x"),
+    insert = "*",
+    expected = ((1, (10, null, 30)) +: ((2, (20, 30, 40)) +: Nil))
+      .asInstanceOf[List[(Integer, (Integer, Integer, Integer))]].toDF("key", "x")
+      .selectExpr("key", "named_struct('a', x._1, 'c', x._3, 'b', x._2) as x"),
+    expectErrorWithoutEvolutionContains = "Cannot cast struct"
+  )
+
+  testEvolution("extra nested column in source - update")(
+    targetData = Seq((1, (1, 10)), (2, (2, 2000))).toDF("key", "x")
+      .selectExpr("key", "named_struct('a', x._1, 'c', x._2) as x"),
+    sourceData = Seq((1, (10, 100, 1000))).toDF("key", "x")
+      .selectExpr("key", "named_struct('a', x._1, 'b', x._2, 'c', x._3) as x"),
+    update = "*",
+    expected = ((1, (10, 100, 1000)) +: (2, (2, null, 2000)) +: Nil)
+      .asInstanceOf[List[(Integer, (Integer, Integer, Integer))]].toDF("key", "x")
+      .selectExpr("key", "named_struct('a', x._1, 'c', x._3, 'b', x._2) as x"),
+    expectErrorWithoutEvolutionContains = "Cannot cast struct"
+  )
+
+  testEvolution("missing nested column in source - update")(
+    targetData = Seq((1, (1, 10, 100)), (2, (2, 20, 200))).toDF("key", "x")
+      .selectExpr("key", "named_struct('a', x._1, 'b', x._2, 'c', x._3) as x"),
+    sourceData = Seq((1, (0, 0))).toDF("key", "x")
+      .selectExpr("key", "named_struct('a', x._1, 'c', x._2) as x"),
+    update = "*",
+  expected = ((1, (0, 10, 0)) +: (2, (2, 20, 200)) +: Nil).toDF("key", "x")
+      .selectExpr("key", "named_struct('a', x._1, 'b', x._2, 'c', x._3) as x"),
+    expectErrorWithoutEvolutionContains = "Cannot cast struct"
+  )
+
+  testEvolution("nested columns resolved by name with same column count but different names")(
+    targetData = Seq((1, 1, 2, 3)).toDF("key", "a", "b", "c")
+      .selectExpr("key", "struct(a, b, c) as x"),
+    sourceData = Seq((1, 10, 20, 30), (2, 20, 30, 40)).toDF("key", "a", "b", "d")
+      .selectExpr("key", "struct(a, b, d) as x"),
+    insert = "*",
+    update = "*",
+    // We evolve to the schema (key, x.{a, b, c, d}).
+    expected = ((1, (10, 20, 3, 30)) +: (2, (20, 30, null, 40)) +: Nil)
+      .asInstanceOf[List[(Integer, (Integer, Integer, Integer, Integer))]]
+      .toDF("key", "x")
+      .selectExpr("key", "named_struct('a', x._1, 'b', x._2, 'c', x._3, 'd', x._4) as x"),
+    expectErrorWithoutEvolutionContains = "All nested columns must match."
+  )
+
+  testEvolution("nested columns resolved by position with same column count but different names")(
+    targetData = Seq((1, 1, 2, 3)).toDF("key", "a", "b", "c")
+      .selectExpr("key", "struct(a, b, c) as x"),
+    sourceData = Seq((1, 10, 20, 30), (2, 20, 30, 40)).toDF("key", "a", "b", "d")
+      .selectExpr("key", "struct(a, b, d) as x"),
+    insert = "*",
+    update = "*",
     expectErrorContains = "cannot cast struct",
-    expectErrorWithoutEvolutionContains = "cannot cast struct"
+    expectedWithoutEvolution = ((1, (10, 20, 30)) +: (2, (20, 30, 40)) +: Nil)
+      .asInstanceOf[List[(Integer, (Integer, Integer, Integer))]]
+      .toDF("key", "x")
+      .selectExpr("key", "named_struct('a', x._1, 'b', x._2, 'c', x._3) as x"),
+    confs = (DeltaSQLConf.DELTA_RESOLVE_MERGE_UPDATE_STRUCTS_BY_NAME.key, "false") +: Nil
+  )
+
+  testEvolution("struct in different order")(
+    targetData = Seq((1, (1, 10, 100)), (2, (2, 20, 200))).toDF("key", "x")
+      .selectExpr("key", "named_struct('a', x._1, 'b', x._2, 'c', x._3) as x"),
+    sourceData = Seq((1, (100, 10, 1)), (3, (300, 30, 3))).toDF("key", "x")
+      .selectExpr("key", "named_struct('c', x._1, 'b', x._2, 'a', x._3) as x"),
+    insert = "*",
+    update = "*",
+    expected = ((1, (1, 10, 100)) +: (2, (2, 20, 200)) +: (3, (3, 30, 300)) +: Nil).toDF("key", "x")
+      .selectExpr("key", "named_struct('a', x._1, 'b', x._2, 'c', x._3) as x"),
+    expectedWithoutEvolution =
+      ((1, (1, 10, 100)) +: (2, (2, 20, 200)) +: (3, (3, 30, 300)) +: Nil).toDF("key", "x")
+      .selectExpr("key", "named_struct('a', x._1, 'b', x._2, 'c', x._3) as x")
   )
 
   /* unlimited number of merge clauses tests */
@@ -2215,6 +2591,72 @@ abstract class MergeIntoSuiteBase
       (2, 400), // (2, 20) updated by matched_1
                 // (3, 30) deleted by matched_2
       (5, 500)  // (5, 500) inserted
+    ))
+
+  testUnlimitedClauses("conditional insert + insert")(
+    source = (1, 100) :: (2, 200) :: (3, 300) :: (4, 400) :: (5, 500) :: Nil,
+    target = (0, 0) :: (1, 10) :: (2, 20) :: (3, 30) :: Nil,
+    mergeOn = "s.key = t.key",
+    insert(condition = "s.key < 5", values = "(key, value) VALUES (s.key, s.value)"),
+    insert(condition = null, values = "(key, value) VALUES (s.key, s.value + 1)"))(
+    result = Seq(
+      (0, 0),   // no change
+      (1, 10),  // no change
+      (2, 20),  // no change
+      (3, 30),  // no change
+      (4, 400), // (4, 400) inserted by notMatched_0
+      (5, 501)  // (5, 501) inserted by notMatched_1
+    ))
+
+  testUnlimitedClauses("2 conditional inserts")(
+    source = (1, 100) :: (2, 200) :: (3, 300) :: (4, 400) :: (5, 500) :: (6, 600) :: Nil,
+    target = (0, 0) :: (1, 10) :: (2, 20) :: (3, 30) :: Nil,
+    mergeOn = "s.key = t.key",
+    insert(condition = "s.key < 5", values = "(key, value) VALUES (s.key, s.value)"),
+    insert(condition = "s.key = 5", values = "(key, value) VALUES (s.key, s.value + 1)"))(
+    result = Seq(
+      (0, 0),   // no change
+      (1, 10),  // no change
+      (2, 20),  // no change
+      (3, 30),  // no change
+      (4, 400), // (4, 400) inserted by notMatched_0
+      (5, 501)  // (5, 501) inserted by notMatched_1
+                // (6, 600) not inserted as not insert condition matched
+    ))
+
+  testUnlimitedClauses("update/delete (no matches) + conditional insert + insert")(
+    source = (4, 400) :: (5, 500) :: Nil,
+    target = (0, 0) :: (1, 10) :: (2, 20) :: (3, 30) :: Nil,
+    mergeOn = "s.key = t.key",
+    update(condition = "t.key = 0", set = "key = s.key, value = s.value"),
+    delete(condition = null),
+    insert(condition = "s.key < 5", values = "(key, value) VALUES (s.key, s.value)"),
+    insert(condition = null, values = "(key, value) VALUES (s.key, s.value + 1)"))(
+    result = Seq(
+      (0, 0),   // no change
+      (1, 10),  // no change
+      (2, 20),  // no change
+      (3, 30),  // no change
+      (4, 400), // (4, 400) inserted by notMatched_0
+      (5, 501)  // (5, 501) inserted by notMatched_1
+    ))
+
+  testUnlimitedClauses("update/delete (no matches) + 2 conditional inserts")(
+    source = (4, 400) :: (5, 500) :: (6, 600)  :: Nil,
+    target = (0, 0) :: (1, 10) :: (2, 20) :: (3, 30) :: Nil,
+    mergeOn = "s.key = t.key",
+    update(condition = "t.key = 0", set = "key = s.key, value = s.value"),
+    delete(condition = null),
+    insert(condition = "s.key < 5", values = "(key, value) VALUES (s.key, s.value)"),
+    insert(condition = "s.key = 5", values = "(key, value) VALUES (s.key, s.value + 1)"))(
+    result = Seq(
+      (0, 0),   // no change
+      (1, 10),  // no change
+      (2, 20),  // no change
+      (3, 30),  // no change
+      (4, 400), // (4, 400) inserted by notMatched_0
+      (5, 501)  // (5, 501) inserted by notMatched_1
+                // (6, 600) not inserted as not insert condition matched
     ))
 
   testUnlimitedClauses("2 update + 2 delete + 4 insert")(

@@ -81,13 +81,17 @@ abstract class UpdateSuiteBase
 
   val fileFormat: String = "parquet"
 
+  protected def expectedKVRows(rows: Seq[Row])(implicit partitioned: Boolean): Seq[Row] = {
+    if (partitioned) rows.map { case Row(k, v) => Row(v, k) } else rows
+  }
+
   protected def checkUpdate(
       condition: Option[String],
       setClauses: String,
       expectedResults: Seq[Row],
-      tableName: Option[String] = None): Unit = {
+      tableName: Option[String] = None)(implicit isPartitioned: Boolean = false): Unit = {
     executeUpdate(tableName.getOrElse(s"delta.`$tempPath`"), setClauses, where = condition.orNull)
-    checkAnswer(readDeltaTable(tempPath), expectedResults)
+    checkAnswer(readDeltaTable(tempPath), expectedKVRows(expectedResults))
   }
 
   test("basic case") {
@@ -96,7 +100,7 @@ abstract class UpdateSuiteBase
       expectedResults = Row(1, 2) :: Row(1, 2) :: Row(1, 2) :: Row(1, 2) :: Nil)
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic update - Delta table by path - Partition=$isPartitioned") {
       withTable("deltaTable") {
         val partitions = if (isPartitioned) "key" :: Nil else Nil
@@ -111,7 +115,7 @@ abstract class UpdateSuiteBase
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic update - Delta table by name - Partition=$isPartitioned") {
       withTable("delta_table") {
         val partitionByClause = if (isPartitioned) "PARTITIONED BY (key)" else ""
@@ -134,7 +138,7 @@ abstract class UpdateSuiteBase
   }
 
   Seq(true, false).foreach { skippingEnabled =>
-    Seq(true, false).foreach { isPartitioned =>
+    Seq(true, false).foreach { implicit isPartitioned =>
       test(s"data and partition predicates - Partition=$isPartitioned Skipping=$skippingEnabled") {
         withSQLConf(DeltaSQLConf.DELTA_STATS_SKIPPING.key -> skippingEnabled.toString) {
           val partitions = if (isPartitioned) "key" :: Nil else Nil
@@ -148,7 +152,7 @@ abstract class UpdateSuiteBase
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"SC-12276: table has null values - partitioned=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq(("a", 1), (null, 2), (null, 3), ("d", 4)).toDF("key", "value"), partitions)
@@ -188,7 +192,7 @@ abstract class UpdateSuiteBase
       expectedResults = Row(1, 2) :: Row(1, 2) :: Row(1, 2) :: Row(1, 2) :: Nil)
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic update - without where - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
@@ -198,7 +202,7 @@ abstract class UpdateSuiteBase
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic update - without where and partial columns - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
@@ -208,7 +212,7 @@ abstract class UpdateSuiteBase
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic update - without where and out-of-order columns - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
@@ -218,7 +222,7 @@ abstract class UpdateSuiteBase
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic update - without where and complex input - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
@@ -228,7 +232,7 @@ abstract class UpdateSuiteBase
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic update - with where - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
@@ -238,7 +242,7 @@ abstract class UpdateSuiteBase
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic update - with where and complex input - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
@@ -248,7 +252,7 @@ abstract class UpdateSuiteBase
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic update - with where and no row matched - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
@@ -258,7 +262,7 @@ abstract class UpdateSuiteBase
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"type mismatch - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
@@ -269,7 +273,7 @@ abstract class UpdateSuiteBase
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"set to null - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
@@ -280,7 +284,7 @@ abstract class UpdateSuiteBase
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"basic update - TypeCoercion twice - Partition=$isPartitioned") {
       val partitions = if (isPartitioned) "key" :: Nil else Nil
       append(Seq((99, 2), (100, 4), (101, 3)).toDF("key", "value"), partitions)
@@ -549,6 +553,57 @@ abstract class UpdateSuiteBase
           {"a": [2, 22], "b": 'Y'}""")
   }
 
+  test("nested data resolution order") {
+    // By default, resolve by name.
+    checkUpdateJson(
+      target = """
+          {"a": {"c": {"d": 'RANDOM', "e": 'str'}, "g": 1}, "z": 10}
+          {"a": {"c": {"d": 'random2', "e": 'str2'}, "g": 2}, "z": 20}""",
+      updateWhere = "a.g = 2",
+      set = "a = named_struct('g', 20, 'c', named_struct('e', 'str0', 'd', 'randomNew'))" :: Nil,
+      expected = """
+          {"a": {"c": {"d": 'RANDOM', "e": 'str'}, "g": 1}, "z": 10}
+          {"a": {"c": {"d": 'randomNew', "e": 'str0'}, "g": 20}, "z": 20}""")
+    checkUpdateJson(
+      target = """
+          {"a": {"c": {"d": 'RANDOM', "e": 'str'}, "g": 1}, "z": 10}
+          {"a": {"c": {"d": 'random2', "e": 'str2'}, "g": 2}, "z": 20}""",
+      updateWhere = "a.g = 2",
+      set = "a.c = named_struct('e', 'str0', 'd', 'randomNew')" :: Nil,
+      expected = """
+          {"a": {"c": {"d": 'RANDOM', "e": 'str'}, "g": 1}, "z": 10}
+          {"a": {"c": {"d": 'randomNew', "e": 'str0'}, "g": 2}, "z": 20}""")
+
+    // With the legacy conf, resolve by position.
+    withSQLConf((DeltaSQLConf.DELTA_RESOLVE_MERGE_UPDATE_STRUCTS_BY_NAME.key, "false")) {
+      checkUpdateJson(
+        target = """
+          {"a": {"c": {"d": 'RANDOM', "e": 'str'}, "g": 1}, "z": 10}
+          {"a": {"c": {"d": 'random2', "e": 'str2'}, "g": 2}, "z": 20}""",
+        updateWhere = "a.g = 2",
+        set = "a.c = named_struct('e', 'str0', 'd', 'randomNew')" :: Nil,
+        expected = """
+          {"a": {"c": {"d": 'RANDOM', "e": 'str'}, "g": 1}, "z": 10}
+          {"a": {"c": {"d": 'str0', "e": 'randomNew'}, "g": 2}, "z": 20}""")
+
+      val e = intercept[AnalysisException] {
+        checkUpdateJson(
+          target =
+            """
+          {"a": {"c": {"d": 'RANDOM', "e": 'str'}, "g": 1}, "z": 10}
+          {"a": {"c": {"d": 'random2', "e": 'str2'}, "g": 2}, "z": 20}""",
+          updateWhere = "a.g = 2",
+          set =
+            "a = named_struct('g', 20, 'c', named_struct('e', 'str0', 'd', 'randomNew'))" :: Nil,
+          expected =
+            """
+          {"a": {"c": {"d": 'RANDOM', "e": 'str'}, "g": 1}, "z": 10}
+          {"a": {"c": {"d": 'randomNew', "e": 'str0'}, "g": 20}, "z": 20}""")
+      }
+
+      assert(e.getMessage.contains("cannot cast struct"))
+    }
+  }
 
   testQuietly("nested data - negative case") {
     val targetDF = spark.read.json("""

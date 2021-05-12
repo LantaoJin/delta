@@ -70,7 +70,7 @@ class MergeIntoSQLSuite extends MergeIntoSuiteBase  with DeltaSQLCommandTest {
       mergeOn: String,
       mergeClauses: MergeClause*)(
       result: Seq[(Int, Int)]): Unit = {
-    Seq(true, false).foreach { isPartitioned =>
+    Seq(true, false).foreach { implicit isPartitioned =>
       ignore(s"unlimited clauses - $name - isPartitioned: $isPartitioned ") {
         withKeyValueData(source, target, isPartitioned) { case (sourceName, targetName) =>
           withSQLConf(DeltaSQLConf.MERGE_INSERT_ONLY_ENABLED.key -> "true") {
@@ -81,7 +81,7 @@ class MergeIntoSQLSuite extends MergeIntoSuiteBase  with DeltaSQLCommandTest {
           } else targetName
           checkAnswer(
             readDeltaTable(deltaPath),
-            result.map { case (k, v) => Row(k, v) })
+            expectedKVRows(result.map { case (k, v) => Row(k, v) }))
         }
       }
     }
@@ -193,7 +193,7 @@ class MergeIntoSQLSuite extends MergeIntoSuiteBase  with DeltaSQLCommandTest {
     }
   }
 
-  Seq(true, false).foreach { isPartitioned =>
+  Seq(true, false).foreach { implicit isPartitioned =>
     test(s"no column is used from source table - column pruning, isPartitioned: $isPartitioned") {
       withTable("source") {
         val partitions = if (isPartitioned) "key2" :: Nil else Nil
@@ -219,11 +219,11 @@ class MergeIntoSQLSuite extends MergeIntoSuiteBase  with DeltaSQLCommandTest {
         }
 
         checkAnswer(readDeltaTable(tempPath),
-          Row(2, 2) :: // No change
+          expectedKVRows(Row(2, 2) :: // No change
           Row(1, 4) :: // No change
           Row(10, 10) :: // Insert
           Row(10, 10) :: // Insert
-          Nil)
+          Nil))
       }
     }
   }

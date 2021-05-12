@@ -25,7 +25,6 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.ResolvedTable
 import org.apache.spark.sql.catalyst.plans.logical.{AppendData, LogicalPlan, OverwriteByExpression, V2WriteCommand}
 import org.apache.spark.sql.execution.command._
-import org.apache.spark.sql.execution.datasources.RefreshTable
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 
 /**
@@ -98,8 +97,10 @@ case class DeltaUnsupportedOperationsCheck(spark: SparkSession)
     case DataSourceV2Relation(tbl: DeltaTableV2, _, _, _, _) if !tbl.deltaLog.tableExists =>
       throw DeltaErrors.pathNotExistsException(tbl.deltaLog.dataPath.toString)
 
-    case ResolvedTable(_, _, tbl: DeltaTableV2) if !tbl.deltaLog.tableExists =>
-      throw DeltaErrors.pathNotExistsException(tbl.deltaLog.dataPath.toString)
+    case r: ResolvedTable if r.table.isInstanceOf[DeltaTableV2] &&
+        !r.table.asInstanceOf[DeltaTableV2].deltaLog.tableExists =>
+      throw DeltaErrors.pathNotExistsException(
+        r.table.asInstanceOf[DeltaTableV2].deltaLog.dataPath.toString)
 
     case _ => // OK
   }

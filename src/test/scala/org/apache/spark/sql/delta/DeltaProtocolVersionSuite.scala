@@ -18,6 +18,7 @@ package org.apache.spark.sql.delta
 
 // scalastyle:off import.ordering.noEmptyLine
 import java.io.File
+import java.util.Locale
 
 import org.apache.spark.sql.delta.DeltaOperations.ManualUpdate
 import org.apache.spark.sql.delta.actions._
@@ -61,6 +62,30 @@ trait DeltaProtocolVersionSuiteBase extends QueryTest
     }
   }
 
+  test("upgrade to a version with DeltaTable API") {
+    withTempDir { path =>
+      val log = createTableWithProtocol(Protocol(0, 0), path)
+      assert(log.snapshot.protocol == Protocol(0, 0))
+      val table = io.delta.tables.DeltaTable.forPath(spark, path.getCanonicalPath)
+      table.upgradeTableProtocol(1, 2)
+      assert(log.snapshot.protocol == Protocol(1, 2))
+      table.upgradeTableProtocol(1, 3)
+      assert(log.snapshot.protocol == Protocol(1, 3))
+    }
+  }
+
+  test("protocol upgrade using SQL API") {
+    withTempDir { path =>
+      val log = createTableWithProtocol(Protocol(1, 2), path)
+
+      assert(log.snapshot.protocol === Protocol(1, 2))
+      sql(s"ALTER TABLE delta.`${path.getCanonicalPath}` " +
+        "SET TBLPROPERTIES (delta.minWriterVersion = 3)")
+      assert(log.snapshot.protocol === Protocol(1, 3))
+      assertPropertiesDontContainProtocolVersions(log)
+    }
+  }
+
   test("overwrite keeps the same protocol version") {
     withTempDir { path =>
       val log = createTableWithProtocol(Protocol(0, 0), path)
@@ -89,11 +114,22 @@ trait DeltaProtocolVersionSuiteBase extends QueryTest
 
   test("can't downgrade") {
     withTempDir { path =>
-      val log = DeltaLog.forTable(spark, path)
-      assert(log.snapshot.protocol == Protocol())
-      intercept[ProtocolDowngradeException] {
-        log.upgradeProtocol(Protocol(0, 0))
+      val log = createTableWithProtocol(Protocol(1, 3), path)
+      assert(log.snapshot.protocol === Protocol(1, 3))
+      val e1 = intercept[ProtocolDowngradeException] {
+        log.upgradeProtocol(Protocol(1, 2))
       }
+      val e2 = intercept[ProtocolDowngradeException] {
+        val table = io.delta.tables.DeltaTable.forPath(spark, path.getCanonicalPath)
+        table.upgradeTableProtocol(1, 2)
+      }
+      val e3 = intercept[ProtocolDowngradeException] {
+        sql(s"ALTER TABLE delta.`${path.getCanonicalPath}` " +
+          "SET TBLPROPERTIES (delta.minWriterVersion = 2)")
+      }
+      assert(e1.getMessage === e2.getMessage)
+      assert(e1.getMessage === e3.getMessage)
+      assert(e1.getMessage.contains("cannot be downgraded from (1,3) to (1,2)"))
     }
   }
 
@@ -156,17 +192,24 @@ trait DeltaProtocolVersionSuiteBase extends QueryTest
     }
   }
 
+  test("can create table using the latest protocol with conf") {
+    withTempDir { dir =>
+      withSQLConf(
+        DeltaSQLConf.DELTA_PROTOCOL_DEFAULT_WRITER_VERSION.key -> Action.writerVersion.toString,
+        DeltaSQLConf.DELTA_PROTOCOL_DEFAULT_READER_VERSION.key -> Action.readerVersion.toString) {
+        sql(s"CREATE TABLE delta.`${dir.getCanonicalPath}` (id bigint) USING delta")
+        val deltaLog = DeltaLog.forTable(spark, dir)
+        assert(deltaLog.snapshot.protocol === Action.protocolVersion)
+      }
+    }
+  }
+
   test("creating a new table with default protocol") {
     val tableName = "delta_test"
 
     def testTableCreation(fn: String => Unit): Unit = {
       testCreation(tableName, 1) { dir =>
         fn(dir)
-        val e = intercept[AnalysisException] {
-          sql(s"ALTER TABLE delta.`$dir` SET TBLPROPERTIES ('delta.appendOnly' = 'true')")
-        }
-        assert(e.getMessage.contains("protocol version"))
-        assert(e.getMessage.contains("delta.appendOnly"))
       }
     }
 
@@ -199,7 +242,8 @@ trait DeltaProtocolVersionSuiteBase extends QueryTest
     }
   }
 
-  test("creating a new table with default protocol - requiring more recent protocol version") {
+  test(
+    "creating a new table with default protocol - requiring more recent protocol version") {
     val tableName = "delta_test"
     def testTableCreation(fn: String => Unit): Unit = testCreation(tableName, 2)(fn)
 
@@ -317,6 +361,181 @@ trait DeltaProtocolVersionSuiteBase extends QueryTest
         }
       }
     }
+  }
+
+  test("table creation with protocol as table property") {
+    withTempDir { dir =>
+      val deltaLog = DeltaLog.forTable(spark, dir)
+      withSQLConf(DeltaSQLConf.DELTA_PROTOCOL_DEFAULT_WRITER_VERSION.key -> "1") {
+        sql(s"CREATE TABLE delta.`${dir.getCanonicalPath}` (id bigint) USING delta " +
+          "TBLPROPERTIES (delta.minWriterVersion=3)")
+
+        assert(deltaLog.snapshot.protocol.minWriterVersion === 3)
+        assertPropertiesDontContainProtocolVersions(deltaLog)
+
+        // Can downgrade using REPLACE
+        sql(s"REPLACE TABLE delta.`${dir.getCanonicalPath}` (id bigint) USING delta " +
+          "TBLPROPERTIES (delta.MINWRITERVERSION=1)")
+        assert(deltaLog.snapshot.protocol.minWriterVersion === 1)
+        assertPropertiesDontContainProtocolVersions(deltaLog)
+      }
+    }
+  }
+
+  test("table creation with protocol as table property - property wins over conf") {
+    withTempDir { dir =>
+      val deltaLog = DeltaLog.forTable(spark, dir)
+      withSQLConf(DeltaSQLConf.DELTA_PROTOCOL_DEFAULT_WRITER_VERSION.key -> "3") {
+        sql(s"CREATE TABLE delta.`${dir.getCanonicalPath}` (id bigint) USING delta " +
+          "TBLPROPERTIES (delta.MINwriterVERsion=2)")
+
+        assert(deltaLog.snapshot.protocol.minWriterVersion === 2)
+        assertPropertiesDontContainProtocolVersions(deltaLog)
+      }
+    }
+  }
+
+  test("table creation with protocol as table property - feature requirements win SQL") {
+    withTempDir { dir =>
+      val deltaLog = DeltaLog.forTable(spark, dir)
+      withSQLConf(DeltaSQLConf.DELTA_PROTOCOL_DEFAULT_WRITER_VERSION.key -> "1") {
+        sql(s"CREATE TABLE delta.`${dir.getCanonicalPath}` (id bigint) USING delta " +
+          "TBLPROPERTIES (delta.minWriterVersion=1, delta.appendOnly=true)")
+
+        assert(deltaLog.snapshot.protocol.minWriterVersion === 2)
+        assertPropertiesDontContainProtocolVersions(deltaLog)
+
+        sql(s"REPLACE TABLE delta.`${dir.getCanonicalPath}` (id bigint) USING delta " +
+          "TBLPROPERTIES (delta.minWriterVersion=1)")
+
+        assert(deltaLog.snapshot.protocol.minWriterVersion === 1)
+        assertPropertiesDontContainProtocolVersions(deltaLog)
+
+        // Works with REPLACE too
+        sql(s"REPLACE TABLE delta.`${dir.getCanonicalPath}` (id bigint) USING delta " +
+          "TBLPROPERTIES (delta.minWriterVersion=1, delta.appendOnly=true)")
+        assert(deltaLog.snapshot.protocol.minWriterVersion === 2)
+      }
+    }
+  }
+
+  test("table creation with protocol as table property - feature requirements win DF") {
+    withTempDir { dir =>
+      val deltaLog = DeltaLog.forTable(spark, dir)
+      withSQLConf(DeltaSQLConf.DELTA_PROTOCOL_DEFAULT_WRITER_VERSION.key -> "1") {
+        spark.range(10).writeTo(s"delta.`${dir.getCanonicalPath}`")
+          .tableProperty("delta.minWriterVersion", "1")
+          .tableProperty("delta.appendOnly", "true")
+          .using("delta")
+          .create()
+
+        assert(deltaLog.snapshot.protocol.minWriterVersion === 2)
+        assertPropertiesDontContainProtocolVersions(deltaLog)
+      }
+    }
+  }
+
+  test("table creation with protocol as table property - default table properties") {
+    withTempDir { dir =>
+      val deltaLog = DeltaLog.forTable(spark, dir)
+      withSQLConf((DeltaConfigs.sqlConfPrefix + "minWriterVersion") -> "3") {
+        spark.range(10).writeTo(s"delta.`${dir.getCanonicalPath}`")
+          .using("delta")
+          .create()
+
+        assert(deltaLog.snapshot.protocol.minWriterVersion === 3)
+        assertPropertiesDontContainProtocolVersions(deltaLog)
+      }
+    }
+  }
+
+  test("table creation with protocol as table property - explicit wins over conf") {
+    withTempDir { dir =>
+      val deltaLog = DeltaLog.forTable(spark, dir)
+      withSQLConf((DeltaConfigs.sqlConfPrefix + "minWriterVersion") -> "3") {
+        spark.range(10).writeTo(s"delta.`${dir.getCanonicalPath}`")
+          .tableProperty("delta.minWriterVersion", "2")
+          .using("delta")
+          .create()
+
+        assert(deltaLog.snapshot.protocol.minWriterVersion === 2)
+        assertPropertiesDontContainProtocolVersions(deltaLog)
+      }
+    }
+  }
+
+  test("table creation with protocol as table property - bad input") {
+    withTempDir { dir =>
+      val e = intercept[IllegalArgumentException] {
+        sql(s"CREATE TABLE delta.`${dir.getCanonicalPath}` (id bigint) USING delta " +
+          "TBLPROPERTIES (delta.minWriterVersion='delta rulz')")
+      }
+      assert(e.getMessage.contains("integer"))
+
+      val e2 = intercept[AnalysisException] {
+        sql(s"CREATE TABLE delta.`${dir.getCanonicalPath}` (id bigint) USING delta " +
+          "TBLPROPERTIES (delta.minWr1terVersion=2)") // Typo in minWriterVersion
+      }
+      assert(e2.getMessage.contains("Unknown configuration"))
+
+      val e3 = intercept[IllegalArgumentException] {
+        sql(s"CREATE TABLE delta.`${dir.getCanonicalPath}` (id bigint) USING delta " +
+          "TBLPROPERTIES (delta.minWriterVersion=0)")
+      }
+      assert(e3.getMessage.contains("integer"))
+    }
+  }
+
+  test("protocol as table property - desc table") {
+    withTempDir { dir =>
+      val deltaLog = DeltaLog.forTable(spark, dir)
+      withSQLConf(DeltaSQLConf.DELTA_PROTOCOL_DEFAULT_WRITER_VERSION.key -> "2") {
+        spark.range(10).writeTo(s"delta.`${dir.getCanonicalPath}`")
+          .using("delta")
+          .tableProperty("delta.minWriterVersion", "3")
+          .createOrReplace()
+      }
+      assert(deltaLog.snapshot.protocol.minWriterVersion === 3)
+
+      val output = spark.sql(s"DESC EXTENDED delta.`${dir.getCanonicalPath}`").collect()
+      assert(output.exists(_.toString.contains("delta.minWriterVersion")),
+        s"minWriterVersion not found in: ${output.mkString("\n")}")
+      assert(output.exists(_.toString.contains("delta.minReaderVersion")),
+        s"minReaderVersion not found in: ${output.mkString("\n")}")
+    }
+  }
+
+  test("auto upgrade protocol version - version 2") {
+    withTempDir { path =>
+      val log = createTableWithProtocol(Protocol(1, 1), path)
+      spark.sql(s"""
+                   |ALTER TABLE delta.`${log.dataPath.toString}`
+                   |SET TBLPROPERTIES ('delta.appendOnly' = 'true')
+                 """.stripMargin)
+      assert(log.snapshot.protocol.minWriterVersion === 2)
+    }
+  }
+
+  test("auto upgrade protocol version - version 3") {
+    withTempDir { path =>
+      val log = DeltaLog.forTable(spark, path)
+      sql(s"CREATE TABLE delta.`${path.getCanonicalPath}` (id bigint) USING delta " +
+        "TBLPROPERTIES (delta.minWriterVersion=2)")
+      assert(log.update().protocol.minWriterVersion === 2)
+      spark.sql(s"""
+                   |ALTER TABLE delta.`${path.getCanonicalPath}`
+                   |ADD CONSTRAINT test CHECK (id < 5)
+                 """.stripMargin)
+      assert(log.update().protocol.minWriterVersion === 3)
+    }
+  }
+
+  private def assertPropertiesDontContainProtocolVersions(deltaLog: DeltaLog): Unit = {
+    val configs = deltaLog.snapshot.metadata.configuration.map {
+      case (k, v) => k.toLowerCase(Locale.ROOT) -> v
+    }
+    assert(!configs.contains(Protocol.MIN_READER_VERSION_PROP.toLowerCase(Locale.ROOT)))
+    assert(!configs.contains(Protocol.MIN_WRITER_VERSION_PROP.toLowerCase(Locale.ROOT)))
   }
 }
 

@@ -20,11 +20,14 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions._
+import org.apache.spark.sql.delta.constraints.{Constraints, DeltaInvariantCheckerExec}
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.schema._
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
+import org.apache.commons.lang3.exception.ExceptionUtils
 import org.apache.hadoop.fs.Path
 
+import org.apache.spark.SparkException
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.execution._
@@ -102,23 +105,13 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
     partitionColumns
   }
 
-// Use the second method instead
-//  def writeFiles(data: Dataset[_]): Seq[AddFile] = writeFiles(data, None, isOptimize = false)
-
-  def writeFiles(data: Dataset[_], writeOptions: Option[DeltaOptions]): Seq[AddFile] =
-    writeFiles(data, writeOptions, isOptimize = false)
-
-//  def writeFiles(data: Dataset[_], isOptimize: Boolean): Seq[AddFile] =
-//    writeFiles(data, None, isOptimize = isOptimize)
-
   /**
    * Writes out the dataframe after performing schema validation. Returns a list of
    * actions to append these files to the reservoir.
    */
   def writeFiles(
       data: Dataset[_],
-      writeOptions: Option[DeltaOptions],
-      isOptimize: Boolean): Seq[AddFile] = {
+      writeOptions: Option[DeltaOptions]): Seq[FileAction] = {
     hasWritten = true
 
     val spark = data.sparkSession
@@ -131,7 +124,7 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
 
     val committer = getCommitter(outputPath)
 
-    val invariants = Invariants.getFromSchema(metadata.schema, spark)
+    val constraints = Constraints.getAll(metadata, spark)
 
     SQLExecution.withNewExecutionId(queryExecution) {
       val outputSpec = FileFormatWriter.OutputSpec(
@@ -139,7 +132,8 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
         Map.empty,
         output)
 
-      val physicalPlan = DeltaInvariantCheckerExec(queryExecution.executedPlan, invariants)
+      val physicalPlan =
+        DeltaInvariantCheckerExec(queryExecution.executedPlan, constraints, spark)
 
       val executionId = spark.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       logInfo(s"Physical plan of $executionId before execution:\n ${physicalPlan.toString()}")
@@ -154,28 +148,39 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
         registerSQLMetrics(spark, basicWriteJobStatsTracker.metrics)
       }
 
-      FileFormatWriter.write(
-        sparkSession = spark,
-        plan = physicalPlan,
-        fileFormat = snapshot.fileFormat, // TODO doesn't support changing formats.
-        committer = committer,
-        outputSpec = outputSpec,
-        hadoopConf = spark.sessionState.newHadoopConfWithOptions(metadata.configuration),
-        partitionColumns = partitioningColumns,
-        bucketSpec = metadata.bucketSpec,
-        statsTrackers = statsTrackers,
-        options = Map.empty)
+      try {
+        FileFormatWriter.write(
+          sparkSession = spark,
+          plan = physicalPlan,
+          fileFormat = snapshot.fileFormat, // TODO doesn't support changing formats.
+          committer = committer,
+          outputSpec = outputSpec,
+          hadoopConf = spark.sessionState.newHadoopConfWithOptions(metadata.configuration),
+          partitionColumns = partitioningColumns,
+          bucketSpec = metadata.bucketSpec,
+          statsTrackers = statsTrackers,
+          options = Map.empty)
 
-      // after written, expose the metrics
-      writeOptions.foreach { writeOpt =>
-        basicWriteJobStatsTracker.metrics.foreach { kv =>
-          writeOpt.writeMetrics.get(kv._1).filter(_.isZero).foreach(s => s.merge(kv._2))
-        }
-      }
+          // after written, expose the metrics
+          writeOptions.foreach { writeOpt =>
+            basicWriteJobStatsTracker.metrics.foreach { kv =>
+              writeOpt.writeMetrics.get(kv._1).filter(_.isZero).foreach(s => s.merge(kv._2))
+            }
+          }
 
-      if (spark.sessionState.conf.adaptiveExecutionEnabled) {
-        logInfo(s"Physical plan of $executionId after adaptive execution:\n " +
-          s"${physicalPlan.toString()}")
+          if (spark.sessionState.conf.adaptiveExecutionEnabled) {
+            logInfo(s"Physical plan of $executionId after adaptive execution:\n " +
+              s"${physicalPlan.toString()}")
+          }
+      } catch {
+        case s: SparkException =>
+          // Pull an InvariantViolationException up to the top level if it was the root cause.
+          val violationException = ExceptionUtils.getRootCause(s)
+          if (violationException.isInstanceOf[InvariantViolationException]) {
+            throw violationException
+          } else {
+            throw s
+          }
       }
     }
 

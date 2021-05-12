@@ -16,8 +16,8 @@
 
 package org.apache.spark.sql.delta.sources
 
-import org.apache.spark.sql.catalyst.catalog.CatalogTable
-
+import scala.collection.JavaConverters._
+import scala.collection.mutable
 import scala.util.{Failure, Success, Try}
 
 // scalastyle:off import.ordering.noEmptyLine
@@ -33,6 +33,7 @@ import org.json4s.jackson.Serialization
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{EqualTo, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.logical.SubqueryAlias
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
@@ -53,12 +54,6 @@ class DeltaDataSource
   with DataSourceRegister
   with TableProvider
   with DeltaLogging {
-
-  SparkSession.getActiveSession.foreach { spark =>
-    // Enable "passPartitionByAsOptions" to support "write.partitionBy(...)"
-    // TODO Remove this when upgrading to Spark 3.0.0
-    spark.conf.set("spark.sql.legacy.sources.write.passPartitionByAsOptions", "true")
-  }
 
   def inferSchema: StructType = new StructType() // empty
 
@@ -168,10 +163,15 @@ class DeltaDataSource
     DeltaOptions.verifyOptions(CaseInsensitiveMap(parameters))
 
     val timeTravelByParams = DeltaDataSource.getTimeTravelVersion(parameters)
+    var cdcOptions: mutable.Map[String, String] = mutable.Map.empty
+
+
     DeltaTableV2(
       sqlContext.sparkSession,
       new Path(maybePath),
-      timeTravelOpt = timeTravelByParams).toBaseRelation
+      timeTravelOpt = timeTravelByParams,
+      options = new CaseInsensitiveStringMap(cdcOptions.asJava)
+    ).toBaseRelation
   }
 
   override def createRelation(
@@ -216,6 +216,7 @@ object DeltaDataSource extends DatabricksLogging {
    * castable to a long.
    */
   final val TIME_TRAVEL_VERSION_KEY = "versionAsOf"
+
 
   def encodePartitioningColumns(columns: Seq[String]): String = {
     Serialization.write(columns)

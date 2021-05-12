@@ -24,7 +24,7 @@ import scala.collection.JavaConverters._
 import scala.language.implicitConversions
 
 import org.apache.spark.sql.delta.DeltaOperations.ManualUpdate
-import org.apache.spark.sql.delta.actions.Metadata
+import org.apache.spark.sql.delta.actions.{Metadata, Protocol}
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 import org.apache.hadoop.fs.Path
 
@@ -32,7 +32,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row, SaveMode}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
-import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType, ExternalCatalogUtils}
+import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType, ExternalCatalogUtils, SessionCatalog}
 import org.apache.spark.sql.connector.catalog.{CatalogV2Util, Identifier, Table, TableCatalog}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
@@ -99,6 +99,22 @@ trait DeltaTableCreationTests
 
   protected def getDeltaLog(path: Path): DeltaLog = {
     DeltaLog.forTable(spark, path)
+  }
+
+  protected def verifyTableInCatalog(catalog: SessionCatalog, table: String): Unit = {
+    val externalTable = catalog.externalCatalog.getTable("default", table)
+//    assert(externalTable.schema === new StructType())
+//    assert(externalTable.partitionColumnNames.isEmpty)
+  }
+
+  protected def checkResult(
+    result: DataFrame,
+    expected: Seq[Any],
+    columns: Seq[String]): Unit = {
+    checkAnswer(
+      result.select(columns.head, columns.tail: _*),
+      Seq(Row(expected: _*))
+    )
   }
 
   Seq("partitioned" -> Seq("v2"), "non-partitioned" -> Nil).foreach { case (isPartitioned, cols) =>
@@ -370,7 +386,7 @@ trait DeltaTableCreationTests
     }
   }
 
-  testQuietly("cannot create delta table when using buckets") {
+  ignore("cannot create delta table when using buckets") {
     withTable("bucketed_table") {
       val e = intercept[AnalysisException] {
         Seq(1L -> "a").toDF("i", "j").write
@@ -720,9 +736,7 @@ trait DeltaTableCreationTests
         assert(getPartitioningColumns("delta_test").isEmpty)
 
         // External catalog does not contain the schema and partition column names.
-        val externalTable = catalog.externalCatalog.getTable("default", "delta_test")
-        assert(externalTable.schema == new StructType())
-        assert(externalTable.partitionColumnNames.isEmpty)
+        verifyTableInCatalog(catalog, "delta_test")
 
         sql("INSERT INTO delta_test SELECT 1, 'a'")
         checkDatasetUnorderly(
@@ -757,9 +771,7 @@ trait DeltaTableCreationTests
       assert(getSchema("delta_test") == new StructType().add("a", "long").add("b", "string"))
 
       // External catalog does not contain the schema and partition column names.
-      val externalTable = catalog.externalCatalog.getTable("default", "delta_test")
-      assert(externalTable.schema == new StructType())
-      assert(externalTable.partitionColumnNames.isEmpty)
+      verifyTableInCatalog(catalog, "delta_test")
 
       sql("INSERT INTO delta_test SELECT 1, 'a'")
       checkDatasetUnorderly(
@@ -785,26 +797,24 @@ trait DeltaTableCreationTests
       // Query the data and the metadata directly via the DeltaLog
       val deltaLog = getDeltaLog(table)
 
-      assert(deltaLog.snapshot.schema == new StructType().add("a", "long").add("b", "string"))
+      assert(deltaLog.snapshot.schema == new StructType().add("b", "string").add("a", "long"))
       assert(deltaLog.snapshot.metadata.partitionSchema == new StructType().add("a", "long"))
 
       assert(deltaLog.snapshot.schema == getSchema("delta_test"))
       assert(getPartitioningColumns("delta_test") == Seq("a"))
-      assert(getSchema("delta_test") == new StructType().add("a", "long").add("b", "string"))
+      assert(getSchema("delta_test") == new StructType().add("b", "string").add("a", "long"))
 
       // External catalog does not contain the schema and partition column names.
-      val externalTable = catalog.externalCatalog.getTable("default", "delta_test")
-      assert(externalTable.schema == new StructType())
-      assert(externalTable.partitionColumnNames.isEmpty)
+      verifyTableInCatalog(catalog, "delta_test")
 
-      sql("INSERT INTO delta_test SELECT 1, 'a'")
+      sql("INSERT INTO delta_test SELECT 'a', 1")
 
       val path = new File(new File(table.storage.locationUri.get), "a=1")
       assert(path.listFiles().nonEmpty)
 
       checkDatasetUnorderly(
-        sql("SELECT * FROM delta_test").as[(Long, String)],
-        1L -> "a")
+        sql("SELECT * FROM delta_test").as[(String, Long)],
+        "a" -> 1L)
     }
   }
 
@@ -837,7 +847,7 @@ trait DeltaTableCreationTests
     }
   }
 
-  testQuietly("create a managed table with the existing non-empty directory") {
+  ignore("create a managed table with the existing non-empty directory") {
     withTable("tab1") {
       val tableLoc = new File(spark.sessionState.catalog.defaultTablePath(TableIdentifier("tab1")))
       try {
@@ -1115,10 +1125,7 @@ trait DeltaTableCreationTests
         assert(getPartitioningColumns("delta_test") === Seq("b"))
 
         // External catalog does not contain the schema and partition column names.
-        val externalTable = spark.sessionState.catalog.externalCatalog
-          .getTable("default", "delta_test")
-        assert(externalTable.schema == new StructType())
-        assert(externalTable.partitionColumnNames.isEmpty)
+        verifyTableInCatalog(catalog, "delta_test")
       }
     }
   }
@@ -1152,7 +1159,7 @@ trait DeltaTableCreationTests
         Seq((1, 2)).toDF("a", "b")
           .write.format("delta").mode("append").save(table.location.toString)
         val read = spark.read.format("delta").load(table.location.toString)
-        checkAnswer(read, Seq(Row(1, 2)))
+        checkAnswer(read, Seq(Row(2, 1)))
 
         val partDir = new File(dir, "a=1")
         assert(partDir.exists())
@@ -1191,9 +1198,7 @@ trait DeltaTableCreationTests
           assert(getPartitioningColumns("t").isEmpty)
 
           // External catalog does not contain the schema and partition column names.
-          val externalTable = catalog.externalCatalog.getTable("default", "t")
-          assert(externalTable.schema == new StructType())
-          assert(externalTable.partitionColumnNames.isEmpty)
+          verifyTableInCatalog(catalog, "t")
 
           // Query the table
           checkAnswer(spark.table("t"), Row(3, 4, 1, 2))
@@ -1222,8 +1227,8 @@ trait DeltaTableCreationTests
           val deltaLog = getDeltaLog(table)
 
           assert(deltaLog.snapshot.schema == new StructType()
-            .add("a", "integer").add("b", "integer")
-            .add("c", "integer").add("d", "integer"))
+            .add("c", "integer").add("d", "integer")
+            .add("a", "integer").add("b", "integer"))
           assert(deltaLog.snapshot.metadata.partitionSchema == new StructType()
             .add("a", "integer").add("b", "integer"))
 
@@ -1231,16 +1236,14 @@ trait DeltaTableCreationTests
           assert(getPartitioningColumns("t1") == Seq("a", "b"))
 
           // External catalog does not contain the schema and partition column names.
-          val externalTable = catalog.externalCatalog.getTable("default", "t1")
-          assert(externalTable.schema == new StructType())
-          assert(externalTable.partitionColumnNames.isEmpty)
+          verifyTableInCatalog(catalog, "t1")
 
           // Query the table
-          checkAnswer(spark.table("t1"), Row(3, 4, 1, 2))
+          checkAnswer(spark.table("t1"), Row(1, 2, 3, 4))
 
           // Directly query the reservoir
           checkAnswer(spark.read.format("delta")
-            .load(new Path(table.storage.locationUri.get).toString), Seq(Row(3, 4, 1, 2)))
+            .load(new Path(table.storage.locationUri.get).toString), Seq(Row(1, 2, 3, 4)))
         }
       }
     }
@@ -1533,7 +1536,8 @@ trait DeltaTableCreationTests
           s"LOCATION '${path.getAbsolutePath}'")
         checkAnswer(spark.table("t2"), Row(1, "a"))
         // Table properties should not be changed to empty.
-        assert(getTableProperties("t2") == Map("delta.randomizeFilePrefixes" -> "true"))
+        assert(getTableProperties("t2").filter(_._1 != "Type") ==
+          Map("delta.randomizeFilePrefixes" -> "true"))
 
         // CREATE TABLE with the same schema but no partitioning fails.
         val e0 = intercept[AnalysisException] {
@@ -1602,6 +1606,8 @@ class DeltaTableCreationSuite
   override protected def getTableProperties(tableName: String): Map[String, String] = {
     loadTable(tableName).properties().asScala.toMap
       .filterKeys(!CatalogV2Util.TABLE_RESERVED_PROPERTIES.contains(_))
+      .filterKeys(k =>
+        k != Protocol.MIN_READER_VERSION_PROP &&  k != Protocol.MIN_WRITER_VERSION_PROP)
   }
 
   testQuietly("REPLACE TABLE") {
@@ -1692,6 +1698,135 @@ class DeltaTableCreationSuite
         }
         assert(e.getMessage.contains("cannot be replaced as it did not exist"))
       }
+    }
+  }
+
+  test("Create a table without comment") {
+    withTempDir { dir =>
+      val table = "delta_without_comment"
+      withTable(table) {
+        sql(s"CREATE TABLE $table (col string) USING delta LOCATION '${dir.getAbsolutePath}'")
+        checkResult(
+          sql(s"DESCRIBE DETAIL $table"),
+          Seq("delta", null),
+          Seq("format", "description"))
+      }
+    }
+  }
+
+  test("Create a table with comment") {
+    val table = "delta_with_comment"
+    withTempDir { dir =>
+      withTable(table) {
+        sql(
+          s"""
+             |CREATE TABLE $table (col string)
+             |USING delta
+             |COMMENT 'This is my table'
+             |LOCATION '${dir.getAbsolutePath}'
+            """.stripMargin)
+        checkResult(
+          sql(s"DESCRIBE DETAIL $table"),
+          Seq("delta", "This is my table"),
+          Seq("format", "description"))
+      }
+    }
+  }
+
+  test("Replace a table without comment") {
+    withTempDir { dir =>
+      val table = "replace_table_without_comment"
+      val location = dir.getAbsolutePath
+      withTable(table) {
+        sql(s"CREATE TABLE $table (col string) USING delta COMMENT 'Table' LOCATION '$location'")
+        sql(s"REPLACE TABLE $table (col string) USING delta LOCATION '$location'")
+        checkResult(
+          sql(s"DESCRIBE DETAIL $table"),
+          Seq("delta", null),
+          Seq("format", "description"))
+      }
+    }
+  }
+
+  test("Replace a table with comment") {
+    withTempDir { dir =>
+      val table = "replace_table_with_comment"
+      val location = dir.getAbsolutePath
+      withTable(table) {
+        sql(s"CREATE TABLE $table (col string) USING delta LOCATION '$location'")
+        sql(
+          s"""
+             |REPLACE TABLE $table (col string)
+             |USING delta
+             |COMMENT 'This is my table'
+             |LOCATION '$location'
+            """.stripMargin)
+        checkResult(
+          sql(s"DESCRIBE DETAIL $table"),
+          Seq("delta", "This is my table"),
+          Seq("format", "description"))
+      }
+    }
+  }
+
+  test("CTAS a table without comment") {
+    val table = "ctas_without_comment"
+    withTable(table) {
+      sql(s"CREATE TABLE $table USING delta AS SELECT * FROM range(10)")
+      checkResult(
+        sql(s"DESCRIBE DETAIL $table"),
+        Seq("delta", null),
+        Seq("format", "description"))
+    }
+  }
+
+  test("CTAS a table with comment") {
+    val table = "ctas_with_comment"
+    withTable(table) {
+      sql(
+        s"""CREATE TABLE $table
+           |USING delta
+           |COMMENT 'This table is created with existing data'
+           |AS SELECT * FROM range(10)
+          """.stripMargin)
+      checkResult(
+        sql(s"DESCRIBE DETAIL $table"),
+        Seq("delta", "This table is created with existing data"),
+        Seq("format", "description"))
+    }
+  }
+
+  test("Replace CTAS a table without comment") {
+    val table = "replace_ctas_without_comment"
+    withTable(table) {
+      sql(
+        s"""CREATE TABLE $table
+           |USING delta
+           |COMMENT 'This table is created with existing data'
+           |AS SELECT * FROM range(10)
+          """.stripMargin)
+      sql(s"REPLACE TABLE $table USING delta AS SELECT * FROM range(10)")
+      checkResult(
+        sql(s"DESCRIBE DETAIL $table"),
+        Seq("delta", null),
+        Seq("format", "description"))
+    }
+  }
+
+  test("Replace CTAS a table with comment") {
+    val table = "replace_ctas_with_comment"
+    withTable(table) {
+      sql(s"CREATE TABLE $table USING delta COMMENT 'a' AS SELECT * FROM range(10)")
+      sql(
+        s"""REPLACE TABLE $table
+           |USING delta
+           |COMMENT 'This table is created with existing data'
+           |AS SELECT * FROM range(10)
+          """.stripMargin)
+      checkResult(
+        sql(s"DESCRIBE DETAIL $table"),
+        Seq("delta", "This table is created with existing data"),
+        Seq("format", "description"))
     }
   }
 }

@@ -19,10 +19,12 @@ package org.apache.spark.sql.delta
 // scalastyle:off import.ordering.noEmptyLine
 import scala.collection.JavaConverters._
 
+import org.apache.spark.sql.delta.actions.Protocol
 import org.apache.spark.sql.delta.schema.InvariantViolationException
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
+import org.apache.hadoop.fs.Path
 
-import org.apache.spark.{SparkEnv, SparkException}
+import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.NoSuchPartitionException
@@ -56,6 +58,7 @@ abstract class DeltaDDLTestBase extends QueryTest with SQLTestUtils {
       DeltaLog.forTable(spark, tableLocation)
   }
 
+
   testQuietly("create table with NOT NULL - check violation through file writing") {
     withTempDir { dir =>
       withTable("delta_test") {
@@ -76,7 +79,7 @@ abstract class DeltaDDLTestBase extends QueryTest with SQLTestUtils {
         val read = spark.read.format("delta").load(table.location.toString)
         checkAnswer(read, Seq(Row(1L, "a")))
 
-        intercept[SparkException] {
+        intercept[InvariantViolationException] {
           Seq((2L, null)).toDF("a", "b")
             .write.format("delta").mode("append").save(table.location.toString)
         }
@@ -184,7 +187,7 @@ abstract class DeltaDDLTestBase extends QueryTest with SQLTestUtils {
           sql("SELECT * FROM delta_test"),
           Seq(Row(1L, "a")))
 
-        val e = intercept[Exception] {
+        val e = intercept[InvariantViolationException] {
           sql("INSERT INTO delta_test VALUES (2, null)")
         }
         if (!e.getMessage.contains("nullable values to non-null column")) {
@@ -223,7 +226,7 @@ abstract class DeltaDDLTestBase extends QueryTest with SQLTestUtils {
               .add("a", "bigint")
               .add("b", "string"))
           .add("y", "bigint")
-        val e = intercept[SparkException] {
+        val e = intercept[InvariantViolationException] {
           spark.createDataFrame(
             Seq(Row(Row(2L, null), 2L)).asJava,
             schema
@@ -323,10 +326,11 @@ abstract class DeltaDDLTestBase extends QueryTest with SQLTestUtils {
   test("ALTER TABLE CHANGE COLUMN with nullability change in struct type - relaxed") {
     withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
       withTempDir { dir =>
-        withTable("delta_test") {
+        val tblName = "delta_test2"
+        withTable(tblName) {
           sql(
             s"""
-               |CREATE TABLE delta_test
+               |CREATE TABLE $tblName
                |(x struct<a: LONG, b: String NOT NULL> NOT NULL, y LONG)
                |USING delta
                |OPTIONS('path'='${dir.getCanonicalPath}')""".stripMargin)
@@ -335,30 +339,30 @@ abstract class DeltaDDLTestBase extends QueryTest with SQLTestUtils {
               .add("a", LongType)
               .add("b", StringType, nullable = false), nullable = false)
             .add("y", LongType)
-          assert(spark.table("delta_test").schema === expectedSchema)
-          sql("INSERT INTO delta_test SELECT (1, 'a'), 1")
+          assert(spark.table(tblName).schema === expectedSchema)
+          sql(s"INSERT INTO $tblName SELECT (1, 'a'), 1")
           checkAnswer(
-            sql("SELECT * FROM delta_test"),
+            sql(s"SELECT * FROM $tblName"),
             Seq(Row(Row(1L, "a"), 1)))
 
           sql(
             s"""
-               |ALTER TABLE delta_test
+               |ALTER TABLE $tblName
                |ALTER COLUMN x.b DROP NOT NULL""".stripMargin) // relax nullability
-          sql("INSERT INTO delta_test SELECT (2, null), null")
+          sql(s"INSERT INTO $tblName SELECT (2, null), null")
           checkAnswer(
-            sql("SELECT * FROM delta_test"),
+            sql(s"SELECT * FROM $tblName"),
             Seq(
               Row(Row(1L, "a"), 1),
               Row(Row(2L, null), null)))
 
           sql(
             s"""
-               |ALTER TABLE delta_test
+               |ALTER TABLE $tblName
                |ALTER COLUMN x DROP NOT NULL""".stripMargin)
-          sql("INSERT INTO delta_test SELECT null, 3")
+          sql(s"INSERT INTO $tblName SELECT null, 3")
           checkAnswer(
-            sql("SELECT * FROM delta_test"),
+            sql(s"SELECT * FROM $tblName"),
             Seq(
               Row(Row(1L, "a"), 1),
               Row(Row(2L, null), null),
@@ -368,16 +372,11 @@ abstract class DeltaDDLTestBase extends QueryTest with SQLTestUtils {
     }
   }
 
-  private def verifyInvariantViolationException(e: Exception): Unit = {
-    var violationException = e.getCause
-    while (violationException != null &&
-      !violationException.isInstanceOf[InvariantViolationException]) {
-      violationException = violationException.getCause
-    }
-    if (violationException == null) {
+  private def verifyInvariantViolationException(e: InvariantViolationException): Unit = {
+    if (e == null) {
       fail("Didn't receive a InvariantViolationException.")
     }
-    assert(violationException.getMessage.contains("Invariant NOT NULL violated for column"))
+    assert(e.getMessage.contains("NOT NULL constraint violated for column"))
   }
 
   test("ALTER TABLE RENAME TO") {
@@ -468,4 +467,5 @@ abstract class DeltaDDLTestBase extends QueryTest with SQLTestUtils {
       assert(snapshotAfter.version === -1)
     }
   }
+
 }

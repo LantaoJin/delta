@@ -17,7 +17,7 @@
 package org.apache.spark.sql.delta.commands
 
 import org.apache.spark.sql.delta.{DeltaLog, DeltaOperations, DeltaOptions, DeltaTableUtils, OptimisticTransaction}
-import org.apache.spark.sql.delta.actions.{Action, AddFile}
+import org.apache.spark.sql.delta.actions.{Action, AddFile, FileAction}
 import org.apache.spark.sql.delta.files.{TahoeBatchFileIndex, TahoeFileIndex}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkContext
@@ -110,8 +110,12 @@ case class UpdateCommand(
       val operationTimestamp = System.currentTimeMillis()
       val deleteActions = candidateFiles.map(_.removeWithTimestamp(operationTimestamp))
 
-      val rewrittenFiles = rewriteFiles(sparkSession, txn, tahoeFileIndex.path,
-        filesToRewrite, nameToAddFile, updateCondition)
+      val rewrittenFiles =
+        withStatusCode(
+          "DELTA", s"Rewriting ${filesToRewrite.size} files for UPDATE operation (metadata)") {
+          rewriteFiles(sparkSession, txn, tahoeFileIndex.path,
+            filesToRewrite, nameToAddFile, updateCondition)
+        }
 
       numRewrittenFiles = rewrittenFiles.size
       rewriteTimeMs = (System.nanoTime() - startTime) / 1000 / 1000 - scanTimeMs
@@ -201,7 +205,7 @@ case class UpdateCommand(
       rootPath: Path,
       inputLeafFiles: Seq[String],
       nameToAddFileMap: Map[String, AddFile],
-      condition: Expression): Seq[AddFile] = {
+      condition: Expression): Seq[FileAction] = {
     // Containing the map from the relative file path to AddFile
     val baseRelation = buildBaseRelation(
       spark, txn, "update", rootPath, inputLeafFiles, nameToAddFileMap)

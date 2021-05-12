@@ -19,10 +19,12 @@ package org.apache.spark.sql.delta
 import java.io.FileNotFoundException
 import java.util.UUID
 
+import scala.collection.mutable
 import scala.util.control.NonFatal
 
-import org.apache.spark.sql.delta.actions.{Action, Metadata, SingleAction}
+import org.apache.spark.sql.delta.actions.{Metadata, SingleAction}
 import org.apache.spark.sql.delta.metering.DeltaLogging
+import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.storage.LogStore
 import org.apache.spark.sql.delta.util.DeltaFileOperations
 import org.apache.spark.sql.delta.util.FileNames._
@@ -33,9 +35,11 @@ import org.apache.hadoop.hdfs.DistributedFileSystem
 import org.apache.hadoop.mapred.{JobConf, TaskAttemptContextImpl, TaskAttemptID}
 import org.apache.hadoop.mapreduce.{Job, TaskType}
 
-import org.apache.spark.internal.Logging
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{Column, DataFrame, SparkSession}
+import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.functions.{col, struct, when}
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
 
 /**
@@ -121,7 +125,11 @@ trait Checkpoints extends DeltaLogging {
   /** Creates a checkpoint at the current log version. */
   def checkpoint(
       overwrite: Boolean = false): Unit = recordDeltaOperation(this, "delta.checkpoint") {
-    val checkpointMetaData = checkpoint(snapshot, overwrite)
+    val snapshotToCheckpoint = snapshot
+    if (snapshotToCheckpoint.version < 0) {
+      throw DeltaErrors.checkpointNonExistTable(dataPath)
+    }
+    val checkpointMetaData = checkpoint(snapshotToCheckpoint, overwrite)
     val json = JsonUtils.toJson(checkpointMetaData)
     store.write(LAST_CHECKPOINT, Iterator(json), overwrite = true)
 
@@ -222,13 +230,6 @@ object Checkpoints extends DeltaLogging {
       overwrite: Boolean): CheckpointMetaData = {
     import SingleAction._
 
-    val (factory, serConf) = {
-      val format = new ParquetFileFormat()
-      val job = Job.getInstance()
-      (format.prepareWrite(spark, job, Map.empty, Action.logSchema),
-        new SerializableConfiguration(job.getConfiguration))
-    }
-
     // The writing of checkpoints doesn't go through log store, so we need to check with the
     // log store and decide whether to use rename.
     val useRename = deltaLog.store.isPartialWriteVisible(deltaLog.logPath)
@@ -237,14 +238,26 @@ object Checkpoints extends DeltaLogging {
     val numOfFiles = spark.sparkContext.longAccumulator("numOfFiles")
     // Use the string in the closure as Path is not Serializable.
     val path = checkpointFileSingular(snapshot.path, snapshot.version).toString
-    val writtenPath = snapshot.state
+    val base = snapshot.state
       .repartition(1)
       .map { action =>
         if (action.add != null) {
           numOfFiles.add(1)
         }
         action
-      }
+      }.drop("commitInfo")
+
+    val chk = buildCheckpoint(base, snapshot)
+    val schema = chk.schema.asNullable
+
+    val (factory, serConf) = {
+      val format = new ParquetFileFormat()
+      val job = Job.getInstance()
+      (format.prepareWrite(spark, job, Map.empty, schema),
+        new SerializableConfiguration(job.getConfiguration))
+    }
+
+    val writtenPath = chk
       .queryExecution // This is a hack to get spark to write directly to a file.
       .executedPlan
       .execute()
@@ -264,7 +277,7 @@ object Checkpoints extends DeltaLogging {
         try {
           val writer = factory.newInstance(
             writtenPath,
-            Action.logSchema,
+            schema,
             new TaskAttemptContextImpl(
               new JobConf(serConf.value),
               new TaskAttemptID("", 0, TaskType.REDUCE, 0, 0)))
@@ -333,5 +346,58 @@ object Checkpoints extends DeltaLogging {
       logWarning(DeltaErrors.EmptyCheckpointErrorMessage)
     }
     CheckpointMetaData(snapshot.version, checkpointSize.value, None)
+  }
+
+  /**
+   * Modify the contents of the add column based on the table properties
+   */
+  private[delta] def buildCheckpoint(state: DataFrame, snapshot: Snapshot): DataFrame = {
+    val additionalCols = new mutable.ArrayBuffer[Column]()
+    if (DeltaConfigs.CHECKPOINT_WRITE_STATS_AS_JSON.fromMetaData(snapshot.metadata)) {
+      additionalCols += col("add.stats").as("stats")
+    }
+    val sessionConf = state.sparkSession.sessionState.conf
+    // We provide fine grained control using the session conf for now, until users explicitly
+    // opt in our out of the struct conf.
+    val includeStructColumns = DeltaConfigs.CHECKPOINT_WRITE_STATS_AS_STRUCT
+      .fromMetaData(snapshot.metadata)
+      .getOrElse(sessionConf.getConf(DeltaSQLConf.DELTA_CHECKPOINT_V2_ENABLED))
+    if (includeStructColumns) {
+      additionalCols ++= CheckpointV2.extractPartitionValues(snapshot.metadata.partitionSchema)
+    }
+    state.withColumn("add",
+      when(col("add").isNotNull, struct(Seq(
+        col("add.path"),
+        col("add.partitionValues"),
+        col("add.size"),
+        col("add.modificationTime"),
+        col("add.dataChange"), // actually not really useful here
+        col("add.tags")) ++
+        additionalCols: _*
+      ))
+    )
+  }
+}
+
+/**
+ * Utility methods for generating and using V2 checkpoints. V2 checkpoints have partition values and
+ * statistics as struct fields of the `add` column.
+ */
+object CheckpointV2 {
+  val PARTITIONS_COL_NAME = "partitionValues_parsed"
+  val STATS_COL_NAME = "stats_parsed"
+
+  /**
+   * Creates a nested struct column of partition values that extract the partition values
+   * from the original MapType.
+   */
+  def extractPartitionValues(partitionSchema: StructType): Option[Column] = {
+    val partitionValues = partitionSchema.map { field =>
+      val colName = field.name
+      new Column(UnresolvedAttribute("add" :: "partitionValues" :: colName :: Nil).name)
+        .cast(field.dataType)
+        .as(colName)
+    }
+    if (partitionValues.isEmpty) None else Some(struct(partitionValues: _*).as(PARTITIONS_COL_NAME))
   }
 }

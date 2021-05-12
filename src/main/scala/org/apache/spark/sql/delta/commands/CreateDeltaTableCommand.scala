@@ -16,10 +16,13 @@
 
 package org.apache.spark.sql.delta.commands
 
+// scalastyle:off import.ordering.noEmptyLine
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.Metadata
+import org.apache.spark.sql.delta.catalog.DeltaTableV2
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.schema.SchemaUtils
+import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.hadoop.fs.{FileSystem, Path}
 
 import org.apache.spark.sql._
@@ -103,13 +106,15 @@ case class CreateDeltaTableCommand(
 
     val isManagedTable = tableWithLocation.tableType == CatalogTableType.MANAGED
     val tableLocation = new Path(tableWithLocation.location)
+    val partitionColumnNames = table.partitionColumnNames
+    val orderedSchema = getOrderedSchema(tableWithLocation.schema, partitionColumnNames)
+
     val fs = tableLocation.getFileSystem(sparkSession.sessionState.newHadoopConf())
     val deltaLog = DeltaLog.forTable(sparkSession, tableLocation)
     val options =
       new DeltaOptions(table.storage.properties, sparkSession.sessionState.conf, writeMetrics)
     recordDeltaOperation(deltaLog, "delta.ddl.createTable") {
       val txn = deltaLog.startTransaction()
-
       if (query.isDefined) {
         // If the mode is Ignore or ErrorIfExists, the table must not exist, or we would return
         // earlier. And the data should not exist either, to match the behavior of
@@ -124,25 +129,49 @@ case class CreateDeltaTableCommand(
         }
         // We are either appending/overwriting with saveAsTable or creating a new table with CTAS or
         // we are creating a table as part of a RunnableCommand
-        if (query.get.isInstanceOf[RunnableCommand]) {
-          query.get.asInstanceOf[RunnableCommand].run(sparkSession)
-        } else {
-          val data = Dataset.ofRows(sparkSession, query.get)
+        query.get match {
+          case writer: WriteIntoDelta =>
+            // In the V2 Writer, methods like "replace" and "createOrReplace" implicitly mean that
+            // the metadata should be changed. This wasn't the behavior for DataFrameWriterV1.
+            if (!isV1Writer) {
+              val orderedSchema = getOrderedSchema(writer.data.schema, partitionColumnNames)
+              replaceMetadataIfNecessary(
+                txn, tableWithLocation, options, orderedSchema.asNullable)
+            }
+            val actions = withStatusCode("DELTA", "Writing for CTAS") {
+              writer.write(txn, sparkSession)
+            }
+            val op = getOperation(txn.metadata, isManagedTable, Some(options))
+            txn.commit(actions, op)
+          case cmd: RunnableCommand =>
+            cmd.run(sparkSession)
+          case other =>
+            // When using V1 APIs, the `other` plan is not yet optimized, therefore, it is safe
+            // to once again go through analysis
+            val data = Dataset.ofRows(sparkSession, other)
 
-          if (!isV1Writer) {
-            replaceMetadataIfNecessary(txn, tableWithLocation, options, query.get.schema.asNullable)
-          }
-          val actions = WriteIntoDelta(
-            deltaLog = deltaLog,
-            mode = mode,
-            options,
-            partitionColumns = table.partitionColumnNames,
-            bucket = table.bucketSpec,
-            configuration = table.properties,
-            data = data).write(txn, sparkSession)
+            // In the V2 Writer, methods like "replace" and "createOrReplace" implicitly mean that
+            // the metadata should be changed. This wasn't the behavior for DataFrameWriterV1.
+            if (!isV1Writer) {
+              val orderedSchema = getOrderedSchema(data.schema, partitionColumnNames)
+              replaceMetadataIfNecessary(
+                txn, tableWithLocation, options, orderedSchema.asNullable)
+            }
+            val writer =
+              WriteIntoDelta(
+                deltaLog = deltaLog,
+                mode = mode,
+                options,
+                partitionColumns = table.partitionColumnNames,
+                bucket = table.bucketSpec,
+                configuration = table.properties + ("comment" -> table.comment.orNull),
+                data = data)
+            val actions = withStatusCode("DELTA", "Writing for CTAS") {
+              writer.write(txn, sparkSession)
+            }
 
-          val op = getOperation(txn.metadata, isManagedTable, Some(options))
-          txn.commit(actions, op)
+            val op = getOperation(txn.metadata, isManagedTable, Some(options))
+            txn.commit(actions, op)
         }
       } else {
         def createTransactionLogOrVerify(): Unit = {
@@ -162,7 +191,7 @@ case class CreateDeltaTableCommand(
             makePathEmpty(sparkSession, tableWithLocation)
             // This is a user provided schema.
             // Doesn't come from a query, Follow nullability invariants.
-            val newMetadata = getProvidedMetadata(table, table.schema.json)
+            val newMetadata = getProvidedMetadata(table, orderedSchema.json)
             txn.updateMetadataForNewTable(newMetadata)
 
             val op = getOperation(newMetadata, isManagedTable, None)
@@ -194,32 +223,37 @@ case class CreateDeltaTableCommand(
             // Truncate the table
             val operationTimestamp = System.currentTimeMillis()
             val removes = txn.filterFiles().map(_.removeWithTimestamp(operationTimestamp))
-
             val op = getOperation(txn.metadata, isManagedTable, None)
             txn.commit(removes, op)
         }
       }
 
-      val dataSchema = StructType(tableWithLocation.schema.filterNot(f =>
-          tableWithLocation.partitionColumnNames.exists(p => conf.resolver(p, f.name))))
-      val partitionSchema = PartitionUtils.partitionColumnsSchema(tableWithLocation.schema,
-        tableWithLocation.partitionColumnNames, conf.caseSensitiveAnalysis)
-      val mergedSchema = PartitionUtils.mergeDataAndPartitionSchema(dataSchema, partitionSchema,
-        conf.caseSensitiveAnalysis)._1
       // We would have failed earlier on if we couldn't ignore the existence of the table
       // In addition, we just might using saveAsTable to append to the table, so ignore the creation
       // if it already exists.
       // Note that someone may have dropped and recreated the table in a separate location in the
       // meantime... Unfortunately we can't do anything there at the moment, because Hive sucks.
       val tableWithDefaultOptions = tableWithLocation.copy(
-        schema = mergedSchema, // schema order may be changed
+        schema = orderedSchema, // schema order may be changed
 //        partitionColumnNames = Nil, // store partitionColumnNames to HMS to keep compatibility
         tracksPartitionsInCatalog = false) // delta table won't use catalog any more
       logInfo(s"Table is path-based table: $tableByPath. Update catalog with mode: $operation")
-      updateCatalog(sparkSession, tableWithDefaultOptions, fs)
+      updateCatalog(sparkSession, tableWithDefaultOptions, deltaLog.snapshot, fs)
 
       Nil
     }
+  }
+
+  private def getOrderedSchema(
+      originSchema: StructType,
+      partitionColumnNames: Seq[String]): StructType = {
+    val dataSchema = StructType(originSchema.filterNot(f =>
+      partitionColumnNames.exists(p => conf.resolver(p, f.name))))
+    val partitionSchema = PartitionUtils.partitionColumnsSchema(originSchema,
+      partitionColumnNames, conf.caseSensitiveAnalysis)
+    val orderedSchema = PartitionUtils.mergeDataAndPartitionSchema(dataSchema, partitionSchema,
+      conf.caseSensitiveAnalysis)._1
+    orderedSchema
   }
 
   private def allowCreateTableOnExistingData(spark: SparkSession): Boolean = {
@@ -350,7 +384,10 @@ case class CreateDeltaTableCommand(
    * code paths.
    */
   private def updateCatalog(
-      spark: SparkSession, table: CatalogTable, fs: FileSystem): Unit = operation match {
+      spark: SparkSession,
+      table: CatalogTable,
+      snapshot: Snapshot,
+      fs: FileSystem): Unit = operation match {
     case _ if tableByPath => // do nothing with the metastore if this is by path
     case TableCreationModes.Create =>
       if (DDLUtils.isTemporaryTable(table)) {
@@ -389,6 +426,15 @@ case class CreateDeltaTableCommand(
           ignoreIfExists = false,
           validateLocation = false)
       }
+  }
+
+  /** Clean up the information we pass on to store in the catalog. */
+  private def cleanupTableDefinition(table: CatalogTable, snapshot: Snapshot): CatalogTable = {
+    table.copy(
+      schema = new StructType(),
+      properties = Map.empty,
+      partitionColumnNames = Nil,
+      tracksPartitionsInCatalog = true)
   }
 
   /**

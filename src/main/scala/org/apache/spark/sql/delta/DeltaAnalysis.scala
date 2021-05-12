@@ -16,29 +16,42 @@
 
 package org.apache.spark.sql.delta
 
+import scala.collection.JavaConverters._
+
 // scalastyle:off import.ordering.noEmptyLine
-import org.apache.spark.sql.{AnalysisException, CompactTableBase, SparkSession}
-import org.apache.spark.sql.catalyst.analysis.{GetColumnByOrdinal, UnresolvedAttribute, UnresolvedExtractValue, caseInsensitiveResolution, withPosition}
-import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTablePartition, CatalogUtils}
+
+import org.apache.spark.sql.delta.DeltaErrors.{TemporallyUnstableInputException, TimestampEarlierThanCommitRetentionException}
+import org.apache.spark.sql.delta.catalog.DeltaTableV2
+import org.apache.spark.sql.delta.commands.ConvertBackCommand
+import org.apache.spark.sql.delta.constraints.{AddConstraint, DropConstraint}
+import org.apache.spark.sql.delta.files.TahoeLogFileIndex
+import org.apache.spark.sql.delta.metering.DeltaLogging
+import org.apache.spark.sql.delta.schema.SchemaUtils
+import org.apache.spark.sql.delta.sources.DeltaDataSource
+import org.apache.spark.sql.delta.util.AnalysisHelper
+import org.apache.hadoop.fs.Path
+
+import org.apache.spark.sql.{AnalysisException, CompactTableBase, SaveMode, SparkSession}
+import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.analysis.{CannotReplaceMissingTableException, EliminateSubqueryAliases, GetColumnByOrdinal, UnresolvedAttribute, UnresolvedExtractValue, UnresolvedRelation, UnresolvedTableValuedFunction, caseInsensitiveResolution, withPosition}
+import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTablePartition, CatalogTableType, CatalogUtils}
 import org.apache.spark.sql.catalyst.expressions.SubExprUtils.{containsOuter, stripOuterReferences}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
 import org.apache.spark.sql.catalyst.optimizer.BooleanSimplification
 import org.apache.spark.sql.catalyst.plans.LeftAnti
+import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.toPrettySQL
-import org.apache.spark.sql.delta.catalog.DeltaTableV2
-import org.apache.spark.sql.delta.commands.ConvertBackCommand
-import org.apache.spark.sql.delta.files.TahoeLogFileIndex
-import org.apache.spark.sql.delta.metering.DeltaLogging
-import org.apache.spark.sql.delta.schema.SchemaUtils
-import org.apache.spark.sql.delta.util.AnalysisHelper
+import org.apache.spark.sql.connector.catalog.{CatalogV2Util, Identifier}
+import org.apache.spark.sql.connector.catalog.CatalogV2Implicits._
 import org.apache.spark.sql.execution.command.{CompactTableCommand, DDLUtils}
 import org.apache.spark.sql.execution.datasources.{DataSource, LogicalRelation}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, StructField, StructType}
+import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 /**
  * Analysis rules for Delta. Currently, these rules enable schema enforcement / evolution with
@@ -49,6 +62,8 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
     with ConstraintHelper with CompactTableBase with DeltaLogging {
 
   private def resolver = session.sessionState.conf.resolver
+
+  import session.sessionState.analyzer.SessionCatalogAndIdentifier
 
   type CastFunction = (Expression, DataType) => Expression
 
@@ -71,28 +86,27 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
       convert(session, plan, parquetTable, partitionSpec, targetFileNum)
 
     // INSERT INTO by ordinal
-    case a @ AppendData(DataSourceV2Relation(d: DeltaTableV2, _, _, _, _), query, _, false)
-      if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema()) =>
-      val projection = normalizeQueryColumns(query, d)
-      if (projection != query) {
-        a.copy(query = projection)
+    case a @ AppendDelta(r, d) if needsSchemaAdjustment(d.name(), a.query, r.schema) =>
+      val projection = resolveQueryColumns(a.query, r.output, d.name())
+      if (projection != a.query) {
+        val cleanedTable = r.copy(output = r.output.map(CharVarcharUtils.cleanAttrMetadata))
+        a.copy(query = projection, table = cleanedTable)
       } else {
         a
       }
 
     // INSERT OVERWRITE by ordinal
-    case o @ OverwriteByExpression(
-    DataSourceV2Relation(d: DeltaTableV2, _, _, _, _), deleteExpr, query, _, false)
-      if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema()) =>
-      val projection = normalizeQueryColumns(query, d)
-      if (projection != query) {
-        val aliases = AttributeMap(query.output.zip(projection.output).collect {
+    case o @ OverwriteDelta(r, d) if needsSchemaAdjustment(d.name(), o.query, r.schema) =>
+      val projection = resolveQueryColumns(o.query, r.output, d.name())
+      if (projection != o.query) {
+        val aliases = AttributeMap(o.query.output.zip(projection.output).collect {
           case (l: AttributeReference, r: AttributeReference) if !l.sameRef(r) => (l, r)
         })
-        val newDeleteExpr = deleteExpr.transformUp {
+        val newDeleteExpr = o.deleteExpr.transformUp {
           case a: AttributeReference => aliases.getOrElse(a, a)
         }
-        o.copy(deleteExpr = newDeleteExpr, query = projection)
+        val cleanedTable = r.copy(output = r.output.map(CharVarcharUtils.cleanAttrMetadata))
+        o.copy(deleteExpr = newDeleteExpr, query = projection, table = cleanedTable)
       } else {
         o
       }
@@ -106,8 +120,8 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
 
 
     // This rule falls back to V1 nodes, since we don't have a V2 reader for Delta right now
-    case dsv2 @ DataSourceV2Relation(d: DeltaTableV2, _, _, _, _) =>
-      DeltaRelation.fromV2Relation(d, dsv2)
+    case dsv2 @ DataSourceV2Relation(d: DeltaTableV2, _, _, _, options) =>
+      DeltaRelation.fromV2Relation(d, dsv2, options)
 
     // DML - TODO: Remove these Delta-specific DML logical plans and use Spark's plans directly
 
@@ -273,6 +287,22 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
 
       deltaMergeResolved
 
+    case AlterTableAddConstraintStatement(
+          original @ SessionCatalogAndIdentifier(catalog, ident), constraintName, expr) =>
+      CatalogV2Util.createAlterTable(
+        original,
+        catalog,
+        ident.namespace() :+ ident.name(),
+        Seq(AddConstraint(constraintName, expr)))
+
+    case AlterTableDropConstraintStatement(
+        original @ SessionCatalogAndIdentifier(catalog, ident), constraintName) =>
+      CatalogV2Util.createAlterTable(
+        original,
+        catalog,
+        ident.namespace() :+ ident.name(),
+        Seq(DropConstraint(constraintName)))
+
   }
 
   override def compact(
@@ -286,9 +316,11 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
   /**
    * Performs the schema adjustment by adding UpCasts (which are safe) and Aliases so that we
    * can check if the by-ordinal schema of the insert query matches our Delta table.
+   * The schema adjustment also include string length check if it's written into a char/varchar
+   * type column/field.
    */
-  private def normalizeQueryColumns(query: LogicalPlan, target: DeltaTableV2): LogicalPlan = {
-    val targetAttrs = target.schema()
+  private def resolveQueryColumns(
+      query: LogicalPlan, targetAttrs: Seq[Attribute], tblName: String): LogicalPlan = {
     // always add a Cast. it will be removed in the optimizer if it is unnecessary.
     val project = query.output.zipWithIndex.map { case (attr, i) =>
       if (i < targetAttrs.length) {
@@ -297,11 +329,12 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
           case (s, t) if s == t =>
             attr
           case (s: StructType, t: StructType) if s != t =>
-            addCastsToStructs(target.name(), attr, s, t)
+            addCastsToStructs(tblName, attr, s, t)
           case _ =>
             getCastFunction(attr, targetAttr.dataType)
         }
-        Alias(expr, targetAttr.name)(explicitMetadata = Option(targetAttr.metadata))
+        val strLenChecked = CharVarcharUtils.stringLengthCheck(expr, targetAttr)
+        Alias(strLenChecked, targetAttr.name)(explicitMetadata = Option(targetAttr.metadata))
       } else {
         attr
       }
@@ -325,8 +358,17 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
     // Now we should try our best to match everything that already exists, and leave the rest
     // for schema evolution to WriteIntoDelta
     val existingSchemaOutput = output.take(schema.length)
+    val rawSchema = getRawSchema(schema)
     existingSchemaOutput.map(_.name) != schema.map(_.name) ||
-      !SchemaUtils.isReadCompatible(schema.asNullable, existingSchemaOutput.toStructType)
+      !SchemaUtils.isReadCompatible(rawSchema.asNullable, existingSchemaOutput.toStructType)
+  }
+
+  private def getRawSchema(schema: StructType): StructType = {
+    StructType(schema.map { field =>
+      CharVarcharUtils.getRawType(field.metadata).map {
+        rawType => field.copy(dataType = rawType)
+      }.getOrElse(field)
+    })
   }
 
   // Get cast operation for the level of strictness in the schema a user asked for
@@ -356,7 +398,7 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
       case (StructField(name, nested: StructType, _, metadata), i) if i < target.length =>
         target(i).dataType match {
           case t: StructType =>
-            val subField = Alias(GetStructField(parent, i, Option(name)), name)(
+            val subField = Alias(GetStructField(parent, i, Option(name)), target(i).name)(
               explicitMetadata = Option(metadata))
             addCastsToStructs(tableName, subField, nested, t)
           case o =>
@@ -886,14 +928,47 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
 /** Matchers for dealing with a Delta table. */
 object DeltaRelation {
   def unapply(plan: LogicalPlan): Option[LogicalRelation] = plan match {
-    case dsv2 @ DataSourceV2Relation(d: DeltaTableV2, _, _, _, _) => Some(fromV2Relation(d, dsv2))
+    case dsv2 @ DataSourceV2Relation(d: DeltaTableV2, _, _, _, options) =>
+      Some(fromV2Relation(d, dsv2, options))
     case lr @ DeltaTable(_) => Some(lr)
     case _ => None
   }
 
-  def fromV2Relation(d: DeltaTableV2, v2Relation: DataSourceV2Relation): LogicalRelation = {
-    val relation = d.toBaseRelation
-    LogicalRelation(relation, v2Relation.output, d.catalogTable, isStreaming = false)
+  def fromV2Relation(
+      d: DeltaTableV2,
+      v2Relation: DataSourceV2Relation,
+      options: CaseInsensitiveStringMap): LogicalRelation = {
+    val relation = d.withOptions(options.asScala.toMap).toBaseRelation
+    var output = v2Relation.output
+
+    LogicalRelation(relation, output, d.catalogTable, isStreaming = false)
   }
 }
 
+object AppendDelta {
+  def unapply(a: AppendData): Option[(DataSourceV2Relation, DeltaTableV2)] = {
+    if (!a.isByName && a.query.resolved) {
+      a.table match {
+        case r: DataSourceV2Relation if r.table.isInstanceOf[DeltaTableV2] =>
+          Some((r, r.table.asInstanceOf[DeltaTableV2]))
+        case _ => None
+      }
+    } else {
+      None
+    }
+  }
+}
+
+object OverwriteDelta {
+  def unapply(o: OverwriteByExpression): Option[(DataSourceV2Relation, DeltaTableV2)] = {
+    if (!o.isByName && o.query.resolved) {
+      o.table match {
+        case r: DataSourceV2Relation if r.table.isInstanceOf[DeltaTableV2] =>
+          Some((r, r.table.asInstanceOf[DeltaTableV2]))
+        case _ => None
+      }
+    } else {
+      None
+    }
+  }
+}

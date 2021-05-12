@@ -31,7 +31,7 @@ import org.apache.spark.sql.delta.commands.WriteIntoDelta
 import org.apache.spark.sql.delta.files.{TahoeBatchFileIndex, TahoeLogFileIndex}
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.schema.SchemaUtils
-import org.apache.spark.sql.delta.sources.DeltaSQLConf
+import org.apache.spark.sql.delta.sources.{DeltaDataSource, DeltaSQLConf}
 import org.apache.spark.sql.delta.storage.LogStoreProvider
 import com.google.common.cache.{CacheBuilder, RemovalListener, RemovalNotification}
 import org.apache.hadoop.fs.Path
@@ -41,13 +41,14 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Expression, Literal}
-import org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper
+import org.apache.spark.sql.catalyst.plans.logical.{AnalysisHelper, LocalRelation}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.{BaseRelation, InsertableRelation}
 import org.apache.spark.sql.types.{StructField, StructType}
-import org.apache.spark.util.{Clock, SystemClock}
+import org.apache.spark.sql.util.CaseInsensitiveStringMap
+import org.apache.spark.util.{Clock, SystemClock, ThreadUtils}
 
 /**
  * Used to query the current state of the log as well as modify it by adding
@@ -183,8 +184,7 @@ class DeltaLog private(
    */
   def withNewTransaction[T](thunk: OptimisticTransaction => T): T = {
     try {
-      update()
-      val txn = new OptimisticTransaction(this)
+      val txn = startTransaction()
       OptimisticTransaction.setActive(txn)
       thunk(txn)
     } finally {
@@ -199,11 +199,8 @@ class DeltaLog private(
    */
   def upgradeProtocol(newVersion: Protocol = Protocol()): Unit = {
     val currentVersion = snapshot.protocol
-    if (newVersion.minReaderVersion < currentVersion.minReaderVersion ||
-        newVersion.minWriterVersion < currentVersion.minWriterVersion) {
-      throw new ProtocolDowngradeException(currentVersion, newVersion)
-    } else if (newVersion.minReaderVersion == currentVersion.minReaderVersion &&
-               newVersion.minWriterVersion == currentVersion.minWriterVersion) {
+    if (newVersion.minReaderVersion == currentVersion.minReaderVersion &&
+        newVersion.minWriterVersion == currentVersion.minWriterVersion) {
       logConsole(s"Table $dataPath is already at protocol version $newVersion.")
       return
     }
@@ -224,12 +221,20 @@ class DeltaLog private(
    * Get all actions starting from "startVersion" (inclusive). If `startVersion` doesn't exist,
    * return an empty Iterator.
    */
-  def getChanges(startVersion: Long): Iterator[(Long, Seq[Action])] = {
+  def getChanges(
+      startVersion: Long,
+      failOnDataLoss: Boolean = false): Iterator[(Long, Seq[Action])] = {
     val deltas = store.listFrom(deltaFile(logPath, startVersion))
       .filter(f => isDeltaFile(f.getPath))
+    // Subtract 1 to ensure that we have the same check for the inclusive startVersion
+    var lastSeenVersion = startVersion - 1
     deltas.map { status =>
       val p = status.getPath
       val version = deltaVersion(p)
+      if (failOnDataLoss && version > lastSeenVersion + 1) {
+        throw DeltaErrors.failOnDataLossException(lastSeenVersion + 1, version)
+      }
+      lastSeenVersion = version
       (version, store.read(p).map(Action.fromJson))
     }
   }
@@ -260,10 +265,6 @@ class DeltaLog private(
           "minReaderVersion" -> protocol.minReaderVersion))
       throw new InvalidProtocolVersionException
     }
-
-    if (isProtocolOld(protocol)) {
-      recordDeltaEvent(this, "delta.protocol.warning")
-    }
   }
 
   /**
@@ -279,10 +280,6 @@ class DeltaLog private(
           "clientVersion" -> Action.writerVersion,
           "minWriterVersion" -> protocol.minWriterVersion))
       throw new InvalidProtocolVersionException
-    }
-
-    if (logUpgradeMessage && isProtocolOld(protocol)) {
-      recordDeltaEvent(this, "delta.protocol.warning")
     }
   }
 
@@ -362,6 +359,7 @@ class DeltaLog private(
       partitionFilters: Seq[Expression] = Nil,
       snapshotToUseOpt: Option[Snapshot] = None,
       isTimeTravelQuery: Boolean = false,
+      cdcOptions: CaseInsensitiveStringMap = CaseInsensitiveStringMap.empty,
       catalogTable: Option[CatalogTable] = None): BaseRelation = {
 
     /** Used to link the files present in the table into the query planner. */
@@ -372,7 +370,7 @@ class DeltaLog private(
     new HadoopFsRelation(
       fileIndex,
       partitionSchema = snapshotToUse.metadata.partitionSchema,
-      dataSchema = snapshotToUse.metadata.schema,
+      dataSchema = SchemaUtils.dropNullTypeColumns(snapshotToUse.metadata.schema),
       bucketSpec = catalogTable.flatMap(_.bucketSpec),
       snapshotToUse.fileFormat,
       snapshotToUse.metadata.format.options ++
@@ -491,7 +489,8 @@ object DeltaLog extends DeltaLogging {
 
   /** Helper for creating a log for the table. */
   def forTable(spark: SparkSession, table: CatalogTable, clock: Clock): DeltaLog = {
-    apply(spark, new Path(new Path(table.location), "_delta_log"), clock)
+    val log = apply(spark, new Path(new Path(table.location), "_delta_log"), clock)
+    log
   }
 
   /** Helper for creating a log for the table. */
