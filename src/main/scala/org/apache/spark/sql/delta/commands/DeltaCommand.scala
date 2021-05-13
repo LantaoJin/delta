@@ -335,20 +335,13 @@ trait DeltaCommand extends DeltaLogging {
       metadata: Metadata, conf: SQLConf, data: DataFrame): LogicalPlan = {
     val origin = data.queryExecution.logical
     try {
-      val targetRelation = origin.collectFirst {
-        case r: LogicalRelation => r
-      }
-      if (targetRelation.isEmpty) {
-        throw new IllegalStateException("Table not exist!")
-      }
       val partitionAttrs = metadata.partitionColumns.map { col =>
         origin.output.resolve(col :: Nil, conf.resolver).
           getOrElse(throw new AnalysisException(s"Cannot resolve column $col " +
             s"in attributes ${origin.output.map(_.name).mkString(",")}"))
       }.map(_.toAttribute)
 
-      InsertIntoDataSource(targetRelation.head, origin,
-        overwrite = false, Map.empty, partitionAttrs, metadata.bucketSpec)
+      InsertIntoDataSource(origin, false, Map.empty, partitionAttrs, metadata.bucketSpec)
     } catch {
       case _: IllegalStateException =>
         origin

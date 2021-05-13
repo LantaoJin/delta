@@ -381,9 +381,7 @@ class DeltaLog private(
           metrics: Map[String, SQLMetric]): Unit = {
         val mode = if (overwrite) SaveMode.Overwrite else SaveMode.Append
         val deltaOptions = data.queryExecution.logical match {
-          case InsertIntoDataSource(
-          LogicalRelation(_: HadoopFsRelation with InsertableRelation, _, Some(_), _),
-          _, _, staticPartitions, _, _) =>
+          case InsertIntoDataSource(_, _, staticPartitions, _, _) =>
             val predicates = staticPartitions.map {
               case (key, value) => key + "=" + value
             }.mkString(" AND ")
