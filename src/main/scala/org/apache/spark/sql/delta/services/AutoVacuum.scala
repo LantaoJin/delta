@@ -128,7 +128,7 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
   private[sql] var lastUpdatedTime = "Waiting for update"
 
   private lazy val vacuumPool =
-    ThreadUtils.newDaemonThreadPoolScheduledExecutor("delta-auto-vacuum-pool", 32)
+    ThreadUtils.newDaemonThreadPoolScheduledExecutor("delta-auto-vacuum-pool", 64)
 
   private[sql] lazy val skipping =
     new ConcurrentHashMap[DeltaTableMetadata, VacuumSkipped]().asScala
@@ -260,44 +260,38 @@ class ValidateTask(conf: SparkConf) extends Runnable with Logging {
 
       val start = getCurrentTimestampString
       val currentLastDDLTime = catalogTable.properties(DDL_TIME).toLong
-      val deleteBeforeTimestamp =
-        System.currentTimeMillis() - TimeUnit.HOURS.toMillis(table.retention)
-      if (deltaLog.snapshot.tombstones
-          .filter(r => r.delTimestamp < deleteBeforeTimestamp).count() > 0) {
-        // only vacuum the tables changed between twice vacuuming or first look
-        if (vacuumHistory.get(table).exists(_.lastDDLTime == currentLastDDLTime)) {
-          val reason = s"lastDDLTime $currentLastDDLTime not changed"
-          logInfo(s"Skip vacuum table ${table.identifier.unquotedString} $reason")
-          updateSkippedHistory(start, reason)
-        } else {
-          val vacuumingInfoBefore = VacuumingInfo(table.db, table.tbl, -1L, -1L,
-            start, null, currentLastDDLTime)
-          vacuumHistory(table) = vacuumingInfoBefore
+      val versionBeforeVacuum = deltaLog.snapshot.version
+      val info = vacuumHistory.get(table)
 
-          logInfo(s"Start vacuum ${table.identifier.unquotedString} " +
-            s"retain ${table.retention} hours")
-          val (_, filesDeleted, fileCounts) = VacuumCommand.gc(spark, deltaLog, dryRun = false,
-            Some(table.retention.toDouble), safetyCheckEnabled = false)
-          CommandUtils.updateTableStats(spark, catalogTable)
-          logInfo(s"End vacuum ${table.identifier.unquotedString} " +
-            s"retain ${table.retention} hours")
-          val end = getCurrentTimestampString
-          val vacuumingInfoAfter = VacuumingInfo(table.db, table.tbl, fileCounts, filesDeleted,
-            start, end, currentLastDDLTime)
-          vacuumHistory(table) = vacuumingInfoAfter
-        }
+      if (info.exists(_.version == versionBeforeVacuum)) {
+        // version not changed, no need to vacuum
+        updateSkippedHistory(start, "Version unchanged")
+        logInfo(s"Skip vacuum table ${table.identifier.unquotedString} version unchanged")
+      } else if (info.exists(_.lastDDLTime == currentLastDDLTime)) {
+        val reason = s"lastDDLTime $currentLastDDLTime unchanged"
+        logInfo(s"Skip vacuum table ${table.identifier.unquotedString} $reason")
+        updateSkippedHistory(start, reason)
       } else {
-        // todo try run for testing, this should be removed in future
-        val (_, toBeDeleted, fileCounts) = VacuumCommand.gc(spark, deltaLog, dryRun = true,
+        val vacuumingInfoBefore = VacuumingInfo(table.db, table.tbl, -1L, -1L,
+          start, null, currentLastDDLTime, versionBeforeVacuum)
+        vacuumHistory(table) = vacuumingInfoBefore
+
+        logInfo(s"Start vacuum ${table.identifier.unquotedString} " +
+          s"retain ${table.retention} hours")
+        val (_, filesDeleted, fileCounts) = VacuumCommand.gc(spark, deltaLog, dryRun = false,
           Some(table.retention.toDouble), safetyCheckEnabled = false)
-        if (toBeDeleted > 0) {
-          val reason = s"Found $toBeDeleted files to be deleted"
-          updateSkippedHistory(start, reason, fileCounts)
-          logError(s"Invalid skipping vacuum table ${table.identifier.unquotedString}, $reason")
-        } else {
-          updateSkippedHistory(start, "Table without tombstones", fileCounts)
-          logInfo(s"Skip vacuum table ${table.identifier.unquotedString} without tombstones")
+        val versionAfterVacuum = deltaLog.snapshot.version
+        if (versionBeforeVacuum != versionAfterVacuum) {
+          // todo
+          logError("Version changed during vacuum! We should restore the renamed files!")
         }
+        CommandUtils.updateTableStats(spark, catalogTable)
+        logInfo(s"End vacuum ${table.identifier.unquotedString} " +
+        s"retain ${table.retention} hours")
+        val end = getCurrentTimestampString
+        val vacuumingInfoAfter = VacuumingInfo(table.db, table.tbl, fileCounts, filesDeleted,
+        start, end, currentLastDDLTime, versionAfterVacuum)
+        vacuumHistory(table) = vacuumingInfoAfter
       }
     }
 

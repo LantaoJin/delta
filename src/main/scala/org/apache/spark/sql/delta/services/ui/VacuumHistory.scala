@@ -24,7 +24,8 @@ case class VacuumingInfo(
     db: String, tbl: String,
     totalFiles: Long,
     filesDeleted: Long,
-    start: String, end: String, lastDDLTime: Long)
+    start: String, end: String, lastDDLTime: Long,
+    version: Long)
 
 class VacuumHistory(
     parent: DeltaTab,
