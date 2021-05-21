@@ -369,20 +369,20 @@ class DoubleCheckerTask(conf: SparkConf, validate: ValidateTask) extends Runnabl
 
 class RenamedFileCleaner(conf: SparkConf) extends Runnable with Logging {
 
-  private def dayBeforeYesterday: Date = {
+  private def threeDaysAgo: Date = {
     val cal = Calendar.getInstance()
-    cal.add(Calendar.DATE, -2)
+    cal.add(Calendar.DATE, -3)
     cal.getTime
   }
 
   override def run(): Unit = {
-    val toDeleteDate = new SimpleDateFormat("yyyy-MM-dd").format(dayBeforeYesterday)
+    val toDeleteDate = new SimpleDateFormat("yyyy-MM-dd").format(threeDaysAgo)
     val toDelete = new Path(conf.get(DeltaSQLConf.VACUUM_RENAME_BASE_PATH), toDeleteDate)
     val hadoopConf = SparkHadoopUtil.get.newConfiguration(conf)
     val fs = toDelete.getFileSystem(hadoopConf)
     try {
       if (fs.exists(toDelete)) {
-        if (fs.delete(toDelete, false)) {
+        if (fs.delete(toDelete, true)) {
           logInfo(s"Permanently cleaned folder $toDelete")
         }
       } else {
