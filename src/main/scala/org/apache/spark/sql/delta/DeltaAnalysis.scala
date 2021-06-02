@@ -172,29 +172,37 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
       }
 
     case u @ UpdateTable(table, assignments, condition, None) if u.resolved =>
-      // rewrite subquery
-      condition.foreach { c =>
-        val (rewrite, target, newConditions, source) = rewriteSubquery("UPDATE", table, c)
-        if (rewrite) {
-          return UpdateTable(target, assignments, newConditions, source)
-        }
+      val deltaTable = table.find {
+        case DeltaRelation(_) => true
+        case _ => false
       }
+      if (deltaTable.isEmpty) {
+        u
+      } else {
+        // rewrite subquery
+        condition.foreach { c =>
+          val (rewrite, target, newConditions, source) = rewriteSubquery("UPDATE", table, c)
+          if (rewrite) {
+            return UpdateTable(target, assignments, newConditions, source)
+          }
+        }
 
-      val (columns, values) = assignments.map(a =>
-        a.key.asInstanceOf[NamedExpression] -> a.value).unzip
-      values.foreach { e =>
-        if (SubqueryExpression.hasCorrelatedSubquery(e)) {
-          throw DeltaErrors.correlatedSubqueryNotSupportedException("UpdateTable", e)
+        val (columns, values) = assignments.map(a =>
+          a.key.asInstanceOf[NamedExpression] -> a.value).unzip
+        values.foreach { e =>
+          if (SubqueryExpression.hasCorrelatedSubquery(e)) {
+            throw DeltaErrors.correlatedSubqueryNotSupportedException("UpdateTable", e)
+          }
         }
+        // rewrites Delta from V2 to V1
+        val newTable = table.transformUp { case DeltaRelation(lr) => lr }
+        newTable.collectLeaves().headOption match {
+          case Some(DeltaFullTable(index)) =>
+          case o =>
+            throw DeltaErrors.notADeltaSourceException("UPDATE", o)
+        }
+        DeltaUpdateTable(newTable, columns, values, condition)
       }
-      // rewrites Delta from V2 to V1
-      val newTable = table.transformUp { case DeltaRelation(lr) => lr }
-      newTable.collectLeaves().headOption match {
-        case Some(DeltaFullTable(index)) =>
-        case o =>
-          throw DeltaErrors.notADeltaSourceException("UPDATE", o)
-      }
-      DeltaUpdateTable(newTable, columns, values, condition)
 
     case u @ UpdateTable(target, assignments, condition, Some(source)) if u.resolved &&
         target.outputSet.intersect(source.outputSet).isEmpty =>
